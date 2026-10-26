@@ -1,7 +1,7 @@
 import Foundation
 
 enum Uploader {
-    static func upload(json: URL, usdz: URL?, name: String, server: String) async throws {
+    static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room") async throws {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else {
             throw URLError(.badURL)
         }
@@ -18,13 +18,14 @@ enum Uploader {
         }
 
         field("name", name)
-        try file("json", json, "scan.json", "application/json")
+        field("kind", kind)
+        if let json { try file("json", json, "scan.json", "application/json") }
         if let usdz { try file("usdz", usdz, "scan.usdz", "model/vnd.usdz+zip") }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 60
+        req.timeoutInterval = 300
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let (_, resp) = try await URLSession.shared.upload(for: req, from: body)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {

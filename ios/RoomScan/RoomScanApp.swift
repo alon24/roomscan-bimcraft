@@ -5,7 +5,10 @@ struct RoomScanApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                ScanView()
+                TabView {
+                    ScanView().tabItem { Label("Room", systemImage: "square.split.bottomrightquarter") }
+                    ObjectScanView().tabItem { Label("Object", systemImage: "cube") }
+                }
             }
         }
     }

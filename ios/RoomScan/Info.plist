@@ -12,7 +12,7 @@
 	<key>LSRequiresIPhoneOS</key><true/>
 	<key>UILaunchScreen</key><dict/>
 	<key>UIRequiredDeviceCapabilities</key><array><string>arkit</string></array>
-	<key>NSCameraUsageDescription</key><string>Camera and LiDAR are used to scan the room.</string>
+	<key>NSCameraUsageDescription</key><string>Camera and LiDAR are used to scan rooms and objects.</string>
 	<key>NSLocalNetworkUsageDescription</key><string>Uploads scans to your local server.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict><key>NSAllowsLocalNetworking</key><true/></dict>

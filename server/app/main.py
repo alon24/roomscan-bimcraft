@@ -8,11 +8,12 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import convert
+from . import convert, objects
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
-ARTIFACTS = {"scan.json", "scan.usdz", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json"}
+ARTIFACTS = {"scan.json", "scan.usdz", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
+             "model.stl", "model.3mf", "preview.json", "report.json"}
 
 app = FastAPI(title="roomscan-bimcraft")
 
@@ -31,6 +32,14 @@ def _meta(d: Path) -> dict:
 def _convert(d: Path) -> dict:
     meta = _meta(d)
     log: list[str] = []
+    if meta.get("kind") == "object":
+        ok, out = objects.convert_object(d / "scan.usdz", d, meta.get("scale", 1.0))
+        meta["status"] = "ok" if (d / "model.stl").exists() else "error"
+        meta["printable"] = ok
+        meta["log"] = out
+        meta["converted_at"] = time.time()
+        (d / "meta.json").write_text(json.dumps(meta, indent=1))
+        return meta
     try:
         script, log = convert.convert(json.loads((d / "scan.json").read_text()))
         (d / "script.txt").write_text(script)
@@ -47,17 +56,25 @@ def _convert(d: Path) -> dict:
 
 
 @app.post("/api/scans")
-async def upload(json_file: UploadFile = File(..., alias="json"),
-                 usdz: UploadFile | None = File(None), name: str = Form("Scan")):
+async def upload(json_file: UploadFile | None = File(None, alias="json"),
+                 usdz: UploadFile | None = File(None), name: str = Form("Scan"),
+                 kind: str = Form("room"), scale: float = Form(1.0)):
+    if kind not in ("room", "object"):
+        raise HTTPException(422, "kind must be room or object")
+    if kind == "room" and json_file is None:
+        raise HTTPException(422, "room scans need a json file")
+    if kind == "object" and usdz is None:
+        raise HTTPException(422, "object scans need a usdz file")
     scan_id = uuid.uuid4().hex[:12]
     d = DATA / scan_id
     d.mkdir(parents=True)
-    with open(d / "scan.json", "wb") as f:
-        shutil.copyfileobj(json_file.file, f)
+    if json_file is not None:
+        with open(d / "scan.json", "wb") as f:
+            shutil.copyfileobj(json_file.file, f)
     if usdz is not None:
         with open(d / "scan.usdz", "wb") as f:
             shutil.copyfileobj(usdz.file, f)
-    (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "created_at": time.time()}))
+    (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale, "created_at": time.time()}))
     meta = _convert(d)
     return {"id": scan_id, "status": meta["status"]}
 
@@ -74,8 +91,13 @@ def get_scan(scan_id: str):
 
 
 @app.post("/api/scans/{scan_id}/convert")
-def reconvert(scan_id: str):
-    return _convert(_dir(scan_id))
+def reconvert(scan_id: str, scale: float | None = None):
+    d = _dir(scan_id)
+    if scale is not None:
+        meta = _meta(d)
+        meta["scale"] = scale
+        (d / "meta.json").write_text(json.dumps(meta))
+    return _convert(d)
 
 
 @app.get("/api/scans/{scan_id}/{file}")
