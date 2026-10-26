@@ -100,3 +100,31 @@ def chain_loop(walls: list[tuple[Point, Point]]) -> list[Point] | None:
         else:
             return None
     return pts[:-1] if pts[-1] == pts[0] else None
+
+
+def square_loop(loop: list[Point], tol_deg: float) -> list[Point]:
+    """Straighten a closed loop: walls within tol_deg of the longest wall's direction (or its
+    perpendicular) are made exactly parallel/perpendicular to it; corners become line intersections."""
+    n = len(loop)
+    segs = [(loop[i], loop[(i + 1) % n]) for i in range(n)]
+    longest = max(segs, key=lambda s: dist(*s))
+    base = math.atan2(longest[1][1] - longest[0][1], longest[1][0] - longest[0][0])
+    lines = []  # (midpoint, unit direction)
+    for a, b in segs:
+        ang = math.atan2(b[1] - a[1], b[0] - a[0])
+        k = round((ang - base) / (math.pi / 2))
+        snapped = base + k * math.pi / 2
+        diff = abs(math.degrees(ang - snapped))
+        if diff <= tol_deg:
+            ang = snapped
+        lines.append((((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), (math.cos(ang), math.sin(ang))))
+    out = []
+    for i in range(n):
+        (p, d), (q, e) = lines[i - 1], lines[i]  # vertex i joins wall i-1 and wall i
+        det = d[0] * -e[1] + d[1] * e[0]
+        if abs(det) < 1e-9:
+            out.append(loop[i])
+            continue
+        t = ((q[0] - p[0]) * -e[1] + (q[1] - p[1]) * e[0]) / det
+        out.append((p[0] + t * d[0], p[1] + t * d[1]))
+    return out

@@ -9,6 +9,7 @@ from . import geometry as g
 
 MIN_WALL_MM = 150.0
 SNAP_MM = 100.0
+SQUARE_DEG = float(os.environ.get("SQUARE_CORNERS_DEG", "0"))  # 0 = off
 
 
 def _cmd(name: str, args: dict) -> str:
@@ -19,7 +20,7 @@ def _r(p: g.Point) -> list[int]:
     return [round(p[0]), round(p[1])]
 
 
-def convert(scan: dict, snap_mm: float = SNAP_MM) -> tuple[str, list[str]]:
+def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = None) -> tuple[str, list[str]]:
     """Return (script text, log lines)."""
     log: list[str] = []
     walls = scan.get("walls") or []
@@ -41,6 +42,10 @@ def convert(scan: dict, snap_mm: float = SNAP_MM) -> tuple[str, list[str]]:
     lines = []
 
     loop = g.chain_loop(snapped)
+    sq = SQUARE_DEG if square_deg is None else square_deg
+    if loop and sq > 0:
+        loop = g.square_loop(loop, sq)
+        log.append(f"squared corners (tolerance {sq}°)")
     if loop:
         lines.append(_cmd("wall", {"points": [_r(p) for p in loop], "closed": True, "height": height_mm}))
         log.append(f"closed loop of {len(loop)} walls")

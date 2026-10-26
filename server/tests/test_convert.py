@@ -96,3 +96,19 @@ def test_bimcraft_cli_accepts_script(scan, tmp_path):
     info = subprocess.run([os.environ["BIMCRAFT_CLI"], "info", str(tmp_path / "room.bimcraft")],
                           capture_output=True, text=True)
     assert "wall" in info.stdout.lower()
+
+
+def test_square_loop_fixes_skewed_rectangle():
+    skew = [(0, 0), (4200, 40), (4180, 3600), (-10, 3580)]
+    sq = g.square_loop(skew, 5)
+    for i in range(4):
+        a, b, c = sq[i - 1], sq[i], sq[(i + 1) % 4]
+        dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])
+        assert abs(dot) < 1e-3
+
+
+def test_square_off_by_default(scan):
+    _, log = convert.convert(scan)
+    assert not any("squared" in l for l in log)
+    _, log = convert.convert(scan, square_deg=5)
+    assert any("squared" in l for l in log)
