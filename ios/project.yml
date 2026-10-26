@@ -1,0 +1,17 @@
+name: RoomScan
+options:
+  bundleIdPrefix: com.roomscan
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  RoomScan:
+    type: application
+    platform: iOS
+    sources: [RoomScan]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.roomscan.app
+        INFOPLIST_FILE: RoomScan/Info.plist
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
