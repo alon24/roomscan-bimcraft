@@ -98,8 +98,12 @@ final class ObjectScanModel: ObservableObject {
                 switch o {
                 case .requestProgress(_, let f): progress = f
                 case .requestError(_, let e): throw e
-                case .requestResult(_, .poses(let p)): writePoses(p, in: imagesDir.deletingLastPathComponent())
-                case .requestComplete(_, .modelFile): usdzURL = out; status = "Model ready"
+                case .requestComplete(_, let result):
+                    switch result {
+                    case .poses(let p): writePoses(p, in: imagesDir.deletingLastPathComponent())
+                    case .modelFile: usdzURL = out; status = "Model ready"
+                    default: break
+                    }
                 default: break
                 }
             }
