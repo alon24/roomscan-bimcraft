@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import time
 import uuid
@@ -10,12 +11,13 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSoc
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import convert, objects
+from . import convert, objects, photos as photo_index
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
-             "model.stl", "model.3mf", "preview.json", "report.json"}
+             "model.stl", "model.3mf", "preview.json", "report.json", "photos.json", "photo_index.json"}
+PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 
 app = FastAPI(title="roomscan-bimcraft")
 
@@ -62,6 +64,10 @@ def _convert(d: Path) -> dict:
         return meta
     try:
         script, log = convert.convert(json.loads((d / "scan.json").read_text()))
+        if (d / "photos.json").exists():
+            idx = photo_index.index_photos(json.loads((d / "scan.json").read_text()), json.loads((d / "photos.json").read_text()))
+            (d / "photo_index.json").write_text(json.dumps(idx))
+            log.append(f"photos cover {len(idx)} surfaces")
         (d / "script.txt").write_text(script)
         ok, out = convert.run_cli(d / "script.txt", d)
         log.append(out)
@@ -78,7 +84,8 @@ def _convert(d: Path) -> dict:
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), name: str = Form("Scan"),
-                 kind: str = Form("room"), scale: float = Form(1.0)):
+                 kind: str = Form("room"), scale: float = Form(1.0),
+                 photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     if kind not in ("room", "object"):
         raise HTTPException(422, "kind must be room or object")
     if kind == "room" and json_file is None:
@@ -94,7 +101,19 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     if usdz is not None:
         with open(d / "scan.usdz", "wb") as f:
             shutil.copyfileobj(usdz.file, f)
-    (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale, "created_at": time.time()}))
+    photo_count = 0
+    if photos:
+        (d / "photos").mkdir()
+        for p in photos:
+            fname = Path(p.filename or "").name
+            if PHOTO_NAME.match(fname):
+                with open(d / "photos" / fname, "wb") as f:
+                    shutil.copyfileobj(p.file, f)
+                photo_count += fname.endswith(".jpg")
+        if photos_meta is not None:
+            (d / "photos.json").write_bytes(await photos_meta.read())
+    (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale,
+                                             "photo_count": photo_count, "created_at": time.time()}))
     meta = await anyio.to_thread.run_sync(_convert, d)
     hub.live = None
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
@@ -146,6 +165,14 @@ async def events(ws: WebSocket):
         pass
     finally:
         hub.viewers.discard(ws)
+
+
+@app.get("/api/scans/{scan_id}/photos/{name}")
+def photo(scan_id: str, name: str):
+    p = _dir(scan_id) / "photos" / name
+    if not PHOTO_NAME.match(name) or not p.exists():
+        raise HTTPException(404, "photo not found")
+    return FileResponse(p)
 
 
 @app.get("/api/scans/{scan_id}/{file}")

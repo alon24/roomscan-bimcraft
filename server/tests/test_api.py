@@ -76,3 +76,27 @@ def test_late_viewer_gets_last_live_frame(client):
     client.post("/api/live", json=json.loads(FIX.read_text()))
     with client.websocket_connect("/ws/events") as ws:
         assert ws.receive_json()["type"] == "live"
+
+
+def test_room_upload_with_photos(client):
+    manifest = b'[{"file":"p001.jpg","transform":[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}]'
+    files = [("json", ("scan.json", FIX.read_bytes())),
+             ("photos", ("p001.jpg", b"\xff\xd8jpeg1")), ("photos", ("../evil.png", b"x")),
+             ("photos_meta", ("photos.json", manifest))]
+    sid = client.post("/api/scans", files=files).json()["id"]
+    assert client.get(f"/api/scans/{sid}").json()["photo_count"] == 1
+    assert client.get(f"/api/scans/{sid}/photos/p001.jpg").content == b"\xff\xd8jpeg1"
+    assert client.get(f"/api/scans/{sid}/photos.json").json()[0]["file"] == "p001.jpg"
+    assert client.get(f"/api/scans/{sid}/photos/evil.png").status_code == 404
+    assert client.get(f"/api/scans/{sid}/photos/..%2Fscan.json").status_code == 404
+
+
+def test_photo_index_written_for_room_with_photos(client):
+    poses = [{"file": "p001.jpg", "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [2.1, 1.25, 0, 1]],
+              "intrinsics": [[900, 0, 0], [0, 900, 0], [640, 360, 1]], "width": 1280, "height": 720}]
+    import json
+    files = [("json", ("scan.json", FIX.read_bytes())), ("photos", ("p001.jpg", b"\xff\xd8x")),
+             ("photos_meta", ("photos.json", json.dumps({"version": 2, "photos": poses}).encode()))]
+    sid = client.post("/api/scans", files=files).json()["id"]
+    idx = client.get(f"/api/scans/{sid}/photo_index.json").json()
+    assert len(idx) >= 1 and all(v["photos"][0]["photo"] == "p001.jpg" for v in idx.values())

@@ -1,7 +1,8 @@
 import Foundation
 
 enum Uploader {
-    static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room") async throws {
+    static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room",
+                       photos: [URL] = [], photosMeta: URL? = nil) async throws {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else {
             throw URLError(.badURL)
         }
@@ -21,6 +22,8 @@ enum Uploader {
         field("kind", kind)
         if let json { try file("json", json, "scan.json", "application/json") }
         if let usdz { try file("usdz", usdz, "scan.usdz", "model/vnd.usdz+zip") }
+        for p in photos { try file("photos", p, p.lastPathComponent, p.pathExtension == "depth" ? "application/octet-stream" : "image/jpeg") }
+        if let photosMeta { try file("photos_meta", photosMeta, "photos.json", "application/json") }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
         var req = URLRequest(url: url)

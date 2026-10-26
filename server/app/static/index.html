@@ -25,6 +25,12 @@
   #view { width:100%; height:380px; border:1px solid var(--line); border-radius:6px; }
   img { max-width:100%; border:1px solid var(--line); border-radius:6px; background:#fff; }
   pre { background:color-mix(in srgb, var(--fg) 6%, transparent); padding:10px; border-radius:6px; overflow:auto; max-height:240px; font-size:12px; }
+  .thumbs { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:6px; margin-top:8px; }
+  .thumbs img { width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer; }
+  dialog { border:0; padding:0; background:none; max-width:96vw; }
+  dialog::backdrop { background:rgba(0,0,0,.7); }
+  dialog img { max-width:96vw; max-height:92vh; display:block; }
+  .btn.on { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 16%, transparent); }
   .ok { color:var(--ok); } .error { color:var(--err); }
   .mute { color:var(--mute); }
 </style>
@@ -41,14 +47,17 @@
     <h1 id="title"></h1>
     <div>Status: <b id="status"></b></div>
     <div class="row" id="actions"></div>
+    <div class="row" id="modes" hidden></div>
     <div class="grid">
       <div><div id="view"></div></div>
       <div><img id="plan" alt="Plan"></div>
     </div>
+    <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs"></div></div>
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
 </main>
+<dialog id="dlg"><img id="big" alt=""></dialog>
 <script type="module">
 import * as THREE from "./three.module.min.js";
 
@@ -75,6 +84,7 @@ async function show(id) {
   current = id;
   const meta = await (await fetch(`/api/scans/${id}`)).json();
   $("hint").hidden = true; $("detail").hidden = false;
+  $("modes").hidden = true; ctx = null;
   $("title").textContent = meta.name;
   $("status").textContent = meta.status; $("status").className = meta.status;
   $("log").textContent = meta.log || "";
@@ -101,6 +111,7 @@ async function show(id) {
   actions.append(re);
   loadList();
   if (isObj) {
+    await loadPhotos(meta);
     if (meta.status === "ok") {
       const r = await (await fetch(`/api/scans/${id}/report.json`)).json();
       $("log").textContent = `Size: ${r.size_mm.join(" × ")} mm\nWatertight: ${r.watertight ? "yes" : "NO – slicer may need repair"}\nVolume: ${r.volume_mm3 ?? "n/a"} mm³\nFaces: ${r.faces}\n\n` + (meta.log || "");
@@ -109,8 +120,121 @@ async function show(id) {
     }
     return;
   }
-  try { draw(await (await fetch(`/api/scans/${id}/scan.json`)).json()); }
+  const poses = await loadPhotos(meta);
+  try {
+    const scan = await (await fetch(`/api/scans/${id}/scan.json`)).json();
+    let index = null;
+    if (poses.length) try { index = await (await fetch(`/api/scans/${id}/photo_index.json`)).json(); } catch {}
+    ctx = { id, scan, poses, index, mode: index && Object.keys(index).length ? "both" : "lidar" };
+    setupModes();
+    show3d(roomGroup(ctx), false);
+  }
   catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
+}
+
+function openPhoto(id, name) {
+  $("big").src = `/api/scans/${id}/photos/${name}`;
+  $("dlg").showModal();
+}
+$("dlg").onclick = () => $("dlg").close();
+
+async function loadPhotos(meta) {
+  $("photosBox").hidden = !(meta.photo_count > 0);
+  $("photos").replaceChildren();
+  if (!(meta.photo_count > 0)) return [];
+  let poses = [];
+  try { const m = await (await fetch(`/api/scans/${meta.id}/photos.json`)).json(); poses = m.photos ?? m; } catch {}
+  const names = poses.length ? poses.map(p => p.file) : Array.from({ length: meta.photo_count }, (_, i) => null);
+  if (poses.length) for (const f of names) addThumb(meta.id, f);
+  else {  // no manifest (objects): list by index; server names are o001.jpg, o002.jpg, ...
+    for (let i = 1; i <= meta.photo_count; i++) addThumb(meta.id, `o${String(i).padStart(3, "0")}.jpg`);
+  }
+  return poses;
+}
+
+function addThumb(id, file) {
+  const img = document.createElement("img");
+  img.loading = "lazy"; img.src = `/api/scans/${id}/photos/${file}`; img.onclick = () => openPhoto(id, file);
+  $("photos").append(img);
+}
+
+function photoMarker(id, p) {  // a small arrow at each camera pose, pointing where the photo looks (ARKit camera looks down -Z)
+  const g = new THREE.ConeGeometry(0.08, 0.25, 4);
+  g.translate(0, 0.125, 0); g.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xe8453c }));
+  m.applyMatrix4(new THREE.Matrix4().fromArray(p.transform.flat()));
+  m.userData.photo = [id, p.file];
+  return m;
+}
+
+// ---- room preview modes: LiDAR boxes, photos mapped onto the surfaces, or both
+let ctx = null;  // {id, scan, poses, index, mode}
+const texLoader = new THREE.TextureLoader();
+const MODES = [["lidar", "LiDAR"], ["images", "Photos"], ["both", "LiDAR + photos"]];
+
+function setupModes() {
+  const box = $("modes");
+  const usable = ctx.index && Object.keys(ctx.index).length > 0;
+  box.hidden = !usable;
+  box.replaceChildren(...MODES.map(([k, label]) => {
+    const b = document.createElement("button");
+    b.className = "btn" + (k === ctx.mode ? " on" : ""); b.textContent = label;
+    b.onclick = () => { ctx.mode = k; setupModes(); show3d(roomGroup(ctx), true); };
+    return b;
+  }));
+}
+
+function roomGroup(c) {
+  const g = new THREE.Group();
+  for (const [key, color, op] of [["walls", 0xb8bec8, 0.75], ["doors", 0xb5733a, 1], ["windows", 0x4aa3df, 0.7]]) {
+    for (const s of c.scan[key] || []) {
+      if (c.mode !== "images") g.add(surfaceMesh(s, color, op));
+      if (c.mode === "lidar") continue;
+      const best = c.index?.[s.identifier]?.photos?.[0];
+      const ph = best && c.poses.find(p => p.file === best.photo);
+      const m = ph && texturedSurface(c.id, s, ph, c.mode === "both");
+      if (m) g.add(m);
+    }
+  }
+  for (const p of c.poses) g.add(photoMarker(c.id, p));
+  return g;
+}
+
+/** A surface grid whose UVs come from projecting each vertex through the photo's camera (perspective-correct).
+ *  Cells the photo does not fully see are left out rather than smeared. */
+function texturedSurface(id, s, ph, offset) {
+  const [w, h, d] = s.dimensions, N = 16;
+  const M = new THREE.Matrix4().fromArray(s.transform.flat());
+  const cam = new THREE.Matrix4().fromArray(ph.transform.flat()).invert();
+  const K = ph.intrinsics, fx = K[0][0], fy = K[1][1], cx = K[2][0], cy = K[2][1];
+  let z = 0;
+  if (offset) {  // sit just in front of the LiDAR box, on the side the photo was taken from
+    const centre = new THREE.Vector3().setFromMatrixPosition(M);
+    const normal = new THREE.Vector3().setFromMatrixColumn(M, 2).normalize();
+    const camPos = new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(ph.transform.flat()));
+    z = (camPos.clone().sub(centre).dot(normal) >= 0 ? 1 : -1) * (Math.max(d, 0.05) / 2 + 0.01);
+  }
+  const pos = [], uv = [], ok = [];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+    const v = new THREE.Vector3((i / N - 0.5) * w, (j / N - 0.5) * h, z).applyMatrix4(M);
+    const c = v.clone().applyMatrix4(cam), depth = -c.z;  // ARKit camera looks down -Z
+    const u = fx * c.x / depth + cx, vv = cy - fy * c.y / depth;
+    pos.push(v.x, v.y, v.z); uv.push(u / ph.width, 1 - vv / ph.height);
+    ok.push(depth > 0.05 && u >= 0 && u <= ph.width && vv >= 0 && vv <= ph.height);
+  }
+  const idx = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * (N + 1) + i, b = a + 1, c2 = a + N + 1, d2 = c2 + 1;
+    if (ok[a] && ok[b] && ok[c2] && ok[d2]) idx.push(a, c2, b, b, c2, d2);
+  }
+  if (!idx.length) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  const tex = texLoader.load(`/api/scans/${id}/photos/${ph.file}`);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
 }
 
 function surfaceMesh(s, color, opacity) {
@@ -133,8 +257,9 @@ function drawMesh(m) {
   show3d(mesh);
 }
 
-function draw(scan, keepView = false) {
+function draw(scan, keepView = false, markers = []) {
   const group = new THREE.Group();
+  for (const m of markers) group.add(m);
   for (const w of scan.walls || []) group.add(surfaceMesh(w, 0xb8bec8, 0.75));
   for (const d of scan.doors || []) group.add(surfaceMesh(d, 0xb5733a, 1));
   for (const w of scan.windows || []) group.add(surfaceMesh(w, 0x4aa3df, 0.7));
@@ -181,7 +306,17 @@ function show3d(group, keepView = false) {
   let drag = null;
   const cv = renderer.domElement;
   cv.onpointerdown = e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); };
-  cv.onpointerup = () => drag = null;
+  let down = null;
+  cv.addEventListener("pointerdown", e => down = [e.clientX, e.clientY]);
+  cv.onpointerup = e => {
+    drag = null;
+    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;  // it was a drag, not a click
+    const rect = cv.getBoundingClientRect();
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
+    const hit = ray.intersectObjects(V.group.children.filter(o => o.userData.photo))[0];
+    if (hit) openPhoto(...hit.object.userData.photo);
+  };
   cv.onpointermove = e => {
     if (!drag) return;
     yaw -= (e.clientX - drag[0]) * 0.01;
