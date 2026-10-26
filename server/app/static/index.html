@@ -31,6 +31,17 @@
   dialog::backdrop { background:rgba(0,0,0,.7); }
   dialog img { max-width:96vw; max-height:92vh; display:block; }
   .btn.on { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 16%, transparent); }
+  .grp { display:flex; align-items:center; gap:6px; margin:14px 0 4px; font-weight:600; }
+  .grp small { color:var(--mute); font-weight:400; }
+  .grp .sp { flex:1; }
+  .ico { all:unset; cursor:pointer; padding:2px 6px; border-radius:4px; color:var(--mute); font-size:13px; }
+  .ico:hover { background:color-mix(in srgb, var(--acc) 14%, transparent); color:var(--fg); }
+  #search { width:100%; margin:10px 0 0; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:none; color:var(--fg); font:inherit; }
+  form label { display:block; margin:10px 0; font-size:13px; color:var(--mute); }
+  form input { display:block; width:100%; margin-top:4px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
+  #form { border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--fg); padding:16px; min-width:min(360px,90vw); }
+  #form::backdrop { background:rgba(0,0,0,.5); }
+  .danger { border-color:var(--err); color:var(--err); }
   .ok { color:var(--ok); } .error { color:var(--err); }
   .mute { color:var(--mute); }
   body.embed { grid-template-columns:1fr; }
@@ -42,7 +53,11 @@
 <body>
 <aside>
   <h1>RoomScan</h1>
-  <ul id="list"></ul>
+  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button>
+    <input type="file" id="importFile" accept=".zip,application/zip" hidden></div>
+  <input id="search" placeholder="Search rooms and objects" type="search">
+  <div id="list"></div>
+  <datalist id="projList"></datalist>
   <p class="mute" id="empty" hidden>No scans yet. Upload from the app.</p>
 </aside>
 <main>
@@ -62,27 +77,108 @@
   </div>
 </main>
 <dialog id="dlg"><img id="big" alt=""></dialog>
+<dialog id="form"><form method="dialog">
+  <h3 id="formTitle" style="margin:0 0 8px"></h3><div id="formFields"></div>
+  <div class="row" style="justify-content:flex-end"><button class="btn" type="button" onclick="document.getElementById('form').close('cancel')">Cancel</button><button class="btn" id="formOk" type="submit" value="ok"></button></div>
+</form></dialog>
 <script type="module">
 import * as THREE from "./three.module.min.js";
 
 const $ = id => document.getElementById(id);
 let current = null, renderer = null, raf = 0;
 
-async function loadList() {
-  const scans = await (await fetch("/api/scans")).json();
-  $("empty").hidden = scans.length > 0;
-  $("list").replaceChildren(...scans.map(s => {
-    const li = document.createElement("li"), b = document.createElement("button");
-    b.className = s.id === current ? "sel" : "";
-    b.textContent = s.name;
-    const small = document.createElement("small");
-    small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?");
-    b.append(small);
-    b.onclick = () => show(s.id);
-    li.append(b);
-    return li;
-  }));
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : undefined });
+  if (!r.ok) { alert(`${path}: ${r.status} ${await r.text()}`); throw new Error(r.status); }
+  return r.json();
 }
+
+/** Small modal form. Resolves to {key: value} on OK, null on cancel. */
+function ask(title, fields, okLabel = "Save", danger = false) {
+  return new Promise(resolve => {
+    const dlg = $("form"), box = $("formFields");
+    $("formTitle").textContent = title; box.replaceChildren();
+    const inputs = fields.map(f => {
+      const l = document.createElement("label"), i = document.createElement("input");
+      l.textContent = f.label; i.value = f.value ?? ""; if (f.list) i.setAttribute("list", "projList");
+      l.append(i); box.append(l); return [f.key, i];
+    });
+    $("formOk").textContent = okLabel; $("formOk").className = "btn" + (danger ? " danger" : "");
+    dlg.onclose = () => resolve(dlg.returnValue === "ok" ? Object.fromEntries(inputs.map(([k, i]) => [k, i.value.trim()])) : null);
+    dlg.showModal();
+    inputs[0]?.[1].focus();
+  });
+}
+
+function icoBtn(label, title, fn) {
+  const b = document.createElement("button");
+  b.className = "ico"; b.textContent = label; b.title = title; b.onclick = fn;
+  return b;
+}
+
+async function loadList() {
+  const [scans, projects] = await Promise.all([api("/api/scans"), api("/api/projects")]);
+  $("projList").replaceChildren(...projects.map(p => Object.assign(document.createElement("option"), { value: p.name })));
+  const q = $("search").value.trim().toLowerCase();
+  const visible = scans.filter(s => !q || s.name.toLowerCase().includes(q));
+  $("empty").hidden = scans.length > 0 || projects.length > 0;
+  const groups = [...projects.map(p => ({ project: p, items: visible.filter(s => s.project === p.name) })),
+                  { project: null, items: visible.filter(s => !s.project) }];
+  const out = [];
+  for (const g of groups) {
+    if (!g.project && !g.items.length) continue;
+    if (q && !g.items.length) continue;
+    const head = document.createElement("div"); head.className = "grp";
+    const title = document.createElement("span"); title.textContent = g.project ? g.project.name : "No home";
+    const count = document.createElement("small"); count.textContent = g.items.length;
+    const sp = Object.assign(document.createElement("span"), { className: "sp" });
+    head.append(title, count, sp);
+    if (g.project) {
+      const name = g.project.name;
+      head.append(
+        icoBtn("✎", "Rename home", async () => {
+          const v = await ask("Rename home", [{ key: "name", label: "Name", value: name }]);
+          if (v?.name && v.name !== name) { await api(`/api/projects/${encodeURIComponent(name)}`, { method: "PATCH", body: JSON.stringify(v) }); loadList(); }
+        }),
+        Object.assign(icoBtn("⬇", "Download this home as a zip", () => {}), { onclick: () => location.href = `/api/export.zip?project=${encodeURIComponent(name)}` }),
+        icoBtn("✕", "Delete home", async () => {
+          const v = await ask(`Delete home “${name}”?`, [{ key: "also", label: "Type DELETE to also delete its rooms, or leave empty to keep them" }], "Delete home", true);
+          if (!v) return;
+          await api(`/api/projects/${encodeURIComponent(name)}?delete_scans=${v.also === "DELETE"}`, { method: "DELETE" });
+          loadList();
+        }));
+    }
+    out.push(head);
+    const ul = document.createElement("ul");
+    for (const s of g.items) {
+      const li = document.createElement("li"), b = document.createElement("button");
+      b.className = s.id === current ? "sel" : "";
+      b.textContent = (s.kind === "object" ? "◆ " : "▢ ") + s.name;
+      const small = document.createElement("small");
+      small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?");
+      b.append(small); b.onclick = () => show(s.id);
+      li.append(b); ul.append(li);
+    }
+    out.push(ul);
+  }
+  $("list").replaceChildren(...out);
+}
+$("search").oninput = () => loadList();
+$("newHome").onclick = async () => {
+  const v = await ask("New home", [{ key: "name", label: "Name" }], "Create");
+  if (v?.name) { await api("/api/projects", { method: "POST", body: JSON.stringify(v) }); loadList(); }
+};
+$("importBtn").onclick = () => $("importFile").click();
+$("importFile").onchange = async e => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  const r = await api("/api/import", { method: "POST", body: fd });
+  await loadList();
+  if (r.imported[0]) show(r.imported[0].id);
+};
+
+function clearDetail() { current = null; $("detail").hidden = true; $("hint").hidden = false; }
 
 async function show(id) {
   current = id;
@@ -113,6 +209,21 @@ async function show(id) {
     actions.append(sc);
   }
   actions.append(re);
+  const mk = (label, fn, cls = "") => { const x = document.createElement("button"); x.className = "btn " + cls; x.textContent = label; x.onclick = fn; actions.append(x); };
+  mk("Rename", async () => {
+    const v = await ask("Rename", [{ key: "name", label: "Name", value: meta.name }]);
+    if (v?.name) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
+  });
+  mk("Move to home…", async () => {
+    const v = await ask("Move to home", [{ key: "project", label: "Home (empty = none)", value: meta.project ?? "", list: true }], "Move");
+    if (v) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
+  });
+  mk("Save as zip", () => { location.href = `/api/scans/${id}/bundle.zip`; });
+  mk("Delete", async () => {
+    if (await ask(`Delete “${meta.name}”? This cannot be undone.`, [], "Delete", true)) {
+      await api(`/api/scans/${id}`, { method: "DELETE" }); clearDetail(); loadList();
+    }
+  }, "danger");
   loadList();
   if (isObj) {
     await loadPhotos(meta);
@@ -386,6 +497,9 @@ function connect() {
     if (m.type === "live") {
       enterLive();
       draw(m.room, true);
+    } else if (m.type === "list") {
+      if (m.deleted && m.deleted === current) clearDetail();
+      loadList();
     } else if (m.type === "live_end") {
       live = false;
     } else if (m.type === "scan") {

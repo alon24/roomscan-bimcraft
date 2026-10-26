@@ -1,13 +1,17 @@
 import json
 import re
 import shutil
+import tempfile
 import time
 import uuid
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
 import anyio.to_thread
 from anyio import from_thread
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -17,6 +21,7 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/sc
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "report.json", "photos.json", "photo_index.json"}
+MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 
 app = FastAPI(title="roomscan-bimcraft")
@@ -84,7 +89,7 @@ def _convert(d: Path) -> dict:
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), name: str = Form("Scan"),
-                 kind: str = Form("room"), scale: float = Form(1.0),
+                 kind: str = Form("room"), scale: float = Form(1.0), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     if kind not in ("room", "object"):
         raise HTTPException(422, "kind must be room or object")
@@ -113,7 +118,7 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
         if photos_meta is not None:
             (d / "photos.json").write_bytes(await photos_meta.read())
     (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale,
-                                             "photo_count": photo_count, "created_at": time.time()}))
+                                             "photo_count": photo_count, "project": project.strip(), "created_at": time.time()}))
     meta = await anyio.to_thread.run_sync(_convert, d)
     hub.live = None
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
@@ -165,6 +170,192 @@ async def events(ws: WebSocket):
         pass
     finally:
         hub.viewers.discard(ws)
+
+
+class ScanPatch(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    project: str | None = Field(None, max_length=200)
+    notes: str | None = Field(None, max_length=5000)
+
+
+@app.patch("/api/scans/{scan_id}")
+async def patch_scan(scan_id: str, patch: ScanPatch):
+    d = _dir(scan_id)
+    meta = _meta(d)
+    for k, v in patch.model_dump(exclude_none=True).items():
+        meta[k] = v.strip() if k != "notes" else v
+    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    await hub.broadcast({"type": "list"})
+    return meta
+
+
+@app.delete("/api/scans/{scan_id}")
+async def delete_scan(scan_id: str):
+    shutil.rmtree(_dir(scan_id))
+    await hub.broadcast({"type": "list", "deleted": scan_id})
+    return {"deleted": scan_id}
+
+
+def _zip_scans(ids: list[str]) -> Path:
+    """Zip scan folders as <id>/<files>, plus a small manifest. Returns a temp file for the caller to delete."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("roomscan-export.json", json.dumps({"version": 1, "scans": ids}))
+        for sid in ids:
+            d = DATA / sid
+            for f in d.rglob("*"):
+                if f.is_file():
+                    z.write(f, f"{sid}/{f.relative_to(d).as_posix()}")
+    return Path(tmp.name)
+
+
+def _zip_response(path: Path, filename: str) -> FileResponse:
+    return FileResponse(path, filename=filename, media_type="application/zip",
+                        background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+@app.get("/api/scans/{scan_id}/bundle.zip")
+def scan_bundle(scan_id: str):
+    _dir(scan_id)
+    return _zip_response(_zip_scans([scan_id]), f"{_meta(DATA / scan_id).get('name', scan_id)}.zip".replace("/", "_"))
+
+
+@app.get("/api/export.zip")
+def export_all(project: str | None = None):
+    metas = [_meta(d) for d in DATA.glob("*") if (d / "meta.json").exists()] if DATA.exists() else []
+    ids = [m["id"] for m in metas if project is None or m.get("project", "") == project]
+    if not ids:
+        raise HTTPException(404, "nothing to export")
+    return _zip_response(_zip_scans(ids), f"{project or 'roomscan-all'}.zip".replace("/", "_"))
+
+
+@app.post("/api/import")
+async def import_zip(file: UploadFile = File(...), project: str | None = Form(None)):
+    """Restore scans from an export zip. Only known artifact names are extracted, and every scan gets a new id."""
+    imported = []
+    try:
+        z = zipfile.ZipFile(file.file)
+    except zipfile.BadZipFile:
+        raise HTTPException(422, "not a zip file")
+    with z:
+        groups: dict[str, list[tuple[zipfile.ZipInfo, str]]] = {}
+        total = 0
+        for info in z.infolist():
+            parts = PurePosixPath(info.filename).parts
+            if info.is_dir() or len(parts) < 2:
+                continue
+            rel = "/".join(parts[1:])
+            known = rel in ARTIFACTS or (len(parts) == 3 and parts[1] == "photos" and PHOTO_NAME.match(parts[2]))
+            if known:
+                total += info.file_size
+                groups.setdefault(parts[0], []).append((info, rel))
+        if total > MAX_IMPORT_BYTES:
+            raise HTTPException(413, "bundle too large")
+        for old_id, members in groups.items():
+            if not any(rel == "meta.json" for _, rel in members):
+                continue
+            new_id = uuid.uuid4().hex[:12]
+            d = DATA / new_id
+            for info, rel in members:
+                target = d / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            try:
+                meta = json.loads((d / "meta.json").read_text())
+                meta.update({"id": new_id, "imported_from": old_id})
+                if project is not None:
+                    meta["project"] = project.strip()
+                (d / "meta.json").write_text(json.dumps(meta, indent=1))
+            except (ValueError, OSError):
+                shutil.rmtree(d, ignore_errors=True)
+                continue
+            imported.append({"id": new_id, "name": meta.get("name", new_id)})
+    if not imported:
+        raise HTTPException(422, "no scans found in zip")
+    await hub.broadcast({"type": "list"})
+    return {"imported": imported}
+
+
+def _projects_file() -> Path:
+    return DATA.parent / "projects.json"
+
+
+def _stored_projects() -> list[str]:
+    try:
+        return json.loads(_projects_file().read_text())
+    except (OSError, ValueError):
+        return []
+
+
+def _save_projects(names: list[str]):
+    _projects_file().parent.mkdir(parents=True, exist_ok=True)
+    _projects_file().write_text(json.dumps(sorted(set(names))))
+
+
+def _all_metas() -> list[dict]:
+    return [_meta(d) for d in DATA.glob("*") if (d / "meta.json").exists()] if DATA.exists() else []
+
+
+def _project_name(name: str) -> str:
+    name = name.strip()
+    if not name or "/" in name or len(name) > 200:
+        raise HTTPException(422, "project name must be 1-200 characters and contain no '/'")
+    return name
+
+
+class ProjectBody(BaseModel):
+    name: str
+
+
+@app.get("/api/projects")
+def list_projects():
+    """A project is a home: a named group of rooms and objects. Empty projects exist until deleted."""
+    counts: dict[str, int] = {}
+    for m in _all_metas():
+        if m.get("project"):
+            counts[m["project"]] = counts.get(m["project"], 0) + 1
+    names = set(_stored_projects()) | set(counts)
+    return [{"name": n, "scans": counts.get(n, 0)} for n in sorted(names, key=str.lower)]
+
+
+@app.post("/api/projects")
+async def create_project(body: ProjectBody):
+    name = _project_name(body.name)
+    _save_projects(_stored_projects() + [name])
+    await hub.broadcast({"type": "list"})
+    return {"name": name}
+
+
+@app.patch("/api/projects/{name}")
+async def rename_project(name: str, body: ProjectBody):
+    new = _project_name(body.name)
+    for m in _all_metas():
+        if m.get("project") == name:
+            m["project"] = new
+            (DATA / m["id"] / "meta.json").write_text(json.dumps(m, indent=1))
+    _save_projects([new if n == name else n for n in _stored_projects()] + [new])
+    _save_projects([n for n in _stored_projects() if n != name])
+    await hub.broadcast({"type": "list"})
+    return {"name": new}
+
+
+@app.delete("/api/projects/{name}")
+async def delete_project(name: str, delete_scans: bool = False):
+    """Removes the project. Its rooms are kept (moved to 'no project') unless delete_scans is set."""
+    removed = 0
+    for m in _all_metas():
+        if m.get("project") == name:
+            if delete_scans:
+                shutil.rmtree(DATA / m["id"])
+                removed += 1
+            else:
+                m["project"] = ""
+                (DATA / m["id"] / "meta.json").write_text(json.dumps(m, indent=1))
+    _save_projects([n for n in _stored_projects() if n != name])
+    await hub.broadcast({"type": "list"})
+    return {"deleted": name, "scans_deleted": removed}
 
 
 @app.get("/api/scans/{scan_id}/photos/{name}")

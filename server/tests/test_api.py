@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -100,3 +101,91 @@ def test_photo_index_written_for_room_with_photos(client):
     sid = client.post("/api/scans", files=files).json()["id"]
     idx = client.get(f"/api/scans/{sid}/photo_index.json").json()
     assert len(idx) >= 1 and all(v["photos"][0]["photo"] == "p001.jpg" for v in idx.values())
+
+
+def _upload(client, name="A", project=None):
+    data = {"name": name}
+    if project:
+        data["project"] = project
+    return client.post("/api/scans", files={"json": ("s.json", FIX.read_bytes())}, data=data).json()["id"]
+
+
+def test_rename_and_project(client):
+    sid = _upload(client)
+    r = client.patch(f"/api/scans/{sid}", json={"name": "  Kitchen ", "project": "House"})
+    assert r.json()["name"] == "Kitchen" and r.json()["project"] == "House"
+    assert client.patch(f"/api/scans/{sid}", json={"name": ""}).status_code == 422
+    assert client.get("/api/scans").json()[0]["project"] == "House"
+
+
+def test_delete(client):
+    sid = _upload(client)
+    assert client.delete(f"/api/scans/{sid}").json() == {"deleted": sid}
+    assert client.get(f"/api/scans/{sid}").status_code == 404
+    assert client.delete(f"/api/scans/{sid}").status_code == 404
+
+
+def test_bundle_roundtrip_import(client):
+    import io, zipfile
+    sid = _upload(client, "Bedroom")
+    z = client.get(f"/api/scans/{sid}/bundle.zip")
+    assert z.status_code == 200 and "attachment" in z.headers["content-disposition"]
+    names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
+    assert f"{sid}/scan.json" in names and f"{sid}/meta.json" in names
+    r = client.post("/api/import", files={"file": ("b.zip", z.content)}, data={"project": "Restored"})
+    new = r.json()["imported"][0]
+    assert new["id"] != sid and new["name"] == "Bedroom"
+    meta = client.get(f"/api/scans/{new['id']}").json()
+    assert meta["project"] == "Restored" and meta["imported_from"] == sid
+    assert client.get(f"/api/scans/{new['id']}/room.ifc").status_code in (200, 404)  # depends on CLI availability
+    assert client.get(f"/api/scans/{new['id']}/scan.json").status_code == 200
+
+
+def test_export_project_filters(client):
+    import io, zipfile
+    a = _upload(client, "A", "P1")
+    _upload(client, "B", "P2")
+    z = zipfile.ZipFile(io.BytesIO(client.get("/api/export.zip", params={"project": "P1"}).content))
+    assert {n.split("/")[0] for n in z.namelist() if "/" in n} == {a}
+    assert client.get("/api/export.zip", params={"project": "nope"}).status_code == 404
+
+
+def test_import_ignores_unsafe_and_unknown_members(client):
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("x/meta.json", json.dumps({"id": "x", "name": "Evil", "created_at": 1}))
+        z.writestr("x/../../escape.txt", "no")
+        z.writestr("x/evil.sh", "no")
+        z.writestr("x/photos/../up.jpg", "no")
+        z.writestr("x/photos/ok.jpg", "yes")
+    r = client.post("/api/import", files={"file": ("e.zip", buf.getvalue())})
+    nid = r.json()["imported"][0]["id"]
+    assert client.get(f"/api/scans/{nid}/photos/ok.jpg").content == b"yes"
+    assert client.get(f"/api/scans/{nid}/evil.sh").status_code == 404
+    assert client.post("/api/import", files={"file": ("n.zip", b"junk")}).status_code == 422
+
+
+def test_project_lifecycle(client):
+    assert client.post("/api/projects", json={"name": "Home"}).json() == {"name": "Home"}
+    assert client.post("/api/projects", json={"name": "a/b"}).status_code == 422
+    kitchen = _upload(client, "Kitchen", "Home")
+    _upload(client, "Shed", "Garden")  # a project that exists only because a scan names it
+    assert {p["name"]: p["scans"] for p in client.get("/api/projects").json()} == {"Home": 1, "Garden": 1}
+    # rename moves every room with it
+    client.patch("/api/projects/Home", json={"name": "My House"})
+    assert client.get(f"/api/scans/{kitchen}").json()["project"] == "My House"
+    names = [p["name"] for p in client.get("/api/projects").json()]
+    assert "Home" not in names and "My House" in names
+    # delete keeps the rooms by default
+    client.delete("/api/projects/My House")
+    assert client.get(f"/api/scans/{kitchen}").json()["project"] == ""
+    # ...or removes them on request
+    client.delete("/api/projects/Garden", params={"delete_scans": True})
+    assert [m["name"] for m in client.get("/api/scans").json()] == ["Kitchen"]
+
+
+def test_move_room_between_projects(client):
+    sid = _upload(client, "Bath", "Upstairs")
+    client.patch(f"/api/scans/{sid}", json={"project": "Downstairs"})
+    assert {p["name"]: p["scans"] for p in client.get("/api/projects").json()} == {"Downstairs": 1}

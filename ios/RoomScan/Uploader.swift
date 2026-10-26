@@ -21,6 +21,7 @@ enum Uploader {
 
         field("name", name)
         field("kind", kind)
+        field("project", UserDefaults.standard.string(forKey: "project") ?? "")  // the home this room or object belongs to
         if let json { try file("json", json, "scan.json", "application/json") }
         if let usdz { try file("usdz", usdz, "scan.usdz", "model/vnd.usdz+zip") }
         for p in photos { try file("photos", p, p.lastPathComponent, p.pathExtension == "depth" ? "application/octet-stream" : "image/jpeg") }
