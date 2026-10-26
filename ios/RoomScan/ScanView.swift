@@ -14,6 +14,10 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate {
         captureView.delegate = self
     }
 
+    // RoomCaptureViewDelegate inherits NSCoding; this model is never archived.
+    required init?(coder: NSCoder) { nil }
+    func encode(with coder: NSCoder) {}
+
     func start() {
         jsonURL = nil; usdzURL = nil; result = nil; status = ""
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
