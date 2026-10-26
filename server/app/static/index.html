@@ -33,6 +33,10 @@
   .btn.on { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 16%, transparent); }
   .ok { color:var(--ok); } .error { color:var(--err); }
   .mute { color:var(--mute); }
+  body.embed { grid-template-columns:1fr; }
+  body.embed aside { border-right:0; border-bottom:1px solid var(--line); max-height:28vh; overflow:auto; padding:8px 12px; }
+  body.embed h1 { display:none; }
+  .hint { font-size:12px; color:var(--mute); margin:4px 0 0; }
 </style>
 </head>
 <body>
@@ -49,7 +53,7 @@
     <div class="row" id="actions"></div>
     <div class="row" id="modes" hidden></div>
     <div class="grid">
-      <div><div id="view"></div></div>
+      <div><div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
       <div><img id="plan" alt="Plan"></div>
     </div>
     <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs"></div></div>
@@ -287,43 +291,76 @@ function show3d(group, keepView = false) {
   const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(3, 8, 5); sc.add(sun);
   sc.add(group);
   const cam = new THREE.PerspectiveCamera(50, W / H, 0.01, 1000);
-  let yaw = 0.8, pitch = 0.7, dist = 5, r = 5;
+  let dist = 5, r = 5;
   const c = new THREE.Vector3();
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.7, 0.8, 0, "YXZ"));
+  const q0 = q.clone();
   const place = () => {
-    cam.position.set(c.x + dist * Math.cos(pitch) * Math.sin(yaw), c.y + dist * Math.sin(pitch), c.z + dist * Math.cos(pitch) * Math.cos(yaw));
-    cam.lookAt(c);
+    cam.quaternion.copy(q);
+    cam.position.copy(c).add(new THREE.Vector3(0, 0, dist).applyQuaternion(q));
   };
-  const fit = () => {  // frame the current model
+  const fit = () => {  // frame the current model and reset the view
     const box = new THREE.Box3().setFromObject(V.group);
     if (box.isEmpty()) return false;
     box.getCenter(c); r = box.getSize(new THREE.Vector3()).length() || 5; dist = r * 1.1;
+    q.copy(q0);
     cam.near = r / 1000; cam.far = r * 20; cam.updateProjectionMatrix();
     place();
     return true;
   };
   V = { renderer, scene: sc, cam, group, fit: null };
   if (!fit()) V.fit = fit;  // empty first live frame: frame on the first one that has geometry
-  let drag = null;
+  // Controls: drag = rotate (no limits, so it can be flipped); right-drag / shift-drag / two fingers = pan;
+  // wheel / pinch = zoom; double-click or double-tap = reset. Tap a red arrow to open its photo.
   const cv = renderer.domElement;
-  cv.onpointerdown = e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); };
-  let down = null;
-  cv.addEventListener("pointerdown", e => down = [e.clientX, e.clientY]);
-  cv.onpointerup = e => {
-    drag = null;
-    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;  // it was a drag, not a click
-    const rect = cv.getBoundingClientRect();
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
-    const hit = ray.intersectObjects(V.group.children.filter(o => o.userData.photo))[0];
-    if (hit) openPhoto(...hit.object.userData.photo);
+  cv.style.touchAction = "none";
+  const ptrs = new Map();
+  let downAt = null, lastPinch = 0, lastMid = null, panning = false;
+  const pan = (dx, dy) => {
+    const k = 2 * dist * Math.tan(cam.fov * Math.PI / 360) / cv.clientHeight;
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q), up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+    c.addScaledVector(right, -dx * k).addScaledVector(up, dy * k); place();
+  };
+  const rotate = (dx, dy) => {
+    q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -dx * 0.008));
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -dy * 0.008));
+    q.normalize(); place();
+  };
+  cv.onpointerdown = e => {
+    cv.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    panning = e.button === 2 || e.shiftKey || e.ctrlKey;
+    if (ptrs.size === 1) downAt = [e.clientX, e.clientY];
+    if (ptrs.size === 2) { downAt = null; const [a, b] = [...ptrs.values()]; lastPinch = Math.hypot(a[0] - b[0], a[1] - b[1]); lastMid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; }
   };
   cv.onpointermove = e => {
-    if (!drag) return;
-    yaw -= (e.clientX - drag[0]) * 0.01;
-    pitch = Math.max(0.05, Math.min(1.5, pitch + (e.clientY - drag[1]) * 0.01));
-    drag = [e.clientX, e.clientY]; place();
+    const prev = ptrs.get(e.pointerId);
+    if (!prev) return;
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (ptrs.size === 1) {
+      (panning ? pan : rotate)(e.clientX - prev[0], e.clientY - prev[1]);
+    } else if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      const d = Math.hypot(a[0] - b[0], a[1] - b[1]), mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      if (lastPinch > 0) { dist = Math.max(r * 0.05, Math.min(r * 8, dist * lastPinch / d)); }
+      pan(mid[0] - lastMid[0], mid[1] - lastMid[1]);
+      lastPinch = d; lastMid = mid;
+    }
   };
-  cv.onwheel = e => { e.preventDefault(); dist = Math.max(r * 0.1, dist * (1 + Math.sign(e.deltaY) * 0.1)); place(); };
+  cv.onpointerup = cv.onpointercancel = e => {
+    ptrs.delete(e.pointerId);
+    if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 4) {  // a tap, not a drag
+      const rect = cv.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
+      const hit = ray.intersectObjects(V.group.children.filter(o => o.userData.photo))[0];
+      if (hit) openPhoto(...hit.object.userData.photo);
+    }
+    downAt = null; lastPinch = 0;
+  };
+  cv.oncontextmenu = e => e.preventDefault();
+  cv.ondblclick = () => V.fit && V.fit() || fit();
+  cv.onwheel = e => { e.preventDefault(); dist = Math.max(r * 0.05, Math.min(r * 8, dist * (1 + Math.sign(e.deltaY) * 0.1))); place(); };
   const loop = () => { renderer.render(sc, cam); raf = requestAnimationFrame(loop); };
   loop();
 }
@@ -362,7 +399,9 @@ function connect() {
 }
 connect();
 
-loadList();
+const params = new URLSearchParams(location.search);
+if (params.get("embed")) document.body.classList.add("embed");  // inside the iPhone app: no list, just the viewer
+loadList().then(() => { if (params.get("scan")) show(params.get("scan")); });
 </script>
 </body>
 </html>

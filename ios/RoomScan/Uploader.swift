@@ -1,8 +1,9 @@
 import Foundation
 
 enum Uploader {
+    @discardableResult
     static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room",
-                       photos: [URL] = [], photosMeta: URL? = nil) async throws {
+                       photos: [URL] = [], photosMeta: URL? = nil) async throws -> String? {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else {
             throw URLError(.badURL)
         }
@@ -30,10 +31,11 @@ enum Uploader {
         req.httpMethod = "POST"
         req.timeoutInterval = 300
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let (_, resp) = try await URLSession.shared.upload(for: req, from: body)
+        let (data, resp) = try await URLSession.shared.upload(for: req, from: body)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["id"] as? String
     }
 
     /// Fire-and-forget partial scan for the live web view. Failures are ignored: the final upload is what counts.

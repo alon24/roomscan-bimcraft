@@ -118,7 +118,8 @@ final class ObjectScanModel: ObservableObject {
         guard let usdzURL else { return }
         status = "Uploading…"
         do {
-            try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL)
+            let id = try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL)
+            if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
             status = "Upload failed: \(error.localizedDescription) — use Share"

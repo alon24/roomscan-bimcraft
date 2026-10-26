@@ -36,6 +36,9 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     @Published var jsonURL: URL?
     @Published var usdzURL: URL?
     @Published var photoURLs: [URL] = []
+    @Published var hud = ""
+    private var liveRoom: CapturedRoom?
+    private var tooDark = false
     @Published var photosMetaURL: URL?
     private var photoDir: URL?
     private var photoMetas: [PhotoMeta] = []
@@ -64,14 +67,38 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("room-photos-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         photoDir = dir
-        photoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.capturePhoto() }
+        photoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateHUD(); self?.capturePhoto() }
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         scanning = true
     }
 
+    /// Light, tracking and live measurements, so a bad scan is noticed while there is still time to fix it.
+    /// Ambient intensity is about 1000 in a well-lit room; LiDAR works in the dark, but the photos do not.
+    private func updateHUD() {
+        guard let frame = captureView.captureSession.arSession.currentFrame else { return }
+        var parts: [String] = []
+        if let light = frame.lightEstimate?.ambientIntensity {
+            tooDark = light < 150
+            parts.append(light < 150 ? "Too dark for good photos (\(Int(light)))" : light < 400 ? "Dim light (\(Int(light)))" : "Light OK")
+        }
+        switch frame.camera.trackingState {
+        case .normal: break
+        case .notAvailable: parts.append("Tracking lost")
+        case .limited(.excessiveMotion): parts.append("Moving too fast")
+        case .limited(.insufficientFeatures): parts.append("Not enough detail or light")
+        case .limited: parts.append("Tracking limited")
+        }
+        if let room = liveRoom, !room.walls.isEmpty {
+            let longest = room.walls.map { $0.dimensions.x }.max() ?? 0
+            let height = room.walls.map { $0.dimensions.y }.max() ?? 0
+            parts.append(String(format: "%d walls · longest %.2f m · height %.2f m", room.walls.count, longest, height))
+        }
+        hud = parts.joined(separator: " · ")
+    }
+
     /// A real photo whenever the camera has moved ~25 cm or turned ~15 degrees, so every view of the room is covered.
     private func capturePhoto() {
-        guard let dir = photoDir, photoMetas.count < maxPhotos,
+        guard let dir = photoDir, photoMetas.count < maxPhotos, !tooDark,
               let frame = captureView.captureSession.arSession.currentFrame,
               case .normal = frame.camera.trackingState else { return }
         let t = frame.camera.transform
@@ -137,6 +164,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
 
     // MARK: RoomCaptureSessionDelegate: stream the partial room to the web UI (about 2 per second)
     func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
+        liveRoom = room
         guard liveStream, Date().timeIntervalSince(lastLive) > 0.5,
               let data = try? JSONEncoder().encode(room) else { return }
         lastLive = Date()
@@ -167,8 +195,9 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         guard let jsonURL else { return }
         status = "Uploading…"
         do {
-            try await Uploader.upload(json: jsonURL, usdz: usdzURL, name: "Scan \(Date().formatted())", server: server,
+            let id = try await Uploader.upload(json: jsonURL, usdz: usdzURL, name: "Scan \(Date().formatted())", server: server,
                                       photos: photoURLs, photosMeta: photosMetaURL)
+            if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
             status = "Upload failed: \(error.localizedDescription) — use Share"
@@ -190,6 +219,7 @@ struct ScanView: View {
         ZStack(alignment: .bottom) {
             CaptureViewRepresentable(view: model.captureView).ignoresSafeArea()
             VStack(spacing: 8) {
+                if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
                 HStack {
                     if model.scanning {
