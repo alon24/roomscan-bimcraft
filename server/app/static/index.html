@@ -133,15 +133,22 @@ function drawMesh(m) {
   show3d(mesh);
 }
 
-function draw(scan) {
+function draw(scan, keepView = false) {
   const group = new THREE.Group();
   for (const w of scan.walls || []) group.add(surfaceMesh(w, 0xb8bec8, 0.75));
   for (const d of scan.doors || []) group.add(surfaceMesh(d, 0xb5733a, 1));
   for (const w of scan.windows || []) group.add(surfaceMesh(w, 0x4aa3df, 0.7));
-  show3d(group);
+  show3d(group, keepView);
 }
 
-function show3d(group) {
+let V = null;  // persistent 3D view: {scene, cam, group, place, fit}
+
+function show3d(group, keepView = false) {
+  if (keepView && V && V.renderer.domElement.isConnected) {  // live frame: swap the model, keep the camera
+    V.scene.remove(V.group); V.scene.add(group); V.group = group;
+    if (V.fit) { V.fit(); V.fit = null; }
+    return;
+  }
   cancelAnimationFrame(raf);
   const el = $("view");
   if (renderer) { renderer.dispose(); el.replaceChildren(); }
@@ -154,15 +161,23 @@ function show3d(group) {
   sc.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(3, 8, 5); sc.add(sun);
   sc.add(group);
-  const box = new THREE.Box3().setFromObject(group);
-  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() || 5;
-  const cam = new THREE.PerspectiveCamera(50, W / H, r / 1000, r * 20);
-  let yaw = 0.8, pitch = 0.7, dist = r * 1.1;
+  const cam = new THREE.PerspectiveCamera(50, W / H, 0.01, 1000);
+  let yaw = 0.8, pitch = 0.7, dist = 5, r = 5;
+  const c = new THREE.Vector3();
   const place = () => {
     cam.position.set(c.x + dist * Math.cos(pitch) * Math.sin(yaw), c.y + dist * Math.sin(pitch), c.z + dist * Math.cos(pitch) * Math.cos(yaw));
     cam.lookAt(c);
   };
-  place();
+  const fit = () => {  // frame the current model
+    const box = new THREE.Box3().setFromObject(V.group);
+    if (box.isEmpty()) return false;
+    box.getCenter(c); r = box.getSize(new THREE.Vector3()).length() || 5; dist = r * 1.1;
+    cam.near = r / 1000; cam.far = r * 20; cam.updateProjectionMatrix();
+    place();
+    return true;
+  };
+  V = { renderer, scene: sc, cam, group, fit: null };
+  if (!fit()) V.fit = fit;  // empty first live frame: frame on the first one that has geometry
   let drag = null;
   const cv = renderer.domElement;
   cv.onpointerdown = e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); };
@@ -177,6 +192,40 @@ function show3d(group) {
   const loop = () => { renderer.render(sc, cam); raf = requestAnimationFrame(loop); };
   loop();
 }
+
+// ---- live updates: new scans appear by themselves; a scan in progress is drawn as it grows
+let live = false;
+
+function enterLive() {
+  if (live) return;
+  live = true; current = null;
+  V = null;  // force a fresh scene sized to the page
+  $("hint").hidden = true; $("detail").hidden = false;
+  $("title").textContent = "● Live scan";
+  $("status").textContent = "scanning"; $("status").className = "";
+  $("actions").replaceChildren(); $("plan").hidden = true; $("log").textContent = "Receiving from the phone…";
+  loadList();
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`);
+  ws.onmessage = async ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "live") {
+      enterLive();
+      draw(m.room, true);
+    } else if (m.type === "live_end") {
+      live = false;
+    } else if (m.type === "scan") {
+      const wasLive = live || !current;
+      live = false;
+      await loadList();
+      if (wasLive || m.id === current) show(m.id);
+    }
+  };
+  ws.onclose = () => setTimeout(connect, 2000);
+}
+connect();
 
 loadList();
 </script>

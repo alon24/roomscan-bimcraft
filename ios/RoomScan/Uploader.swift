@@ -32,4 +32,14 @@ enum Uploader {
             throw URLError(.badServerResponse)
         }
     }
+
+    /// Fire-and-forget partial scan for the live web view. Failures are ignored: the final upload is what counts.
+    static func live(json: Data, server: String) async {
+        guard let url = URL(string: server)?.appendingPathComponent("api/live") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 5
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try? await URLSession.shared.upload(for: req, from: json)
+    }
 }

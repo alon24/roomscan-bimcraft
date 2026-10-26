@@ -12,6 +12,8 @@ FIX = Path(__file__).parent / "fixtures" / "synthetic_room.json"
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    main.hub.live = None
+    main.hub.viewers.clear()
     return TestClient(main.app)
 
 
@@ -54,3 +56,23 @@ def test_object_upload_and_rescale(client, tmp_path):
 def test_object_upload_needs_usdz(client):
     r = client.post("/api/scans", data={"kind": "object"})
     assert r.status_code == 422
+
+
+def test_live_frames_and_scan_events_reach_viewers(client):
+    import json
+    room = json.loads(FIX.read_text())
+    with client.websocket_connect("/ws/events") as ws:
+        assert client.post("/api/live", json=room).json()["viewers"] == 1
+        msg = ws.receive_json()
+        assert msg["type"] == "live" and len(msg["room"]["walls"]) == 4
+        sid = client.post("/api/scans", files={"json": ("s.json", FIX.read_bytes())}).json()["id"]
+        msg = ws.receive_json()
+        assert msg["type"] == "scan" and msg["id"] == sid
+        assert ws.receive_json() == {"type": "live_end"}
+
+
+def test_late_viewer_gets_last_live_frame(client):
+    import json
+    client.post("/api/live", json=json.loads(FIX.read_text()))
+    with client.websocket_connect("/ws/events") as ws:
+        assert ws.receive_json()["type"] == "live"

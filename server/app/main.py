@@ -4,7 +4,9 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+import anyio.to_thread
+from anyio import from_thread
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -16,6 +18,24 @@ ARTIFACTS = {"scan.json", "scan.usdz", "script.txt", "room.bimcraft", "room.ifc"
              "model.stl", "model.3mf", "preview.json", "report.json"}
 
 app = FastAPI(title="roomscan-bimcraft")
+
+
+class Hub:
+    """Fan-out of events to every connected web page. Keeps the latest live room frame for late joiners."""
+
+    def __init__(self):
+        self.viewers: set[WebSocket] = set()
+        self.live: dict | None = None
+
+    async def broadcast(self, msg: dict):
+        for ws in list(self.viewers):
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                self.viewers.discard(ws)
+
+
+hub = Hub()
 
 
 def _dir(scan_id: str) -> Path:
@@ -75,7 +95,10 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
         with open(d / "scan.usdz", "wb") as f:
             shutil.copyfileobj(usdz.file, f)
     (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale, "created_at": time.time()}))
-    meta = _convert(d)
+    meta = await anyio.to_thread.run_sync(_convert, d)
+    hub.live = None
+    await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
+    await hub.broadcast({"type": "live_end"})
     return {"id": scan_id, "status": meta["status"]}
 
 
@@ -97,7 +120,32 @@ def reconvert(scan_id: str, scale: float | None = None):
         meta = _meta(d)
         meta["scale"] = scale
         (d / "meta.json").write_text(json.dumps(meta))
-    return _convert(d)
+    meta = _convert(d)
+    from_thread.run(hub.broadcast, {"type": "scan", "id": scan_id, "status": meta["status"]})
+    return meta
+
+
+@app.post("/api/live")
+async def live(room: dict = Body(...)):
+    """Partial CapturedRoom from a scan in progress; shown live in the web UI, never stored."""
+    hub.live = room
+    await hub.broadcast({"type": "live", "room": room})
+    return {"viewers": len(hub.viewers)}
+
+
+@app.websocket("/ws/events")
+async def events(ws: WebSocket):
+    await ws.accept()
+    hub.viewers.add(ws)
+    if hub.live is not None:
+        await ws.send_json({"type": "live", "room": hub.live})
+    try:
+        while True:
+            await ws.receive_text()  # viewers send nothing; this notices disconnects
+    except WebSocketDisconnect:
+        pass
+    finally:
+        hub.viewers.discard(ws)
 
 
 @app.get("/api/scans/{scan_id}/{file}")

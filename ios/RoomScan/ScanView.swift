@@ -1,17 +1,21 @@
 import SwiftUI
 import RoomPlan
 
-final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate {
+final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, RoomCaptureSessionDelegate {
     let captureView = RoomCaptureView(frame: .zero)
     @Published var scanning = false
     @Published var status = ""
     @Published var jsonURL: URL?
     @Published var usdzURL: URL?
     private var result: CapturedRoom?
+    private var lastLive = Date.distantPast
+    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("liveStream") private var liveStream = true
 
     override init() {
         super.init()
         captureView.delegate = self
+        captureView.captureSession.delegate = self
     }
 
     // RoomCaptureViewDelegate inherits NSCoding; this model is never archived.
@@ -27,6 +31,15 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate {
     func stop() {
         captureView.captureSession.stop()
         scanning = false
+    }
+
+    // MARK: RoomCaptureSessionDelegate: stream the partial room to the web UI (about 2 per second)
+    func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
+        guard liveStream, Date().timeIntervalSince(lastLive) > 0.5,
+              let data = try? JSONEncoder().encode(room) else { return }
+        lastLive = Date()
+        let server = serverURL
+        Task.detached { await Uploader.live(json: data, server: server) }
     }
 
     // MARK: RoomCaptureViewDelegate
