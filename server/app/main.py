@@ -74,7 +74,14 @@ def _convert(d: Path) -> dict:
         (d / "meta.json").write_text(json.dumps(meta, indent=1))
         return meta
     if meta.get("kind") == "object":
-        ok, out = objects.convert_object(d / "scan.usdz", d, meta.get("scale", 1.0))
+        scale = meta.get("scale", 1.0)
+        if meta.get("real_height_mm"):  # a turntable scan has no scale of its own: size it from the real height
+            objects.convert_object(d / "scan.usdz", d, 1.0)
+            z = json.loads((d / "report.json").read_text()).get("size_mm", [0, 0, 0])[2] if (d / "report.json").exists() else 0
+            if z > 0:
+                scale = meta["real_height_mm"] / z
+                meta["scale"] = scale
+        ok, out = objects.convert_object(d / "scan.usdz", d, scale)
         meta["status"] = "ok" if (d / "model.stl").exists() else "error"
         meta["printable"] = ok
         meta["log"] = out
@@ -103,7 +110,7 @@ def _convert(d: Path) -> dict:
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
-                 kind: str = Form("room"), scale: float = Form(1.0), project: str = Form(""),
+                 kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     if kind not in ("room", "object", "mesh"):
         raise HTTPException(422, "kind must be room, object or mesh")
@@ -139,7 +146,8 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
         if photos_meta is not None:
             (d / "photos.json").write_bytes(await photos_meta.read())
     (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale,
-                                             "photo_count": photo_count, "project": project.strip(), "created_at": time.time()}))
+                                             "photo_count": photo_count, "project": project.strip(), "created_at": time.time(),
+                                             **({"real_height_mm": real_height_mm} if real_height_mm > 0 else {})}))
     meta = await anyio.to_thread.run_sync(_convert, d)
     hub.live = None
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
@@ -164,6 +172,7 @@ def reconvert(scan_id: str, scale: float | None = None):
     if scale is not None:
         meta = _meta(d)
         meta["scale"] = scale
+        meta.pop("real_height_mm", None)  # a scale typed by hand wins over the one worked out from the real height
         (d / "meta.json").write_text(json.dumps(meta))
     meta = _convert(d)
     from_thread.run(hub.broadcast, {"type": "scan", "id": scan_id, "status": meta["status"]})

@@ -17,6 +17,8 @@ final class ObjectScanModel: ObservableObject {
     @Published var photosMetaURL: URL?
     private var sampledIndexes: [Int] = []
     private var photoSession: PhotogrammetrySession?
+    private var galleryDir: URL?          // the original photos, for the web gallery, when the build uses masked copies
+    var realHeightMM: Double?             // turntable scans have no scale of their own; the server rescales to this height
     private var cancelled = false
 
     private var imagesDir: URL?
@@ -33,6 +35,7 @@ final class ObjectScanModel: ObservableObject {
     }
 
     func begin() {
+        galleryDir = nil
         releaseSession()
         state = .initializing
         usdzURL = nil; status = ""; progress = 0; feedback = ""
@@ -117,12 +120,33 @@ final class ObjectScanModel: ObservableObject {
     func buildFromTurntable(_ turntable: TurntableCapture) {
         guard let dir = turntable.imagesDir else { return }
         turntable.shutdown()
-        imagesDir = dir
         usdzURL = nil; status = ""; progress = 0
+        reconstructing = true
         Task {
+            // Remove the static background first: otherwise photogrammetry matches the background, not the part.
+            let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension.lowercased() == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            status = "Removing the background from \(files.count) photos…"
+            let result = await SubjectMasker.mask(images: files) { [weak self] n, total in
+                Task { @MainActor in self?.progress = Double(n) / Double(max(total, 1)); self?.status = "Removing the background \(n)/\(total)…" }
+            }
+            Reporter.log("turntable: masked \(result?.masked ?? 0) of \(files.count) photos")
+            if let result { imagesDir = result.dir; galleryDir = dir } else { imagesDir = dir; galleryDir = nil }
             await reconstruct(sequential: true)
             if usdzURL != nil { turntable.reset() }
         }
+    }
+
+    /// Abandon whatever is going on (capture, build, result, turntable photos) and return to the start.
+    func startOver(_ turntable: TurntableCapture) {
+        cancelled = true
+        photoSession?.cancel()
+        session?.cancel()
+        releaseSession()
+        reconstructing = false
+        feedback = ""
+        turntable.reset()
+        resetResult()
     }
 
     /// Clear the finished or failed result so a new scan can start.
@@ -146,7 +170,7 @@ final class ObjectScanModel: ObservableObject {
             releaseSession()
             return
         }
-        photoURLs = samplePhotos(from: imagesDir)
+        photoURLs = samplePhotos(from: galleryDir ?? imagesDir)
         reconstructing = true
         cancelled = false
         status = "Building model…"
@@ -193,7 +217,7 @@ final class ObjectScanModel: ObservableObject {
         guard let usdzURL else { return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL)
+            let id = try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL, realHeightMM: realHeightMM)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
@@ -208,6 +232,7 @@ struct ObjectScanView: View {
     @StateObject private var turntable = TurntableCapture()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 walk around the part, 1 turntable (phone fixed, part turns)
+    @State private var heightText = ""
 
     private var idle: Bool { model.session == nil && !model.reconstructing && model.usdzURL == nil }
 
@@ -215,7 +240,7 @@ struct ObjectScanView: View {
         if idle && mode == 1 {
             if turntable.running { return "Capturing every \(String(format: "%.1f", turntable.interval)) s. Let the part turn once or twice, slowly, then tap Stop." }
             if turntable.count > 0 { return "\(turntable.count) photos taken. Tap Build model, or lay the part on another side and tap Add pass to cover the underside." }
-            return "Put the phone on a stand 20 to 40 cm from the plate, with a plain, empty background behind the part and steady light. Start the plate turning slowly, then tap Start."
+            return "Phone on a stand, 20 to 40 cm from the plate. Hang a plain sheet behind the part so nothing else is in the picture, keep hands out of view, and use steady light. A plain white part has nothing to match: stick on some tape or paper marks. Start the plate turning slowly, then tap Start."
         }
         if !model.supported { return "Object Capture needs an iPhone with LiDAR." }
         if model.reconstructing { return "Building the 3D model on the phone. Keep the app open; this takes a few minutes." }
@@ -249,6 +274,13 @@ struct ObjectScanView: View {
                 Color(.systemBackground).ignoresSafeArea()
             }
             VStack(spacing: 8) {
+                if !idle || turntable.count > 0 || !model.status.isEmpty {
+                    HStack {
+                        Spacer()
+                        Button("Start over") { model.startOver(turntable) }
+                            .buttonStyle(.bordered).tint(.red).font(.caption)
+                    }
+                }
                 if idle {
                     Picker("Mode", selection: $mode) {
                         Text("Walk around").tag(0)
@@ -260,6 +292,9 @@ struct ObjectScanView: View {
                 if !guide.isEmpty { Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10)) }
                 Spacer()
                 if idle && mode == 1 {
+                    TextField("Real height of the part in mm (sets the size)", text: $heightText)
+                        .keyboardType(.decimalPad).textFieldStyle(.roundedBorder).font(.caption)
+                        .onChange(of: heightText) { _, v in model.realHeightMM = Double(v.replacingOccurrences(of: ",", with: ".")) }
                     HStack {
                         Text("\(turntable.count) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
                         if !turntable.running {
@@ -291,9 +326,9 @@ struct ObjectScanView: View {
                         if model.reconstructing {
                             Button("Cancel build") { model.cancelBuild() }
                         } else if mode == 1 {
-                            Button("New turntable scan") { model.resetResult(); turntable.reset() }
+                            Button("New scan") { model.startOver(turntable) }
                         } else {
-                            Button("New object") { model.begin() }
+                            Button(model.usdzURL != nil ? "New scan" : "New object") { model.begin() }
                         }
                     } else if !model.reconstructing {
                         switch model.session?.state ?? .initializing {

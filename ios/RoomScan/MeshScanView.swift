@@ -20,6 +20,12 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var recorder: PhotoRecorder?
     private var timer: Timer?
     private var ticks = 0
+    struct Dot { var x: Float; var y: Float; var color: SIMD3<Float> }
+    @Published var dots: [Dot] = []                // the captured points as the camera sees them now, drawn flat on top of the picture
+    @Published var pointCount = 0
+    private var overlayTimer: Timer?
+    private var lastCount = 0
+    private var stalled = 0
     let guided = CoverageTracker()
     @Published var guidedActive = false
     private var coverageTimer: Timer?
@@ -47,11 +53,46 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         guided.attach(to: sceneView.scene)
     }
 
+    /// Show the camera as soon as the tab opens, so it is clear the app is alive before anything is scanned.
+    func startPreview() {
+        guard !scanning, plyURL == nil else { return }
+        let cfg = ARWorldTrackingConfiguration()
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
+        sceneView.session.run(cfg)
+    }
+
+    func pausePreview() {
+        if !scanning { sceneView.session.pause() }
+    }
+
+    /// Project the stored points into the current camera view. Plain 2D dots cannot fail to render the way 3D geometry can.
+    private func refreshOverlay() {
+        guard scanning, let frame = sceneView.session.currentFrame, !cloud.isEmpty else { dots = []; return }
+        let size = sceneView.bounds.size
+        guard size.width > 0 else { return }
+        let inv = simd_inverse(frame.camera.transform)
+        let step = max(1, cloud.count / 5000)
+        var out = [Dot]()
+        out.reserveCapacity(5200)
+        for i in stride(from: 0, to: cloud.count, by: step) {
+            let p = cloud[i]
+            let c = inv * SIMD4<Float>(p.x, p.y, p.z, 1)
+            guard c.z < -0.1 else { continue }                                   // in front of the camera
+            let sp = frame.camera.projectPoint(p, orientation: .portrait, viewportSize: size)
+            guard sp.x >= 0, sp.x <= size.width, sp.y >= 0, sp.y <= size.height else { continue }
+            out.append(Dot(x: Float(sp.x), y: Float(sp.y), color: cloudColours[i]))
+        }
+        dots = out
+        pointCount = cloud.count
+    }
+
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""
         recorder = PhotoRecorder()
         guided.begin()
         guidedActive = guided.isActive
+        overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
+        lastCount = 0; stalled = 0; pointCount = 0; dots = []
         coverageTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.guided.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
@@ -97,8 +138,10 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             Reporter.log("mesh t=\(ticks / 2)s frameAnchors=\(frame.anchors.count) meshPatches=\(all.count) points=\(cloud.count) tracking=\(frame.camera.trackingState) depth=\(frame.sceneDepth != nil) photos=\(recorder?.count ?? 0)")
         }
         let tris = all.reduce(0) { $0 + $1.geometry.faces.count }
-        refreshCloud()
         parts.append("\(cloud.count / 1000)k points · \(all.count) patches · \(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
+        stalled = cloud.count == lastCount ? stalled + 1 : 0
+        lastCount = cloud.count
+        if stalled >= 4 && !guided.isActive { parts.append("Nothing new captured: move slowly, 0.3 to 3 m from a surface") }
         hud = parts.joined(separator: " · ")
     }
 
@@ -107,6 +150,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         timer?.invalidate(); timer = nil
         cloudTimer?.invalidate(); cloudTimer = nil
         coverageTimer?.invalidate(); coverageTimer = nil
+        overlayTimer?.invalidate(); overlayTimer = nil
+        dots = []; pointCount = 0
         sceneView.session.pause()
         guided.end()
         guidedActive = false
@@ -124,6 +169,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         timer?.invalidate(); timer = nil
         cloudTimer?.invalidate(); cloudTimer = nil
         coverageTimer?.invalidate(); coverageTimer = nil
+        overlayTimer?.invalidate(); overlayTimer = nil
+        dots = []
         guided.end()
         guidedActive = false
         lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
@@ -441,6 +488,15 @@ struct MeshScanView: View {
             } else {
                 ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
             }
+            if model.scanning {
+                Canvas { ctx, _ in
+                    for d in model.dots {
+                        ctx.fill(Path(ellipseIn: CGRect(x: CGFloat(d.x) - 2.5, y: CGFloat(d.y) - 2.5, width: 5, height: 5)),
+                                 with: .color(Color(red: Double(d.color.x), green: Double(d.color.y), blue: Double(d.color.z))))
+                    }
+                }
+                .ignoresSafeArea().allowsHitTesting(false)
+            }
             TraceTapLayer(tracker: model.guided, view: model.sceneView)
             VStack(spacing: 8) {
                 if !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
@@ -452,7 +508,11 @@ struct MeshScanView: View {
                     .pickerStyle(.segmented)
                 }
                 if !model.guidedActive {
-                    Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+                if model.scanning && !model.guidedActive {
+                    Text("\(model.pointCount) points captured").font(.title3.weight(.bold)).padding(8)
+                        .background(.regularMaterial, in: Capsule())
                 }
                 Spacer()
                 if model.guidedActive && model.scanning {
@@ -479,6 +539,8 @@ struct MeshScanView: View {
             }
             .padding()
         }
+        .onAppear { model.startPreview() }
+        .onDisappear { model.pausePreview() }
     }
 }
 
