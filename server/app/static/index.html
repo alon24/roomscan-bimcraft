@@ -154,7 +154,7 @@ async function loadList() {
     for (const s of g.items) {
       const li = document.createElement("li"), b = document.createElement("button");
       b.className = s.id === current ? "sel" : "";
-      b.textContent = (s.kind === "object" ? "◆ " : "▢ ") + s.name;
+      b.textContent = (s.kind === "object" ? "◆ " : s.kind === "mesh" ? "◉ " : "▢ ") + s.name;
       const small = document.createElement("small");
       small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?");
       b.append(small); b.onclick = () => show(s.id);
@@ -189,12 +189,12 @@ async function show(id) {
   $("title").textContent = meta.name;
   $("status").textContent = meta.status; $("status").className = meta.status;
   $("log").textContent = meta.log || "";
-  const isObj = meta.kind === "object";
-  $("plan").hidden = isObj;
-  $("plan").src = !isObj && meta.status === "ok" ? `/api/scans/${id}/plan.png?t=${Date.now()}` : "";
+  const isObj = meta.kind === "object", isMesh = meta.kind === "mesh";
+  $("plan").hidden = isObj || isMesh;
+  $("plan").src = !isObj && !isMesh && meta.status === "ok" ? `/api/scans/${id}/plan.png?t=${Date.now()}` : "";
   const actions = $("actions");
   actions.replaceChildren();
-  for (const f of isObj ? ["model.stl", "model.3mf"] : ["room.bimcraft", "room.ifc", "plan.png", "script.txt", "scan.json"]) {
+  for (const f of isMesh ? ["colored.ply", "scan.ply"] : isObj ? ["model.stl", "model.3mf"] : ["room.bimcraft", "room.ifc", "plan.png", "script.txt", "scan.json"]) {
     const a = document.createElement("a");
     a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}`; a.download = f;
     actions.append(a);
@@ -226,6 +226,16 @@ async function show(id) {
     }
   }, "danger");
   loadList();
+  if (isMesh) {
+    await loadPhotos(meta);
+    if (meta.status === "ok") {
+      const r = await (await fetch(`/api/scans/${id}/report.json`)).json();
+      $("log").textContent = `Size: ${r.size_m.join(" × ")} m\nTriangles: ${r.faces}\nColoured from photos: ${Math.round(r.coloured * 100)}%\n\n` + (meta.log || "");
+      try { drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r); }
+      catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
+    }
+    return;
+  }
   if (isObj) {
     await loadPhotos(meta);
     if (meta.status === "ok") {
@@ -377,6 +387,19 @@ function drawTextured(id, m) {
   const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map, side: THREE.DoubleSide }));
   if (m.zup) mesh.rotation.x = -Math.PI / 2;
   show3d(mesh);
+}
+
+// A phone mesh scan: positions | rgb (padded to 4 bytes) | triangle indices, coloured from the photos.
+function drawColoured(buf, r) {
+  const n = r.vertices, colourBytes = Math.ceil(n * 3 / 4) * 4;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(buf, 0, n * 3), 3));
+  const rgb = new Uint8Array(buf, n * 12, n * 3), lin = new Float32Array(n * 3);
+  for (let i = 0; i < lin.length; i++) lin[i] = Math.pow(rgb[i] / 255, 2.2);  // photo colours are sRGB, vertex colours are read as linear
+  g.setAttribute("color", new THREE.BufferAttribute(lin, 3));
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, n * 12 + colourBytes, r.faces * 3), 1));
+  const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  show3d(mesh);  // ARKit world is already Y-up, like three.js
 }
 
 function drawMesh(m) {

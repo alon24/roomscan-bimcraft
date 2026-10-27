@@ -16,11 +16,11 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import convert, objects, photos as photo_index
+from . import convert, meshscan, objects, photos as photo_index
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
-ARTIFACTS = {"scan.json", "scan.usdz", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
+ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json"}
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
@@ -66,6 +66,13 @@ def _meta(d: Path) -> dict:
 def _convert(d: Path) -> dict:
     meta = _meta(d)
     log: list[str] = []
+    if meta.get("kind") == "mesh":
+        ok, out = meshscan.convert_mesh(d, meta.get("scale", 1.0))
+        meta["status"] = "ok" if ok else "error"
+        meta["log"] = out
+        meta["converted_at"] = time.time()
+        (d / "meta.json").write_text(json.dumps(meta, indent=1))
+        return meta
     if meta.get("kind") == "object":
         ok, out = objects.convert_object(d / "scan.usdz", d, meta.get("scale", 1.0))
         meta["status"] = "ok" if (d / "model.stl").exists() else "error"
@@ -95,11 +102,13 @@ def _convert(d: Path) -> dict:
 
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
-                 usdz: UploadFile | None = File(None), name: str = Form("Scan"),
+                 usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), name: str = Form("Scan"),
                  kind: str = Form("room"), scale: float = Form(1.0), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
-    if kind not in ("room", "object"):
-        raise HTTPException(422, "kind must be room or object")
+    if kind not in ("room", "object", "mesh"):
+        raise HTTPException(422, "kind must be room, object or mesh")
+    if kind == "mesh" and mesh is None:
+        raise HTTPException(422, "mesh scans need a mesh (ply) file")
     if kind == "room" and json_file is None:
         raise HTTPException(422, "room scans need a json file")
     if kind == "object" and usdz is None:
@@ -113,6 +122,9 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     if usdz is not None:
         with open(d / "scan.usdz", "wb") as f:
             shutil.copyfileobj(usdz.file, f)
+    if mesh is not None:
+        with open(d / "scan.ply", "wb") as f:
+            shutil.copyfileobj(mesh.file, f)
     photo_count = 0
     if photos:
         (d / "photos").mkdir()
