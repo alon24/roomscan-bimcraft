@@ -10,6 +10,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the commit count (build number) is right
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
@@ -17,8 +19,10 @@ jobs:
       - name: Build unsigned
         run: |
           cd ios
+          BUILD=$(git rev-list --count HEAD)
           xcodebuild -project RoomScan.xcodeproj -scheme RoomScan -configuration Release \
             -sdk iphoneos -derivedDataPath build \
+            MARKETING_VERSION=$(cat ../VERSION) CURRENT_PROJECT_VERSION=$BUILD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
       - name: Package IPA
         run: |

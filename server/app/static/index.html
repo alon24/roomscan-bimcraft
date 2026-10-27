@@ -59,6 +59,7 @@
   <div id="list"></div>
   <datalist id="projList"></datalist>
   <p class="mute" id="empty" hidden>No scans yet. Upload from the app.</p>
+  <p class="hint" id="ver"></p>
 </aside>
 <main>
   <p class="mute" id="hint">Select a scan.</p>
@@ -516,6 +517,7 @@ connect();
 const params = new URLSearchParams(location.search);
 if (params.get("embed")) document.body.classList.add("embed");  // inside the iPhone app: no list, just the viewer
 loadList().then(() => { if (params.get("scan")) show(params.get("scan")); });
+fetch('/api/version').then(r => r.json()).then(v => { document.getElementById('ver').textContent = `Server v${v.version} · build ${v.build}`; }).catch(() => {});
 </script>
 </body>
 </html>

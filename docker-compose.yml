@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        APP_BUILD: ${APP_BUILD:-0}
     restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"

@@ -11,6 +11,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.roomscan.app
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "0"
         INFOPLIST_FILE: RoomScan/Info.plist
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"

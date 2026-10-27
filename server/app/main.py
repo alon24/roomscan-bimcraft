@@ -1,3 +1,4 @@
+import os
 import json
 import re
 import shutil
@@ -25,6 +26,12 @@ MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 
 app = FastAPI(title="roomscan-bimcraft")
+
+
+@app.get("/api/version")
+def version():
+    """Set at image build time by deploy.sh: VERSION file + git commit count, same as the iOS build."""
+    return {"version": os.environ.get("APP_VERSION", "dev"), "build": os.environ.get("APP_BUILD", "0")}
 
 
 class Hub:

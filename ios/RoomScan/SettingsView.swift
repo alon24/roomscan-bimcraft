@@ -4,6 +4,7 @@ struct SettingsView: View {
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @AppStorage("liveStream") private var liveStream = true
     @AppStorage("project") private var project = ""
+    @State private var serverVersion = "checking…"
 
     var body: some View {
         Form {
@@ -16,10 +17,26 @@ struct SettingsView: View {
             Section(header: Text("Home"), footer: Text("New scans are filed under this home. Rename, move or delete them in the Viewer tab.")) {
                 TextField("e.g. My house", text: $project)
             }
+            Section("Version") {
+                LabeledContent("App", value: AppVersion.text)
+                LabeledContent("Server", value: serverVersion)
+            }
             Section(footer: Text("Show the room in the web UI while you scan.")) {
                 Toggle("Live preview", isOn: $liveStream)
             }
         }
         .navigationTitle("Settings")
+        .task(id: serverURL) { serverVersion = await Self.fetchServerVersion(serverURL) }
+    }
+
+    /// Also a quick connection test: if this says "not reachable", uploads will fail too.
+    static func fetchServerVersion(_ server: String) async -> String {
+        guard let url = URL(string: server)?.appendingPathComponent("api/version") else { return "bad URL" }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 5
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let v = o["version"] as? String else { return "not reachable" }
+        return "v\(v) · build \(o["build"] as? String ?? "?")"
     }
 }
