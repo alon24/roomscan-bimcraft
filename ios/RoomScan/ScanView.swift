@@ -77,6 +77,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         photoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateHUD(); self?.capturePhoto() }
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         scanning = true
+        UIApplication.shared.isIdleTimerDisabled = true   // keep the screen on while scanning
     }
 
     /// Light, tracking and live measurements, so a bad scan is noticed while there is still time to fix it.
@@ -183,6 +184,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         }
         captureView.captureSession.stop()
         scanning = false
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 
     // MARK: RoomCaptureSessionDelegate: stream the partial room to the web UI (about 2 per second)

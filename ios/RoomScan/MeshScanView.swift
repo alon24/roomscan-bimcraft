@@ -121,6 +121,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         sceneView.session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
         scanning = true
+        UIApplication.shared.isIdleTimerDisabled = true   // keep the screen on while scanning
     }
 
     private func tick() {
@@ -168,6 +169,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         overlayTimer?.invalidate(); overlayTimer = nil
         dots = []; pointCount = 0
         sceneView.session.pause()
+        UIApplication.shared.isIdleTimerDisabled = false
         guided.end()
         guidedActive = false
         cloud = []; cloudColours = []; occupied = []; shownPoints = 0
@@ -191,6 +193,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
         sceneView.session.pause()
         scanning = false
+        UIApplication.shared.isIdleTimerDisabled = false
         wasTurntable = guided.turntable
         wasRing = guided.ring
         serverOnly = guided.turntable || guided.ring
@@ -243,6 +246,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         maskURLs = []
         guard !photos.isEmpty else { return }
         outlining = true
+        UIApplication.shared.isIdleTimerDisabled = true      // the phone must not lock while it works through the photos
         status = "Outlining the part in \(photos.count) photos…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let ctx = CIContext()
@@ -259,6 +263,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             DispatchQueue.main.async {
                 self?.maskURLs = out
                 self?.outlining = false
+                UIApplication.shared.isIdleTimerDisabled = false
                 self?.status = "Scan ready (\(out.count) outlines)"
                 Reporter.log("ring: \(out.count) outlines of \(photos.count) photos")
             }
@@ -269,6 +274,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     func buildOnPhone() {
         guard let rec = recorder, canBuildOnPhone else { return }
         buildingOnPhone = true
+        UIApplication.shared.isIdleTimerDisabled = true
         status = "Building on the phone…"
         let photos = photoURLs.filter { $0.pathExtension == "jpg" }, metas = rec.metas, masks = maskURLs
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -278,6 +284,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.buildingOnPhone = false
+                UIApplication.shared.isIdleTimerDisabled = false
                 if let r {
                     self.phoneResult = r
                     self.modelScene = r.scene
