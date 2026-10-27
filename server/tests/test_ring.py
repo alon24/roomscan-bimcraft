@@ -143,3 +143,14 @@ def test_ring_calibration_accepts_the_right_sizes_and_warns_on_wrong_ones(tmp_pa
         assert c.delete("/api/ring/calibration").status_code == 200 and not c.get("/api/ring").json()["calibrated"]
     finally:
         make_ring.MARKER, make_ring.R_CENTRE = saved
+
+
+def test_ring_readings_from_calipers_are_saved(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    (tmp_path / "scans").mkdir()
+    c = TestClient(main.app)
+    r = c.post("/api/ring/measured", data={"marker_mm": "22.2", "across_mm": "183.38"}).json()
+    assert r["saved"] and abs(r["centre_radius_mm"] - 80.59) < 0.01
+    info = c.get("/api/ring").json()
+    assert info["calibrated"] and info["marker_size_mm"] == 22.2
+    assert c.post("/api/ring/measured", data={"marker_mm": "5", "across_mm": "183"}).status_code == 422

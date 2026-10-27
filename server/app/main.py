@@ -562,6 +562,20 @@ async def ring_calibrate(marker_mm: float = Form(0.0), centre_distance_mm: float
     return result
 
 
+@app.post("/api/ring/measured")
+def ring_measured(marker_mm: float = Form(...), across_mm: float = Form(...)):
+    """Caliper readings without photos: the marker size and the distance across the ring (outer edge of a marker to the outer
+    edge of the one opposite). The centre radius follows: across = 2 x radius + marker size."""
+    if not (20 <= marker_mm <= 24 and 176 <= across_mm <= 192):
+        raise HTTPException(422, "marker size should be about 22 mm and the distance across about 184 mm")
+    cfg = ring_scan_mod.build_config(marker_mm, (across_mm - marker_mm) / 2)
+    cal = ring_scan_mod.calibration_file(DATA)
+    cal.parent.mkdir(parents=True, exist_ok=True)
+    cal.write_text(json.dumps({"config": cfg, "saved_at": time.time(), "manual": True,
+                               "marker_mm": marker_mm, "across_mm": across_mm}, indent=1))
+    return {"saved": True, "marker_size_mm": cfg["marker_size_mm"], "centre_radius_mm": round(cfg["centre_radius_mm"], 3)}
+
+
 @app.delete("/api/ring/calibration")
 def ring_reset():
     ring_scan_mod.calibration_file(DATA).unlink(missing_ok=True)
