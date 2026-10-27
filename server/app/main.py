@@ -496,6 +496,51 @@ def download(scan_id: str, file: str):
 STATIC.mkdir(exist_ok=True)
 
 
+# ---- printed ring: what the user measured, and a photo check of it
+@app.get("/api/ring")
+def ring_info():
+    cal = ring_scan_mod.calibration_file(DATA)
+    if cal.exists():
+        j = json.loads(cal.read_text())
+        return {"calibrated": True, "marker_size_mm": j["config"]["marker_size_mm"], "centre_radius_mm": j["config"]["centre_radius_mm"],
+                "saved_at": j.get("saved_at"), "error_px": j.get("error_px"), "lidar_scale": j.get("lidar_scale")}
+    c = ring_scan_mod.build_config()
+    return {"calibrated": False, "marker_size_mm": c["marker_size_mm"], "centre_radius_mm": c["centre_radius_mm"]}
+
+
+@app.post("/api/ring/calibrate")
+async def ring_calibrate(marker_mm: float = Form(0.0), centre_distance_mm: float = Form(0.0), save: bool = Form(True),
+                         photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
+    """Photos of the printed ring (with LiDAR depth) plus the caliper readings. Saved for ring scans only if the photos check out."""
+    import tempfile
+    if photos_meta is None or not photos:
+        raise HTTPException(422, "send photos and photos_meta")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "photos").mkdir()
+        for p in photos:
+            fname = Path(p.filename or "").name
+            if PHOTO_NAME.match(fname):
+                (work / "photos" / fname).write_bytes(await p.read())
+        (work / "photos.json").write_bytes(await photos_meta.read())
+        result = await anyio.to_thread.run_sync(ring_scan_mod.calibrate, work, marker_mm or None, centre_distance_mm or None)
+    result["saved"] = False
+    if save and result["good"]:
+        cal = ring_scan_mod.calibration_file(DATA)
+        cal.parent.mkdir(parents=True, exist_ok=True)
+        cal.write_text(json.dumps({**{k: result[k] for k in ("error_px", "lidar_scale", "markers_avg", "edge_px_avg")},
+                                   "config": result["config"], "saved_at": time.time()}, indent=1))
+        result["saved"] = True
+    result.pop("config", None)
+    return result
+
+
+@app.delete("/api/ring/calibration")
+def ring_reset():
+    ring_scan_mod.calibration_file(DATA).unlink(missing_ok=True)
+    return {"ok": True}
+
+
 # ---- problem reports from the app, so they can be read here instead of described from a phone screen ----
 def _issues() -> Path:
     return DATA.parent / "issues"
@@ -532,4 +577,13 @@ def delete_issue(issue_id: str):
     return {"ok": True}
 
 
-app.mount("/", StaticFiles(directory=STATIC, html=True), name="ui")
+class NoCacheStatic(StaticFiles):
+    """The page changes with every deploy: make the browser check for a new copy instead of showing an old one."""
+
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+
+app.mount("/", NoCacheStatic(directory=STATIC, html=True), name="ui")

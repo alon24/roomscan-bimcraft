@@ -25,6 +25,9 @@ struct SettingsView: View {
             Section(footer: Text("Sends the recent app log to the server. It appears under Issues on the web page.")) {
                 Button("Send problem report") { Reporter.report(tab: "settings", message: "Manual report") }
             }
+            Section(footer: Text("After printing the marker ring: measure it with calipers, take a few photos and let the server check it.")) {
+                NavigationLink("Calibrate the printed ring") { RingCalibrationView() }
+            }
             Section(footer: Text("Mesh scans keep a photo, the LiDAR depth and the position of every half second (up to 400 frames), so each frame can be checked and corrected on the web page. Uses more storage and upload time.")) {
                 Toggle("Keep every frame", isOn: $allFrames)
             }

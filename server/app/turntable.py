@@ -104,7 +104,7 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     hull = pts[:, [0, 2]][ConvexHull(pts[:, [0, 2]]).vertices]
     fp2 = {"polygon": hull.tolist(), "base_y": fp["base_y"], "height": fp["height"]}
     cloud = trimesh.PointCloud(pts, colors=np.c_[cols, np.full(len(cols), 255, dtype=np.uint8)])
-    ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp2)
+    ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp2, recolour=False)
     turns = abs(omega) * (got[-1][0] - t0) / (2 * np.pi)
     return ok, (f"turntable: {len(got)} frames, plate speed {abs(omega) * 60 / (2 * np.pi):.1f} rpm "
                 f"({turns:.1f} turns), fit error {bs * 1000:.1f} mm; {log}")

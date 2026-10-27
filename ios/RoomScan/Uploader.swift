@@ -53,4 +53,32 @@ enum Uploader {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         _ = try? await URLSession.shared.upload(for: req, from: json)
     }
+
+    /// Photos of the printed ring plus the caliper readings; the server says whether they agree and saves them if so.
+    static func calibrateRing(server: String, markerMM: Double, centreDistanceMM: Double?, photos: [URL], meta: URL) async throws -> [String: Any] {
+        guard let url = URL(string: server)?.appendingPathComponent("api/ring/calibrate") else { throw URLError(.badURL) }
+        let boundary = UUID().uuidString
+        var body = Data()
+        func field(_ key: String, _ value: String) {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+        }
+        func file(_ key: String, _ fileURL: URL, _ type: String) throws {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"; filename=\"\(fileURL.lastPathComponent)\"\r\nContent-Type: \(type)\r\n\r\n".data(using: .utf8)!)
+            body.append(try Data(contentsOf: fileURL))
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        field("marker_mm", String(markerMM))
+        if let c = centreDistanceMM { field("centre_distance_mm", String(c)) }
+        for p in photos { try file("photos", p, p.pathExtension == "depth" ? "application/octet-stream" : "image/jpeg") }
+        try file("photos_meta", meta, "application/json")
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 120
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, resp) = try await URLSession.shared.upload(for: req, from: body)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.badServerResponse) }
+        return obj
+    }
 }

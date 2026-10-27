@@ -252,7 +252,7 @@ async function show(id) {
   }, "danger");
   loadList();
   if (isMesh) {
-    await loadPhotos(meta);
+    const poses = await loadPhotos(meta);
     if (meta.status === "ok") {
       const r = await (await fetch(`/api/scans/${id}/report.json`)).json();
       $("log").textContent = `Size: ${r.size_m.join(" × ")} m\n${r.points ? `Points: ${r.points}\n` : ""}${r.size_mm ? `Printable size: ${r.size_mm.join(" × ")} mm   Watertight: ${r.watertight ? "yes" : "NO"}\n` : ""}Triangles: ${r.faces}${r.coloured != null ? `\nColoured from photos: ${Math.round(r.coloured * 100)}%` : ""}\n\n` + (meta.log || "");
@@ -265,7 +265,12 @@ async function show(id) {
         // Points are the same picture as on the phone; the surface is the solid the server fitted through them.
         const views = {};
         const box3 = await outlineBox(id);
-        const withBox = o => { if (!box3) return o; const g = new THREE.Group(); g.add(o, box3.clone()); return g; };
+        // camera positions (tap one to open its photo), only where they share the scan's frame
+        const ext = Math.max(...(r.size_m || (r.size_mm || [3000]).map(x => x / 1000)));
+        const cams = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform).map(p => {
+          const m = photoMarker(id, p); m.scale.setScalar(Math.max(0.05, ext / 8) / 0.25); return m;
+        });
+        const withBox = o => { const g = new THREE.Group(); g.add(o); if (box3) g.add(box3.clone()); for (const m of cams) g.add(m.clone()); return g; };
         loadFrames(id);
         if (r.points) views.points = withBox(drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r));
         if (r.faces) views.surface = withBox(drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r));

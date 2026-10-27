@@ -25,8 +25,8 @@ def _depth_map(d: Path, photo: dict) -> np.ndarray | None:
     return a.reshape(h, w) if a.size == w * h else None
 
 
-def colour_vertices(mesh: trimesh.Trimesh, d: Path, photos: list[dict]) -> tuple[np.ndarray, float]:
-    """Per-vertex RGB (uint8) and the fraction of vertices that got a photo colour."""
+def colour_vertices(mesh: trimesh.Trimesh, d: Path, photos: list[dict], with_mask: bool = False):
+    """Per-vertex RGB (uint8) and the fraction of vertices that got a photo colour (plus which ones, with_mask)."""
     pts = np.asarray(mesh.vertices, dtype=float)
     nrm = np.asarray(mesh.vertex_normals, dtype=float)
     best = np.zeros(len(pts))
@@ -57,7 +57,8 @@ def colour_vertices(mesh: trimesh.Trimesh, d: Path, photos: list[dict]) -> tuple
             vi = uv[better, 1].astype(int)
             rgb[better] = img[vi, ui]
             best[better] = score[better]
-    return rgb, float((best > 0).mean()) if len(pts) else 0.0
+    covered = float((best > 0).mean()) if len(pts) else 0.0
+    return (rgb, covered, best > 0) if with_mask else (rgb, covered)
 
 
 def pack_preview(mesh: trimesh.Trimesh, rgb: np.ndarray) -> bytes:
@@ -139,7 +140,23 @@ def printable(mesh: trimesh.Trimesh, d: Path) -> dict:
     return objects.report(m)
 
 
-def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: dict | None = None) -> tuple[bool, str]:
+def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit: int = 60) -> tuple[np.ndarray, float]:
+    """Take the colour of each surface point from the full-size photos (the one that sees it head-on, not blocked by something
+    nearer) instead of the small image the phone sampled while scanning. Points no photo sees keep their old colour."""
+    mf = d / "photos.json"
+    if not mf.exists():
+        return rgb, 0.0
+    m = json.loads(mf.read_text())
+    photos = [p for p in (m.get("photos", []) if isinstance(m, dict) else m) if (d / "photos" / p["file"]).exists()]
+    if not photos:
+        return rgb, 0.0
+    step = max(1, len(photos) // limit)
+    new, _, seen = colour_vertices(mesh, d, photos[::step], with_mask=True)
+    out = np.where(seen[:, None], new, rgb[:, :3])
+    return out, float(seen.mean())
+
+
+def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: dict | None = None, recolour: bool = True) -> tuple[bool, str]:
     """A depth point cloud from the phone: keep it for the viewer, and mesh it if Open3D is available."""
     pts = np.asarray(cloud.vertices, dtype=float) * scale
     cols = np.asarray(cloud.colors) if cloud.colors is not None and len(cloud.colors) == len(pts) else np.tile([150, 150, 150, 255], (len(pts), 1))
@@ -155,6 +172,13 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: d
     mesh = poisson(pts, cols, depth=9 if len(pts) < 300_000 else 8) if len(pts) >= 500 else None
     if mesh is not None:
         rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]
+        if recolour and scale == 1.0:       # the cloud is in the phone's world frame, the same one the photos' poses use
+            try:
+                rgb, seen = recolour_from_photos(mesh, d, rgb)
+                log += f", {round(seen * 100)}% of the surface coloured from the photos"
+                mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[rgb, np.full(len(rgb), 255, dtype=np.uint8)])
+            except Exception as e:
+                log += f", photo colours skipped ({type(e).__name__}: {e})"
         (d / "mesh.bin").write_bytes(pack_preview(mesh, rgb))
         mesh.export(d / "colored.ply")
         rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=1.0)
