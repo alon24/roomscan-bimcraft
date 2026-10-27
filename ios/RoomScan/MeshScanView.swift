@@ -566,8 +566,8 @@ struct ScanTypePicker: View {
             Picker("Scan type", selection: $tracker.mode) {
                 Text("Free scan").tag(0)
                 Text("Guided object").tag(1)
-                Text("Turntable").tag(2)
-                Text("Ring").tag(3)
+                Text("LiDAR turn").tag(2)
+                Text("LiDAR+Ring").tag(3)
             }
             .pickerStyle(.segmented)
             if tracker.mode == 1 {
@@ -575,11 +575,11 @@ struct ScanTypePicker: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if tracker.mode == 3 {
-                Text("Uses the LiDAR and the printed marker ring: the markers place every frame, so the phone and the spool can both move, and the size is real.")
+                Text("LiDAR AND the printed marker ring together: the LiDAR measures the shape, the ring markers place every frame exactly. The phone and the spool can both move, and the size is real millimetres.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if tracker.mode == 2 {
-                Text("Uses the LiDAR. Phone on a stand, part on a turning plate. You trace the plate; the frames are joined on the server, so plain white parts work.")
+                Text("LiDAR only, no ring needed. Phone on a stand, part on a turning plate. You trace the plate; the server works out the turning speed and joins the frames. Plain white parts work.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
