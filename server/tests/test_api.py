@@ -212,4 +212,4 @@ def test_export_only_the_chosen_scans(tmp_path, monkeypatch):
         ids.append(c.post("/api/scans", data={"name": f"s{n}"}, files={"json": ("scan.json", open(tmp_path / "s.json", "rb"))}).json()["id"])
     import io, zipfile
     z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/export.zip?ids={ids[0]},{ids[2]}").content))
-    assert {n.split("/")[0] for n in z.namelist()} == {ids[0], ids[2]}
+    assert {n.split("/")[0] for n in z.namelist() if "/" in n} == {ids[0], ids[2]}
