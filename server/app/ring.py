@@ -92,13 +92,11 @@ def to_ring(points_world: np.ndarray, photo: dict, R: np.ndarray, t: np.ndarray)
 
 
 def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
-    """Every frame's LiDAR depth, placed by the ring markers, merged into one signed-distance volume (which averages out the
-    LiDAR noise over all the views), cut at the stage surface and closed there. Falls back to a fitted surface through the points."""
-    import open3d as o3d
+    """Every frame's LiDAR depth, placed by the ring markers, in the ring's own frame; a surface is fitted through the points."""
     cfg = config(d)
     det = _detector()
     inner_r = cfg["stage_d_mm"] / 2 - 1.0
-    clouds, colours, kept, used, markers, errs, skipped, no_depth = [], [], [], 0, 0, [], 0, 0
+    clouds, colours, used, markers, errs, skipped, no_depth = [], [], 0, 0, [], 0, 0
     for ph in frames.manifest(d):
         dm = meshscan._depth_map(d, ph)
         path = d / "photos" / ph["file"]
@@ -118,16 +116,19 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         good = (dm > 0.1) & (dm < 5) & (frames.ndi.maximum_filter(dm, 3) - frames.ndi.minimum_filter(dm, 3) < 0.04 * dm + 0.01)
         pr = to_ring(frames.world_points(ph, dm).reshape(-1, 3), ph, R, t).reshape(dh, dw, 3)
         radius, z = np.hypot(pr[..., 0], pr[..., 1]), pr[..., 2]
-        region = good & (radius < inner_r) & (z > -8.0) & (z < 350.0)     # the stage and what stands on it
-        above = region & (z > 8.0)                                         # clear of the LiDAR noise on the flat stage
+        # LiDAR depth of a flat plain surface drifts by a few mm from frame to frame: the white ring beside the stage is flat at
+        # z = 0, so how far it reads from 0 is this frame's offset, and it is taken off
+        flat = good & (radius > cfg["ring_inner_d_mm"] / 2 + 2) & (radius < cfg["ring_outer_d_mm"] / 2 - 2) & (np.abs(z) < 25.0)
+        if flat.sum() > 300:
+            z = z - float(np.median(z[flat]))
+            pr = pr.copy(); pr[..., 2] = z
+        region = good & (radius < inner_r) & (z > -25.0) & (z < 350.0)     # the stage and what stands on it
+        above = region & (z > 10.0)                                         # clear of the noise on the flat stage
         if above.sum() < 50:
             skipped += 1
             continue
         img = np.asarray(Image.open(path).convert("RGB").resize((dw, dh), Image.BILINEAR))
         clouds.append(pr[above]); colours.append(img[above])
-        k = np.array(ph["intrinsics"], dtype=float)
-        sx, sy = dw / ph["width"], dh / ph["height"]
-        kept.append((np.where(region, dm, 0).astype(np.float32), np.ascontiguousarray(img), (k[0][0] * sx, k[1][1] * sy, k[2][0] * sx, k[2][1] * sy), R, t))
         used += 1; markers += n; errs.append(err)
     if used < 3 and no_depth and not skipped:
         return False, (f"{no_depth} frames have no LiDAR depth. The ring scan needs the depth of the part from a LiDAR iPhone "
@@ -142,59 +143,18 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     pts, cols = pts[first], cols[first]
     yup = np.c_[pts[:, 0], pts[:, 2], -pts[:, 1]] / 1000.0   # ring frame (Z up, mm) -> metres, Y up
     cloud = trimesh.PointCloud(yup, colors=np.c_[cols, np.full(len(cols), 255, dtype=np.uint8)])
-    ok, log = meshscan.convert_cloud(d, cloud, scale, recolour=False, surface=False)
-    # the surface
-    voxel = 1.9
-    vol = o3d.pipelines.integration.UniformTSDFVolume(
-        320.0, 168, voxel * 4, o3d.pipelines.integration.TSDFVolumeColorType.RGB8, np.array([-160.0, -160.0, -30.0]))
-    for dmm, col, (fx, fy, cx, cy), R, t in kept:
-        h, w = dmm.shape
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            o3d.geometry.Image(col), o3d.geometry.Image(np.ascontiguousarray(dmm * 1000.0)),
-            depth_scale=1.0, depth_trunc=900.0, convert_rgb_to_intensity=False)
-        ext = np.eye(4); ext[:3, :3], ext[:3, 3] = R, t              # ring (mm) -> OpenCV camera
-        vol.integrate(rgbd, o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy), ext)
-    om = vol.extract_triangle_mesh()
-    surface = "points only"
-    if len(om.triangles) > 100:
-        cluster, n_tri, _ = om.cluster_connected_triangles()
-        cluster, n_tri = np.asarray(cluster), np.asarray(n_tri)
-        om.remove_triangles_by_mask(cluster != int(np.argmax(n_tri)))      # keep the biggest piece
-        om.remove_unreferenced_vertices()
-        mm = trimesh.Trimesh(np.asarray(om.vertices), np.asarray(om.triangles), process=False)
-        vc = (np.asarray(om.vertex_colors) * 255).astype(np.uint8)
-        mm.visual = trimesh.visual.ColorVisuals(mm, vertex_colors=np.c_[vc, np.full(len(vc), 255, dtype=np.uint8)])
-        try:                                                              # cut the stage surface away and close the underside
-            cut = trimesh.intersections.slice_mesh_plane(mm, [0, 0, 1], [0, 0, 5.0], cap=True)
-            if cut is not None and len(cut.faces) > 100:
-                mm = cut
-                vc = np.asarray(mm.visual.vertex_colors)[:, :3] if mm.visual.kind == "vertex" else np.full((len(mm.vertices), 3), 170, np.uint8)
-        except Exception:
-            keep = mm.vertices[mm.faces][..., 2].min(axis=1) > 3.0
-            mm.update_faces(keep); mm.remove_unreferenced_vertices()
-            vc = np.asarray(mm.visual.vertex_colors)[:, :3]
-        v = np.asarray(mm.vertices)
-        mesh = trimesh.Trimesh(np.c_[v[:, 0], v[:, 2], -v[:, 1]] / 1000.0 * scale, mm.faces, process=False)   # metres, Y up
-        mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[vc, np.full(len(vc), 255, dtype=np.uint8)])
-        (d / "mesh.bin").write_bytes(meshscan.pack_preview(mesh, vc))
-        mesh.export(d / "colored.ply")
-        rp = d / "report.json"
-        rep = json.loads(rp.read_text()) if rp.exists() else {}
-        rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=1.0)
-        try:
-            pr = meshscan.printable(mesh, d)
-            rep.update(stl=True, watertight=pr["watertight"], volume_mm3=pr["volume_mm3"], size_mm=pr["size_mm"])
-            surface = f"merged-depth surface, {len(mesh.faces)} triangles, {'watertight' if pr['watertight'] else 'NOT watertight'}, {pr['size_mm']} mm"
-        except Exception as e:
-            surface = f"merged-depth surface (no STL: {type(e).__name__}: {e})"
-        rp.write_text(json.dumps(rep))
-    else:
-        ok, log = meshscan.convert_cloud(d, cloud, scale, recolour=False)    # fall back to a surface fitted through the points
+    # The phone's depth image is mostly interpolated between about 600 LiDAR dots, so a merged-depth volume of a small part is not
+    # sharper than a surface fitted through the points (tried: it came out worse). Fit one, closed with the part's own footprint.
+    from scipy.spatial import ConvexHull
+    hull = yup[:, [0, 2]][ConvexHull(yup[:, [0, 2]]).vertices]
+    fp = {"polygon": hull.tolist(), "base_y": 0.0, "height": float(yup[:, 1].max()) + 0.005}
+    ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp, recolour=False)
+    surface = "surface fitted through the points"
     meshscan.write_settings(d, mode="LiDAR + ring", ring_marker_mm=cfg["marker_size_mm"], ring_centre_radius_mm=round(cfg["centre_radius_mm"], 3),
                             ring_calibrated=calibration_file(d.parent).exists(), frames_used=used, frames_skipped=skipped,
                             markers_per_frame=round(markers / used, 1), mean_pose_error_px=round(float(np.mean(errs)), 2),
                             crop="inside the stage (radius %.1f mm), above 8 mm, up to 350 mm" % inner_r,
-                            fusion="signed-distance volume, voxel %.1f mm, cut at 5 mm and capped" % voxel, scale=scale)
+                            fusion="points every 2 mm, offset of each frame taken from the flat ring, surface fitted (Poisson), base = footprint of the part", scale=scale)
     return ok, (f"ring: {used} frames used, {skipped} skipped, about {markers / used:.1f} markers per frame, "
                 f"mean pose error {np.mean(errs):.2f} px; {log}; {surface}")
 
