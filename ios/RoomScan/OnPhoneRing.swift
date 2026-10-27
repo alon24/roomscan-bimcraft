@@ -371,7 +371,7 @@ enum OnPhoneRing {
         let maskFor = Dictionary(masks.map { ($0.deletingPathExtension().lastPathComponent, $0) }, uniquingKeysWith: { a, _ in a })
         let metaFor = Dictionary(metas.map { ($0.file, $0) }, uniquingKeysWith: { a, _ in a })
         var candidates = photos.filter { maskFor[$0.deletingPathExtension().lastPathComponent] != nil && metaFor[$0.lastPathComponent] != nil }
-        if candidates.count > 60 { let step = Double(candidates.count) / 60; candidates = (0..<60).map { candidates[Int(Double($0) * step)] } }
+        if candidates.count > 150 { let step = Double(candidates.count) / 150; candidates = (0..<150).map { candidates[Int(Double($0) * step)] } }
         var views: [View] = []
         var tried = 0, rectsTotal = 0, decodedTotal = 0, posesBad = 0
         var upsideDown: Bool?
@@ -464,6 +464,27 @@ enum OnPhoneRing {
             if size > bestSize { bestSize = size; bestLabel = next }
         }
         guard bestSize > 50 else { return nil }
+        // The outlines often include the plate, so low photos are needed to cut the space just above it away. When the bottom
+        // 30 mm comes out much wider than the part a little higher up, trim it to that part's footprint (a flat "skirt").
+        let k30 = min(nz, Int(30 / vox)), k40 = min(nz, Int(40 / vox)), k60 = min(nz, Int(60 / vox))
+        var sliceArea = [Int](repeating: 0, count: nz)
+        for k in 0..<nz { for j in 0..<nx { for i in 0..<nx where label[(k * nx + j) * nx + i] == bestLabel { sliceArea[k] += 1 } } }
+        let ref = sliceArea[k30..<k60].filter { $0 > 0 }.sorted()
+        if let mid = ref.isEmpty ? nil : ref[ref.count / 2] {
+            var foot = [Bool](repeating: false, count: nx * nx)
+            for k in k30..<k40 { for j in 0..<nx { for i in 0..<nx where label[(k * nx + j) * nx + i] == bestLabel { foot[j * nx + i] = true } } }
+            for _ in 0..<2 {                                   // grow the footprint by two cubes all round
+                var grown = foot
+                for j in 0..<nx { for i in 0..<nx where foot[j * nx + i] {
+                    if i > 0 { grown[j * nx + i - 1] = true }; if i < nx - 1 { grown[j * nx + i + 1] = true }
+                    if j > 0 { grown[(j - 1) * nx + i] = true }; if j < nx - 1 { grown[(j + 1) * nx + i] = true }
+                } }
+                foot = grown
+            }
+            for k in 0..<k30 where Double(sliceArea[k]) > 1.4 * Double(mid) {
+                for j in 0..<nx { for i in 0..<nx where !foot[j * nx + i] && label[(k * nx + j) * nx + i] == bestLabel { label[(k * nx + j) * nx + i] = 0 } }
+            }
+        }
         // smooth field (box blur of the occupancy), padded by one cell all round
         let px = nx + 2, pz = nz + 2
         var field = [Float](repeating: 0, count: px * px * pz)
