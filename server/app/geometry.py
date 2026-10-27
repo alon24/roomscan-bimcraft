@@ -26,6 +26,20 @@ def centre_plan(surface: dict) -> Point:
     return to_plan(c[0], c[2])
 
 
+def plan_angle(surface: dict) -> float:
+    """Degrees counter-clockwise from plan +X of the surface's local X axis."""
+    col0 = matrix(surface)[0]
+    return math.degrees(math.atan2(-col0[2], col0[0]))
+
+
+def category(surface: dict) -> str:
+    """RoomPlan category: a plain string, or Swift's enum coding {"table": {}}."""
+    c = surface.get("category")
+    if isinstance(c, dict):
+        c = next(iter(c), None)
+    return str(c or "object")
+
+
 def wall_endpoints(surface: dict) -> tuple[Point, Point]:
     """Plan-space (mm) endpoints from the centre and local X axis, projected onto the floor."""
     col0 = matrix(surface)[0]
@@ -53,11 +67,11 @@ def dist(a: Point, b: Point) -> float:
 
 
 def floor_level(scan: dict) -> float:
-    """World Y of the floor: min of floor surfaces, else min of wall bottoms."""
+    """World Y of the floor: min of floor surfaces, else min of wall (or object) bottoms."""
     floors = scan.get("floors") or []
     if floors:
         return min(centre(f)[1] for f in floors)
-    return min(centre(w)[1] - w["dimensions"][1] / 2 for w in scan["walls"])
+    return min(centre(w)[1] - w["dimensions"][1] / 2 for w in scan.get("walls") or scan["objects"])
 
 
 def snap_endpoints(walls: list[tuple[Point, Point]], tol: float = 100.0) -> list[tuple[Point, Point]]:

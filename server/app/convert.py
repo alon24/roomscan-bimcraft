@@ -20,10 +20,47 @@ def _r(p: g.Point) -> list[int]:
     return [round(p[0]), round(p[1])]
 
 
+def _mm(m: float) -> int:
+    """Metres to mm, rounded to 10 mm so near-identical sizes share one type."""
+    return round(m * 100) * 10
+
+
+def _box_family(name: str) -> str:
+    """A furniture family that is a plain box, its size set per component."""
+    w, d = "Width/2", "Depth/2"
+    return _cmd("family", {
+        "name": name, "category": "furniture", "types": {"Scanned": {}},
+        "parameters": [{"name": n, "kind": "length", "instance": True, "value": 500} for n in ("Width", "Depth", "Height")],
+        "forms": [{"plane": "xy", "profile": [[f"-{w}", f"-{d}"], [w, f"-{d}"], [w, d], [f"-{w}", d]], "from": 0, "to": "Height"}],
+    })
+
+
+def furniture(scan: dict, level: float, log: list[str]) -> list[str]:
+    """RoomPlan objects (bed, table, sofa…) as boxes of their scanned size, one family per category."""
+    lines, families = [], set()
+    for o in scan.get("objects") or []:
+        name = "Scanned " + g.category(o).replace("_", " ").title()
+        if name not in families:
+            families.add(name)
+            lines.append(_box_family(name))
+        wx, hy, dz = o["dimensions"]
+        lines.append(_cmd("component", {
+            "family": name, "at": _r(g.centre_plan(o)), "angle": round(g.plan_angle(o), 1),
+            "offset": max(0, round((g.centre(o)[1] - hy / 2 - level) * 1000)),
+            "params": {"Width": _mm(wx), "Depth": _mm(dz), "Height": _mm(hy)},
+        }))
+    if families:
+        log.append(f"{len(lines) - len(families)} furniture objects")
+    return lines
+
+
 def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = None) -> tuple[str, list[str]]:
     """Return (script text, log lines)."""
     log: list[str] = []
     walls = scan.get("walls") or []
+    if not walls and scan.get("objects"):
+        log.append("no walls found; furniture only")
+        return "\n".join(furniture(scan, g.floor_level(scan), log)) + "\n", log
     if not walls:
         raise ValueError("No walls were found in this scan. RoomPlan needs to see the floor-to-ceiling edges and the corners: stand back, scan slowly, light the room, and avoid close-ups of one plain wall. Delete this one and scan again.")
 
@@ -58,13 +95,19 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
     segs = list(by_id.values())
     level = g.floor_level(scan)
 
+    types = set()
     for kind, key in (("door", "doors"), ("window", "windows")):
         for s in scan.get(key) or []:
             c = g.centre_plan(s)
             host = by_id.get(s.get("parentIdentifier"))
             cands = [host] if host else segs
             at = min((g.project_on_segment(c, a, b) for a, b in cands), key=lambda q: g.dist(q, c))
-            args = {"at": _r(at)}
+            w, h = _mm(s["dimensions"][0]), _mm(s["dimensions"][1])
+            tname = f"{kind.title()} {w}x{h}"
+            if tname not in types:
+                types.add(tname)
+                lines.append(_cmd("type", {"category": kind, "name": tname, "width": w, "height": h}))
+            args = {"at": _r(at), "type": tname}
             if kind == "window":
                 sill = round((g.centre(s)[1] - s["dimensions"][1] / 2 - level) * 1000)
                 if sill > 0:
@@ -75,6 +118,7 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
     mid = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
     lines.append(_cmd("room", {"point": _r(mid), "name": "Room"}))
     lines.append("floor {}")
+    lines += furniture(scan, level, log)
     return "\n".join(lines) + "\n", log
 
 

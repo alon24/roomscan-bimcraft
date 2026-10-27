@@ -112,3 +112,49 @@ def test_square_off_by_default(scan):
     assert not any("squared" in l for l in log)
     _, log = convert.convert(scan, square_deg=5)
     assert any("squared" in l for l in log)
+
+
+TABLE = {"identifier": "T1", "category": {"table": {}}, "dimensions": [1.4, 0.74, 0.8],
+         "transform": [[0, 0, -1, 0], [0, 1, 0, 0], [1, 0, 0, 0], [2.0, 0.37, -1.8, 1]]}
+
+
+def _lines(script, name):
+    return [json.loads(l.split(" ", 1)[1]) for l in script.splitlines() if l.startswith(name + " ")]
+
+
+def test_door_and_window_sized_from_scan(scan):
+    script, _ = convert.convert(scan)
+    types = {t["name"]: t for t in _lines(script, "type")}
+    assert types["Door 900x2000"] == {"category": "door", "name": "Door 900x2000", "width": 900, "height": 2000}
+    assert types["Window 1200x1200"]["width"] == 1200
+    assert _lines(script, "door")[0]["type"] == "Door 900x2000"
+    assert script.index("type ") < script.index("door ")
+
+
+def test_furniture_box_per_object(scan):
+    scan["objects"] = [TABLE, dict(TABLE, identifier="T2")]
+    script, log = convert.convert(scan)
+    fams = _lines(script, "family")
+    assert [f["name"] for f in fams] == ["Scanned Table"]  # one family per category
+    comp = _lines(script, "component")
+    assert len(comp) == 2
+    assert comp[0]["params"] == {"Width": 1400, "Depth": 800, "Height": 740}
+    assert close(comp[0]["at"], (2000, 1800))
+    assert comp[0]["angle"] == 90.0 and comp[0]["offset"] == 0
+    assert "2 furniture objects" in log
+
+
+def test_furniture_only_without_walls(scan):
+    scan["walls"], scan["floors"] = [], []
+    scan["objects"] = [TABLE]
+    script, log = convert.convert(scan)
+    assert not _lines(script, "wall") and len(_lines(script, "component")) == 1
+
+
+@pytest.mark.skipif(not os.environ.get("BIMCRAFT_CLI"), reason="BIMCRAFT_CLI not set")
+def test_bimcraft_cli_accepts_furniture(scan, tmp_path):
+    scan["objects"] = [TABLE, dict(TABLE, category={"bed": {}}, identifier="B1")]
+    p = tmp_path / "script.txt"
+    p.write_text(convert.convert(scan)[0])
+    ok, out = convert.run_cli(p, tmp_path)
+    assert ok, out

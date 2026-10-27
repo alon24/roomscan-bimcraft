@@ -38,6 +38,11 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     @Published var photoURLs: [URL] = []
     @Published var hud = ""
     @Published var wallCount = 0
+    /// Quick test: the scan stops itself after `quickSeconds` and uploads, to see if anything comes out.
+    @Published var quickLeft: Int?
+    private var quick = false
+    private var quickEnd = Date.distantFuture
+    static let quickSeconds = 30
     private var scanStarted = Date()
     private var discarding = false
     let live3D = LiveRoomScene()
@@ -66,7 +71,10 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     required init?(coder: NSCoder) { nil }
     func encode(with coder: NSCoder) {}
 
-    func start() {
+    func start(quick: Bool = false) {
+        self.quick = quick
+        quickEnd = quick ? Date().addingTimeInterval(TimeInterval(Self.quickSeconds)) : .distantFuture
+        quickLeft = quick ? Self.quickSeconds : nil
         jsonURL = nil; usdzURL = nil; result = nil; status = ""
         photoURLs = []; photosMetaURL = nil; photoMetas = []; lastPose = nil
         live3D.reset()
@@ -83,6 +91,11 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     /// Light, tracking and live measurements, so a bad scan is noticed while there is still time to fix it.
     /// Ambient intensity is about 1000 in a well-lit room; LiDAR works in the dark, but the photos do not.
     private func updateHUD() {
+        if quick, scanning {
+            let left = Int(quickEnd.timeIntervalSinceNow.rounded(.up))
+            quickLeft = max(0, left)
+            if left <= 0 { stop(); return }
+        }
         guard let frame = captureView.captureSession.arSession.currentFrame else { return }
         live3D.setPhone(frame.camera.transform)
         var parts: [String] = []
@@ -176,6 +189,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
 
     func stop() {
         photoTimer?.invalidate(); photoTimer = nil
+        quickLeft = nil
         if let dir = photoDir, !photoMetas.isEmpty {
             let meta = dir.appendingPathComponent("photos.json")
             let enc = JSONEncoder()
@@ -209,7 +223,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     func reset() {
         photoTimer?.invalidate(); photoTimer = nil
         if scanning { discarding = true; captureView.captureSession.stop() }   // its final result must not come back
-        scanning = false
+        scanning = false; quick = false; quickLeft = nil
         jsonURL = nil; usdzURL = nil; result = nil; liveRoom = nil
         status = ""; hud = ""; wallCount = 0
         photoURLs = []; photosMetaURL = nil; photoMetas = []
@@ -221,7 +235,8 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         if discarding { discarding = false; return }
         result = processedResult
         wallCount = processedResult.walls.count
-        if processedResult.walls.isEmpty {
+        // A quick test still uploads furniture without walls, so it shows what the phone saw.
+        if processedResult.walls.isEmpty && (!quick || processedResult.objects.isEmpty) {
             status = "No walls were found, so there is nothing to upload. Tap Reset and scan again: stand back so the floor and ceiling lines show, move slowly, and point at the corners."
             Reporter.report(tab: "room", message: "Scan finished with no walls", detail: "doors \(processedResult.doors.count), objects \(processedResult.objects.count)")
             DispatchQueue.main.async { [live3D] in live3D.update(processedResult) }
@@ -237,6 +252,11 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
             try? processedResult.export(to: usdz, exportOptions: .parametric)
             usdzURL = FileManager.default.fileExists(atPath: usdz.path) ? usdz : nil
             status = "Scan ready"
+            if quick {
+                quick = false
+                let server = serverURL
+                Task { await upload(server: server) }
+            }
         } catch {
             status = "Export failed: \(error.localizedDescription)"
             Reporter.report(tab: "room", message: "Export failed", detail: "\(error)")
@@ -289,7 +309,7 @@ struct ScanView: View {
         if model.jsonURL != nil {
             return "Scan done. Turn the 3D model to check it. Tap Upload to send it to the server, or Start scan to redo it."
         }
-        return "What this does: it measures a whole room and builds a floor plan with walls, doors and windows. 1. Tap Start scan.  2. Stand in the room, step back so you see the floor and the ceiling line, and slowly turn and walk, pointing at every wall and corner (about a minute).  3. Switch to 3D model to see what was captured.  4. Tap Stop, then Upload. Zoom with two fingers or the magnifier buttons: it magnifies what you see; the scan still records everything."
+        return "What this does: it measures a whole room and builds a floor plan with walls, doors and windows. 1. Tap Start scan.  2. Stand in the room, step back so you see the floor and the ceiling line, and slowly turn and walk, pointing at every wall and corner (about a minute).  3. Switch to 3D model to see what was captured.  4. Tap Stop, then Upload. Quick test scans for \(ScanModel.quickSeconds) seconds, stops by itself and uploads, to check that something comes out. Zoom with two fingers or the magnifier buttons: it magnifies what you see; the scan still records everything."
     }
 
     var body: some View {
@@ -312,7 +332,8 @@ struct ScanView: View {
                     Text("One finger turns, pinch zooms, two fingers move, double-tap resets").font(.caption2).foregroundStyle(.secondary)
                 }
                 if model.scanning {
-                    Text(model.wallCount == 0 ? "Looking for walls…" : "\(model.wallCount) walls found")
+                    Text((model.wallCount == 0 ? "Looking for walls…" : "\(model.wallCount) walls found")
+                         + (model.quickLeft.map { " · \($0) s" } ?? ""))
                         .font(.title3.weight(.bold)).padding(8).background(.regularMaterial, in: Capsule())
                 }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
@@ -322,6 +343,7 @@ struct ScanView: View {
                         Button("Stop") { model.requestStop() }
                     } else {
                         Button(model.jsonURL != nil || !model.status.isEmpty ? "Scan again" : "Start scan") { model.reset(); model.start() }
+                        Button("Quick test (\(ScanModel.quickSeconds) s)") { model.reset(); model.start(quick: true) }
                     }
                     if model.scanning || model.jsonURL != nil || !model.status.isEmpty {
                         Button("Reset", role: .destructive) { model.reset() }
