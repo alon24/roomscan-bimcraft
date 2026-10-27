@@ -27,6 +27,14 @@ final class ModelsModel: ObservableObject {
     @Published var scans: [ScanSummary] = []
     @Published var error = ""
 
+    func delete(_ s: ScanSummary, server: String) async {
+        guard let url = URL(string: server)?.appendingPathComponent("api/scans/\(s.id)") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        _ = try? await URLSession.shared.data(for: req)
+        await load(server: server)
+    }
+
     func load(server: String) async {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else { error = "Bad server address"; return }
         do {
@@ -57,6 +65,7 @@ struct ModelsView: View {
                         Text("\(s.kind) · \(s.status)").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                .swipeActions { Button("Delete", role: .destructive) { Task { await model.delete(s, server: serverURL) } } }
             }
             }
         }

@@ -53,7 +53,9 @@
 <body>
 <aside>
   <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
-  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button>
+  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button><button class="btn" id="selectBtn" title="Tick scans to delete several at once">Select</button></div>
+  <div class="row" id="selectBar" hidden><button class="btn danger" id="deleteSelected">Delete selected</button><button class="btn" id="selectFailed">Tick the failed ones</button><button class="btn" id="selectNone">Clear</button></div>
+  <div class="row" hidden>
     <input type="file" id="importFile" accept=".zip,application/zip" hidden></div>
   <input id="search" placeholder="Search rooms and objects" type="search">
   <div id="list"></div>
@@ -100,7 +102,7 @@
 <dialog id="dlg"><img id="big" alt=""></dialog>
 <dialog id="issues" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(900px,96vw);max-height:90vh;overflow:auto">
   <div style="padding:16px"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Problems reported by the app</h3>
-  <button class="btn" type="button" id="issuesClose">Close</button></div><div id="issuesList"></div></div></dialog>
+  <span><button class="btn" type="button" id="issuesClear">Delete all</button> <button class="btn" type="button" id="issuesClose">Close</button></span></div><div id="issuesList"></div></div></dialog>
 <dialog id="frameEd" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(980px,98vw);max-height:96vh;overflow:auto">
   <div style="padding:12px">
     <div class="row" style="justify-content:space-between"><strong id="edTitle"></strong><button class="btn" type="button" id="edClose">Close</button></div>
@@ -155,11 +157,24 @@ function icoBtn(label, title, fn) {
   return b;
 }
 
+// ---- deleting several scans at once
+const SEL = { on: false, ids: new Set(), all: [] };
+function selCount() { $("deleteSelected").textContent = `Delete selected (${SEL.ids.size})`; $("deleteSelected").disabled = SEL.ids.size === 0; }
+$("selectBtn").onclick = () => { SEL.on = !SEL.on; SEL.ids.clear(); $("selectBar").hidden = !SEL.on; $("selectBtn").classList.toggle("on", SEL.on); selCount(); loadList(); };
+$("selectNone").onclick = () => { SEL.ids.clear(); selCount(); loadList(); };
+$("selectFailed").onclick = () => { for (const s of SEL.all) if (s.status !== "ok") SEL.ids.add(s.id); selCount(); loadList(); };
+$("deleteSelected").onclick = async () => {
+  if (!SEL.ids.size || !(await ask(`Delete ${SEL.ids.size} scans? This cannot be undone.`, [], "Delete", true))) return;
+  for (const id of SEL.ids) { await fetch(`/api/scans/${id}`, { method: "DELETE" }); if (id === current) clearDetail(); }
+  SEL.ids.clear(); selCount(); loadList();
+};
+
 async function loadList() {
   const [scans, projects] = await Promise.all([api("/api/scans"), api("/api/projects")]);
   $("projList").replaceChildren(...projects.map(p => Object.assign(document.createElement("option"), { value: p.name })));
   const q = $("search").value.trim().toLowerCase();
   const visible = scans.filter(s => !q || s.name.toLowerCase().includes(q));
+  SEL.all = visible;
   $("empty").hidden = scans.length > 0 || projects.length > 0;
   const groups = [...projects.map(p => ({ project: p, items: visible.filter(s => s.project === p.name) })),
                   { project: null, items: visible.filter(s => !s.project) }];
@@ -192,10 +207,17 @@ async function loadList() {
     for (const s of g.items) {
       const li = document.createElement("li"), b = document.createElement("button");
       b.className = s.id === current ? "sel" : "";
+      if (SEL.on) {                       // tick boxes for deleting several scans at once
+        const cb = Object.assign(document.createElement("input"), { type: "checkbox", checked: SEL.ids.has(s.id) });
+        cb.style.cssText = "margin-right:6px";
+        cb.onclick = e => { e.stopPropagation(); cb.checked ? SEL.ids.add(s.id) : SEL.ids.delete(s.id); selCount(); };
+        b.prepend(cb);
+        b.onclick = () => { cb.click(); };
+      }
       b.textContent = (s.kind === "object" ? "◆ " : s.kind === "mesh" ? "◉ " : "▢ ") + s.name;
       const small = document.createElement("small");
       small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?");
-      b.append(small); b.onclick = () => show(s.id);
+      b.append(small); if (!SEL.on) b.onclick = () => show(s.id);
       li.append(b); ul.append(li);
     }
     out.push(ul);
@@ -883,6 +905,10 @@ async function loadIssues() {
 }
 $("issuesBtn").onclick = async () => { await loadIssues(); $("issues").showModal(); };
 $("issuesClose").onclick = () => $("issues").close();
+$("issuesClear").onclick = async () => {
+  for (const i of await (await fetch("/api/issues")).json()) await fetch(`/api/issues/${i.id}`, { method: "DELETE" });
+  loadIssues();
+};
 loadIssues();
 
 function connect() {

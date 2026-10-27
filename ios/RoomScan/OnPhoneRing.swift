@@ -164,7 +164,7 @@ enum OnPhoneRing {
         var g = vals.map { $0 < (lo + hi) / 2 ? UInt8(1) : UInt8(0) }
         var border = 0
         for i in 0..<6 { border += Int(g[i]) + Int(g[30 + i]) + Int(g[i * 6]) + Int(g[i * 6 + 5]) }
-        guard border >= 23 else { return nil }
+        guard border >= 20 else { return nil }
         for k in 0..<4 {
             for (id, pattern) in bits.enumerated() {
                 var same = true
@@ -219,6 +219,122 @@ enum OnPhoneRing {
         }
     }
 
+
+    // MARK: finding the marker squares (no Vision: its rectangle finder reads the squares too loosely)
+
+    /// Dark regions that are roughly square, each as 4 corners (top-left first, clockwise on screen), corners sharpened by
+    /// fitting a straight line to each side's edge pixels.
+    private static func findQuads(_ g: [UInt8], _ w: Int, _ h: Int) -> [[SIMD2<Double>]] {
+        // local mean (box of 41 x 41 pixels) from an integral image; "dark" = 10 below it
+        var integ = [Int32](repeating: 0, count: (w + 1) * (h + 1))
+        for y in 0..<h {
+            var row: Int32 = 0
+            for x in 0..<w { row += Int32(g[y * w + x]); integ[(y + 1) * (w + 1) + x + 1] = integ[y * (w + 1) + x + 1] + row }
+        }
+        let r = 20
+        var dark = [Bool](repeating: false, count: w * h)
+        for y in 0..<h {
+            let y0 = max(0, y - r), y1 = min(h, y + r + 1)
+            for x in 0..<w {
+                let x0 = max(0, x - r), x1 = min(w, x + r + 1)
+                let sum = integ[y1 * (w + 1) + x1] - integ[y0 * (w + 1) + x1] - integ[y1 * (w + 1) + x0] + integ[y0 * (w + 1) + x0]
+                dark[y * w + x] = Int32(g[y * w + x]) * Int32((y1 - y0) * (x1 - x0)) < sum - Int32(10 * (y1 - y0) * (x1 - x0))
+            }
+        }
+        // connected dark regions
+        var label = [Int32](repeating: 0, count: w * h)
+        var sizes: [Int] = [0], boxes: [(Int, Int, Int, Int)] = [(0, 0, 0, 0)]
+        var stack: [Int] = []
+        var next: Int32 = 0
+        for start in 0..<(w * h) where dark[start] && label[start] == 0 {
+            next += 1
+            label[start] = next
+            stack.append(start)
+            var count = 0, mnx = w, mny = h, mxx = 0, mxy = 0
+            while let p = stack.popLast() {
+                count += 1
+                let x = p % w, y = p / w
+                mnx = min(mnx, x); mxx = max(mxx, x); mny = min(mny, y); mxy = max(mxy, y)
+                if x > 0, dark[p - 1], label[p - 1] == 0 { label[p - 1] = next; stack.append(p - 1) }
+                if x < w - 1, dark[p + 1], label[p + 1] == 0 { label[p + 1] = next; stack.append(p + 1) }
+                if y > 0, dark[p - w], label[p - w] == 0 { label[p - w] = next; stack.append(p - w) }
+                if y < h - 1, dark[p + w], label[p + w] == 0 { label[p + w] = next; stack.append(p + w) }
+            }
+            sizes.append(count); boxes.append((mnx, mny, mxx, mxy))
+        }
+        let minSize = max(200, Int(800 * Double(w * h) / (1920 * 1440)))
+        var wanted = [Bool](repeating: false, count: sizes.count)
+        for l in 1..<sizes.count {
+            let (a, b, c, d) = boxes[l], bw = c - a + 1, bh = d - b + 1
+            wanted[l] = sizes[l] >= minSize && sizes[l] <= w * h / 20 && min(bw, bh) >= 20 && max(bw, bh) <= 4 * min(bw, bh)
+        }
+        // edge pixels of the wanted regions
+        var edges = [Int32: [SIMD2<Double>]]()
+        for y in 0..<h {
+            for x in 0..<w {
+                let l = label[y * w + x]
+                guard l > 0, wanted[Int(l)] else { continue }
+                let p = y * w + x
+                let isEdge = x == 0 || y == 0 || x == w - 1 || y == h - 1 || label[p - 1] != l || label[p + 1] != l || label[p - w] != l || label[p + w] != l
+                if isEdge { edges[l, default: []].append(SIMD2(Double(x), Double(y))) }
+            }
+        }
+        func area(_ q: [SIMD2<Double>]) -> Double {
+            var a = 0.0
+            for i in q.indices { let p = q[i], n = q[(i + 1) % q.count]; a += p.x * n.y - n.x * p.y }
+            return abs(a) / 2
+        }
+        var out: [[SIMD2<Double>]] = []
+        for (l, pts) in edges {
+            // convex hull (monotone chain)
+            let sorted = pts.sorted { $0.x < $1.x || ($0.x == $1.x && $0.y < $1.y) }
+            func cross(_ o: SIMD2<Double>, _ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double { (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x) }
+            var lower: [SIMD2<Double>] = [], upper: [SIMD2<Double>] = []
+            for p in sorted { while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 { lower.removeLast() }; lower.append(p) }
+            for p in sorted.reversed() { while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 { upper.removeLast() }; upper.append(p) }
+            var q = Array(lower.dropLast()) + Array(upper.dropLast())
+            guard q.count >= 4 else { continue }
+            // keep the 4 corners: repeatedly drop the corner whose removal loses the least area
+            while q.count > 4 {
+                var bestK = 0, bestA = -1.0
+                for k in q.indices { var t = q; t.remove(at: k); let a = area(t); if a > bestA { bestA = a; bestK = k } }
+                q.remove(at: bestK)
+            }
+            guard area(q) >= 0.75 * Double(sizes[Int(l)]) else { continue }
+            let c = (q[0] + q[1] + q[2] + q[3]) / 4
+            q.sort { atan2($0.y - c.y, $0.x - c.x) < atan2($1.y - c.y, $1.x - c.x) }
+            let s0 = q.indices.min { q[$0].x + q[$0].y < q[$1].x + q[$1].y }!
+            q = Array(q[s0...] + q[..<s0])
+            // sharpen: a straight line through each side's edge pixels, corners where neighbouring lines cross
+            var lines: [(SIMD2<Double>, SIMD2<Double>)] = []
+            for a in 0..<4 {
+                let p0 = q[a], p1 = q[(a + 1) % 4]
+                let len = simd_length(p1 - p0), dir = (p1 - p0) / len, nrm = SIMD2(-dir.y, dir.x)
+                let sel = pts.filter { let r = $0 - p0, along = simd_dot(r, dir); return abs(simd_dot(r, nrm)) < 4 && along > 0.1 * len && along < 0.9 * len }
+                guard sel.count >= 6 else { break }
+                let m = sel.reduce(SIMD2<Double>(0, 0), +) / Double(sel.count)
+                var sxx = 0.0, syy = 0.0, sxy = 0.0
+                for p in sel { let d = p - m; sxx += d.x * d.x; syy += d.y * d.y; sxy += d.x * d.y }
+                let ang = 0.5 * atan2(2 * sxy, sxx - syy)
+                lines.append((m, SIMD2(cos(ang), sin(ang))))
+            }
+            if lines.count == 4 {
+                var refined: [SIMD2<Double>] = []
+                for a in 0..<4 {
+                    let (c1, d1) = lines[(a + 3) % 4], (c2, d2) = lines[a]
+                    let det = d1.x * (-d2.y) - (-d2.x) * d1.y
+                    guard abs(det) > 1e-9 else { break }
+                    let rhs = c2 - c1
+                    let t = (rhs.x * (-d2.y) - (-d2.x) * rhs.y) / det
+                    refined.append(c1 + t * d1)
+                }
+                if refined.count == 4, zip(refined, q).allSatisfy({ simd_length($0 - $1) < 15 }) { q = refined }
+            }
+            out.append(q)
+        }
+        return out
+    }
+
     // MARK: building
 
     static func build(photos: [URL], metas: [PhotoMeta], masks: [URL], ring: Ring, progress: (String) -> Void) -> Result? {
@@ -228,26 +344,18 @@ enum OnPhoneRing {
         if candidates.count > 60 { let step = Double(candidates.count) / 60; candidates = (0..<60).map { candidates[Int(Double($0) * step)] } }
         var views: [View] = []
         var tried = 0, rectsTotal = 0, decodedTotal = 0, posesBad = 0
-        let rect = VNDetectRectanglesRequest()
-        rect.maximumObservations = 40
-        rect.minimumSize = 0.02
-        rect.minimumAspectRatio = 0.2
-        rect.maximumAspectRatio = 1.0        // the default (0.5) leaves out squares, and the markers are squares
-        rect.quadratureTolerance = 40
-        rect.minimumConfidence = 0.3
         for (n, url) in candidates.enumerated() {
             if n % 5 == 0 { progress("Finding the ring: photo \(n + 1) of \(candidates.count)…") }
             guard let meta = metaFor[url.lastPathComponent], let cg = cgImage(url),
                   let mURL = maskFor[url.deletingPathExtension().lastPathComponent], let mcg = cgImage(mURL) else { continue }
             let w = cg.width, h = cg.height
             let gray = pixels(cg, width: w, height: h, gray: true)
-            guard (try? VNImageRequestHandler(cgImage: cg).perform([rect])) != nil else { continue }
+            let squares = findQuads(gray, w, h)
             var obj: [SIMD2<Double>] = [], pix: [SIMD2<Double>] = [], owner: [Int] = []
             var seen = Set<Int>()
             tried += 1
-            rectsTotal += rect.results?.count ?? 0
-            for o in rect.results ?? [] {
-                let q0 = [o.topLeft, o.topRight, o.bottomRight, o.bottomLeft].map { SIMD2(Double($0.x) * Double(w), (1 - Double($0.y)) * Double(h)) }
+            rectsTotal += squares.count
+            for q0 in squares {
                 // the found square may sit a little inside or outside the black border: try it as found, then slightly bigger and smaller
                 let mid = (q0[0] + q0[1] + q0[2] + q0[3]) / 4
                 var found: (Int, Int)?
