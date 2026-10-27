@@ -18,10 +18,11 @@ final class PhotoRecorder {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
-    func consider(_ frame: ARFrame) {
+    /// `force` skips the movement test: the guided scan decides when a new view is worth a photo.
+    func consider(_ frame: ARFrame, force: Bool = false) {
         guard metas.count < maxPhotos, case .normal = frame.camera.trackingState else { return }
         let t = frame.camera.transform
-        if let last = lastPose {
+        if !force, let last = lastPose {
             let moved = simd_length(t.columns.3 - last.columns.3) > 0.25
             let turned = simd_dot(simd_normalize(t.columns.2), simd_normalize(last.columns.2)) < 0.966
             if !moved && !turned { return }

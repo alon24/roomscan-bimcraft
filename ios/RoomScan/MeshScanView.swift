@@ -1,4 +1,5 @@
 import CoreImage
+import CoreMotion
 import SwiftUI
 import ARKit
 import SceneKit
@@ -18,6 +19,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var recorder: PhotoRecorder?
     private var timer: Timer?
     private var ticks = 0
+    let guided = CoverageTracker()
+    @Published var guidedActive = false
+    private var coverageTimer: Timer?
     // Depth point cloud, built from the LiDAR depth map of every camera frame. This does not depend on ARKit's mesh
     // anchors, which never arrived on the test phone.
     private var cloud: [SIMD3<Float>] = []
@@ -39,11 +43,18 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         sceneView.delegate = self
         sceneView.automaticallyUpdatesLighting = true
         sceneView.scene.rootNode.addChildNode(cloudNode)
+        guided.attach(to: sceneView.scene)
     }
 
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""
         recorder = PhotoRecorder()
+        guided.begin()
+        guidedActive = guided.isActive
+        coverageTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.guided.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
+        }
         ticks = 0
         cloud = []; cloudColours = []; occupied = []; shownPoints = 0; cloudNode.geometry = nil
         cloudTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.addPoints() }
@@ -76,7 +87,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         case .limited(.insufficientFeatures): parts.append("Not enough detail or light")
         case .limited: parts.append("Tracking limited")
         }
-        if !dark { recorder?.consider(frame) }
+        if !dark && !guided.isActive { recorder?.consider(frame) }
         lock.lock()
         for a in frame.anchors { if let m = a as? ARMeshAnchor { meshAnchors[m.identifier] = m } }
         let all = Array(meshAnchors.values)
@@ -93,6 +104,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     func stop() {
         timer?.invalidate(); timer = nil
         cloudTimer?.invalidate(); cloudTimer = nil
+        coverageTimer?.invalidate(); coverageTimer = nil
+        guided.end()
+        guidedActive = false
         lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
         sceneView.session.pause()
         scanning = false
@@ -137,7 +151,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     // MARK: depth point cloud
     private func addPoints() {
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
-              let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
+              guided.acceptsPoints, let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
+        let vox = guided.phase == .capturing ? max(0.004, min(voxel, guided.radius / 50)) : voxel
         let dm = depth.depthMap
         let dw = CVPixelBufferGetWidth(dm), dh = CVPixelBufferGetHeight(dm)
         // camera colours at the depth map's size
@@ -163,7 +178,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 guard d > 0.15, d < 5, crow[x] >= 1 else { continue }
                 // ARKit camera: +X right, +Y up, looks down -Z; image rows go down
                 let w = t * SIMD4<Float>((Float(x) - cx) * d / fx, -(Float(y) - cy) * d / fy, -d, 1)
-                let key = Self.voxelKey(w, voxel)
+                guard guided.contains(SIMD3(w.x, w.y, w.z)) else { continue }
+                let key = Self.voxelKey(w, vox)
                 guard occupied.insert(key).inserted else { continue }
                 cloud.append(SIMD3(w.x, w.y, w.z))
                 let o = (y * dw + x) * 4
@@ -401,6 +417,7 @@ struct MeshScanView: View {
                 ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
             }
             VStack(spacing: 8) {
+                if !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
                 if model.modelScene != nil {
                     Picker("View", selection: $mode) {
                         Text("AR view").tag(0)
@@ -408,8 +425,13 @@ struct MeshScanView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                if !model.guidedActive {
+                    Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                }
                 Spacer()
+                if model.guidedActive && model.scanning {
+                    GuidedPanel(tracker: model.guided) { model.guided.setObject(model.sceneView) }
+                }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
                 HStack {
@@ -428,6 +450,23 @@ struct MeshScanView: View {
                     .font(.caption)
             }
             .padding()
+        }
+    }
+}
+
+struct ScanTypePicker: View {
+    @ObservedObject var tracker: CoverageTracker
+    var body: some View {
+        VStack(spacing: 4) {
+            Picker("Scan type", selection: $tracker.enabled) {
+                Text("Free scan").tag(false)
+                Text("Guided object").tag(true)
+            }
+            .pickerStyle(.segmented)
+            if tracker.enabled {
+                Text("For a part on a table: you mark where it is, and the app shows which views are still missing.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }
