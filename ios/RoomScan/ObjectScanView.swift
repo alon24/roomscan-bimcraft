@@ -79,17 +79,17 @@ final class ObjectScanModel: ObservableObject {
         releaseSession()
     }
 
-    /// Up to 24 evenly spaced shots from Object Capture's image folder, downsized to JPEG for the web gallery.
+    /// Up to 120 evenly spaced shots from Object Capture's image folder, downsized to JPEG for the web gallery.
     private func samplePhotos(from dir: URL) -> [URL] {
         let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
             .filter { ["heic", "jpg", "jpeg", "png"].contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         sampledIndexes = []
         guard !files.isEmpty else { return [] }
-        let step = max(1, files.count / 24)
+        let step = max(1, files.count / 120)
         let ctx = CIContext()
         var out: [URL] = []
-        for (i, f) in files.enumerated() where i % step == 0 && out.count < 24 {
+        for (i, f) in files.enumerated() where i % step == 0 && out.count < 120 {
             guard var img = CIImage(contentsOf: f, options: [.applyOrientationProperty: true]) else { continue }
             let k = min(1, 1280 / max(img.extent.width, img.extent.height))
             img = img.transformed(by: CGAffineTransform(scaleX: k, y: k))
