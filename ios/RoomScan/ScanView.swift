@@ -161,6 +161,18 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         return (try? data.write(to: url)) != nil ? (w, h) : nil
     }
 
+    private var stopAsked = Date.distantPast
+
+    /// Stopping before any wall is found gives an empty plan: say so, and stop only on a second tap.
+    func requestStop() {
+        if wallCount == 0 && Date().timeIntervalSince(stopAsked) > 6 {
+            stopAsked = Date()
+            status = "No walls found yet, so the plan would be empty. Keep scanning: step back so the floor and ceiling lines show, turn slowly towards each wall and corner. Tap Stop again to stop anyway."
+            return
+        }
+        stop()
+    }
+
     func stop() {
         photoTimer?.invalidate(); photoTimer = nil
         if let dir = photoDir, !photoMetas.isEmpty {
@@ -297,11 +309,15 @@ struct ScanView: View {
                     SceneSummary(scene: model.live3D)
                     Text("One finger turns, pinch zooms, two fingers move, double-tap resets").font(.caption2).foregroundStyle(.secondary)
                 }
+                if model.scanning {
+                    Text(model.wallCount == 0 ? "Looking for walls…" : "\(model.wallCount) walls found")
+                        .font(.title3.weight(.bold)).padding(8).background(.regularMaterial, in: Capsule())
+                }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
                 HStack {
                     if model.scanning {
-                        Button("Stop") { model.stop() }
+                        Button("Stop") { model.requestStop() }
                     } else {
                         Button(model.jsonURL != nil || !model.status.isEmpty ? "Scan again" : "Start scan") { model.reset(); model.start() }
                     }

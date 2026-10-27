@@ -32,6 +32,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     struct Dot { var x: Float; var y: Float; var color: SIMD3<Float> }
     @Published var dots: [Dot] = []                // the captured points as the camera sees them now, drawn flat on top of the picture
     @Published var pointCount = 0
+    @Published var framesSoFar = 0
     private var overlayTimer: Timer?
     private var lastCount = 0
     private var stalled = 0
@@ -93,6 +94,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
         dots = out
         pointCount = cloud.count
+        framesSoFar = recorder?.count ?? 0
     }
 
     func start() {
@@ -618,8 +620,11 @@ struct MeshScanView: View {
                     Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
                 if model.scanning && !model.guidedActive {
-                    Text("\(model.pointCount) points captured").font(.title3.weight(.bold)).padding(8)
-                        .background(.regularMaterial, in: Capsule())
+                    VStack(spacing: 2) {
+                        Text("\(model.pointCount) points · \(model.framesSoFar) photos").font(.title3.weight(.bold))
+                        if model.framesSoFar < 120 { Text("Keep going: a room needs about 120 photos (1 to 2 minutes)").font(.caption) }
+                    }
+                    .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
                 Spacer()
                 if model.guidedActive && model.scanning {
