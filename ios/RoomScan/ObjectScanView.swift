@@ -269,7 +269,7 @@ struct ObjectScanView: View {
             } else if let url = model.usdzURL {
                 ModelPreview(url: url).ignoresSafeArea()
             } else if idle && mode == 1 {
-                CameraPreview(session: turntable.session).ignoresSafeArea()
+                CameraPreview(session: turntable.session, capture: turntable).ignoresSafeArea()
             } else {
                 Color(.systemBackground).ignoresSafeArea()
             }
@@ -295,6 +295,15 @@ struct ObjectScanView: View {
                     TextField("Real height of the part in mm (sets the size)", text: $heightText)
                         .keyboardType(.decimalPad).textFieldStyle(.roundedBorder).font(.caption)
                         .onChange(of: heightText) { _, v in model.realHeightMM = Double(v.replacingOccurrences(of: ",", with: ".")) }
+                    if !turntable.running {
+                        HStack {
+                            Image(systemName: "minus.magnifyingglass")
+                            Slider(value: Binding(get: { Double(turntable.zoom) }, set: { turntable.setZoom(CGFloat($0)) }), in: 1...6)
+                            Image(systemName: "plus.magnifyingglass")
+                            Text(String(format: "%.1f×", Double(turntable.zoom))).font(.caption.monospacedDigit())
+                        }
+                        .padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    }
                     HStack {
                         Text("\(turntable.count) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
                         if !turntable.running {

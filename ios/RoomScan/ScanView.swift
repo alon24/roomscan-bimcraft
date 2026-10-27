@@ -37,6 +37,9 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     @Published var usdzURL: URL?
     @Published var photoURLs: [URL] = []
     @Published var hud = ""
+    @Published var wallCount = 0
+    private var scanStarted = Date()
+    private var discarding = false
     let live3D = LiveRoomScene()
     private var lastScene = Date.distantPast
     private var liveRoom: CapturedRoom?
@@ -67,6 +70,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         jsonURL = nil; usdzURL = nil; result = nil; status = ""
         photoURLs = []; photosMetaURL = nil; photoMetas = []; lastPose = nil
         live3D.reset()
+        wallCount = 0; scanStarted = Date(); discarding = false
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("room-photos-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         photoDir = dir
@@ -91,6 +95,9 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         case .limited(.excessiveMotion): parts.append("Moving too fast")
         case .limited(.insufficientFeatures): parts.append("Not enough detail or light")
         case .limited: parts.append("Tracking limited")
+        }
+        if wallCount == 0 && Date().timeIntervalSince(scanStarted) > 10 {
+            parts.append("No walls found yet: step back until you see the floor and the ceiling line, and point at the corners")
         }
         if let room = liveRoom, !room.walls.isEmpty {
             let longest = room.walls.map { $0.dimensions.x }.max() ?? 0
@@ -169,6 +176,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     // MARK: RoomCaptureSessionDelegate: stream the partial room to the web UI (about 2 per second)
     func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
         liveRoom = room
+        DispatchQueue.main.async { [weak self] in self?.wallCount = room.walls.count }
         if Date().timeIntervalSince(lastScene) > 0.5 {
             lastScene = Date()
             DispatchQueue.main.async { [live3D] in live3D.update(room) }
@@ -183,8 +191,28 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     // MARK: RoomCaptureViewDelegate
     func captureView(shouldPresent roomDataForProcessing: CapturedRoomData, error: Error?) -> Bool { true }
 
+    /// Throw the scan away and return to the start, whatever state it is in.
+    func reset() {
+        photoTimer?.invalidate(); photoTimer = nil
+        if scanning { discarding = true; captureView.captureSession.stop() }   // its final result must not come back
+        scanning = false
+        jsonURL = nil; usdzURL = nil; result = nil; liveRoom = nil
+        status = ""; hud = ""; wallCount = 0
+        photoURLs = []; photosMetaURL = nil; photoMetas = []
+        live3D.reset()
+        Reporter.log("room: reset by user")
+    }
+
     func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
+        if discarding { discarding = false; return }
         result = processedResult
+        wallCount = processedResult.walls.count
+        if processedResult.walls.isEmpty {
+            status = "No walls were found, so there is nothing to upload. Tap Reset and scan again: stand back so the floor and ceiling lines show, move slowly, and point at the corners."
+            Reporter.report(tab: "room", message: "Scan finished with no walls", detail: "doors \(processedResult.doors.count), objects \(processedResult.objects.count)")
+            DispatchQueue.main.async { [live3D] in live3D.update(processedResult) }
+            return
+        }
         DispatchQueue.main.async { [live3D] in live3D.update(processedResult) }
         let dir = FileManager.default.temporaryDirectory
         let json = dir.appendingPathComponent("scan.json")
@@ -229,12 +257,12 @@ struct ScanView: View {
 
     private var guide: String {
         if model.scanning {
-            return "Walk slowly around the room and point at every wall, corner, door, window, the floor and the ceiling. In the 3D model, solid lines are finished edges and dashed lines are still missing. Tap Stop when the outline is closed."
+            return "The phone is measuring the room. Walk slowly and point it at every wall, corner, door and window, from floor to ceiling. Apple's outline appears over the camera as it recognises walls; the 3D model tab shows them too: solid lines are finished, dashed lines are still missing. Tilting or moving the phone is fine: it knows where it is from its motion sensors. Tap Stop when the outline is closed."
         }
         if model.jsonURL != nil {
             return "Scan done. Turn the 3D model to check it. Tap Upload to send it to the server, or Start scan to redo it."
         }
-        return "1. Tap Start scan.  2. Walk slowly and point the phone at all walls.  3. Switch to 3D model to see what was captured, and zoom with two fingers.  4. Tap Stop, then Upload."
+        return "What this does: it measures a whole room and builds a floor plan with walls, doors and windows. 1. Tap Start scan.  2. Stand in the room, step back so you see the floor and the ceiling line, and slowly turn and walk, pointing at every wall and corner (about a minute).  3. Switch to 3D model to see what was captured.  4. Tap Stop, then Upload. Tip: the camera cannot zoom here, because zooming would break the measurements."
     }
 
     var body: some View {
@@ -248,7 +276,7 @@ struct ScanView: View {
                     Text("3D model").tag(1)
                 }
                 .pickerStyle(.segmented)
-                Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 Spacer()
                 if mode == 1 {
                     SceneSummary(scene: model.live3D)
@@ -260,7 +288,10 @@ struct ScanView: View {
                     if model.scanning {
                         Button("Stop") { model.stop() }
                     } else {
-                        Button("Start scan") { model.start() }
+                        Button(model.jsonURL != nil || !model.status.isEmpty ? "Scan again" : "Start scan") { model.reset(); model.start() }
+                    }
+                    if model.scanning || model.jsonURL != nil || !model.status.isEmpty {
+                        Button("Reset", role: .destructive) { model.reset() }
                     }
                     if mode == 1 { Button("Recenter") { model.live3D.recenter() } }
                     if model.jsonURL != nil, !model.scanning {

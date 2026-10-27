@@ -14,6 +14,7 @@ final class TurntableCapture: NSObject, ObservableObject, AVCapturePhotoCaptureD
     @Published var running = false
     @Published var interval = 1.5      // seconds between photos
     @Published var status = ""
+    @Published var zoom: CGFloat = 1      // optical/digital zoom of the camera; fixed while photos are being taken
     private let maxPhotos = 120
 
     /// Start the camera preview (once).
@@ -32,6 +33,16 @@ final class TurntableCapture: NSObject, ObservableObject, AVCapturePhotoCaptureD
             session.commitConfiguration()
         }
         if !session.isRunning { DispatchQueue.global().async { self.session.startRunning() } }
+    }
+
+    /// Zoom in or out (before capturing: intrinsics must not change in the middle of a scan).
+    func setZoom(_ z: CGFloat) {
+        guard let d = device, !running else { return }
+        let clamped = max(1, min(z, min(d.activeFormat.videoMaxZoomFactor, 6)))
+        guard (try? d.lockForConfiguration()) != nil else { return }
+        d.videoZoomFactor = clamped
+        d.unlockForConfiguration()
+        DispatchQueue.main.async { self.zoom = clamped }
     }
 
     func shutdown() {
@@ -104,6 +115,21 @@ final class TurntableCapture: NSObject, ObservableObject, AVCapturePhotoCaptureD
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    var capture: TurntableCapture?
+
+    func makeCoordinator() -> Coordinator { Coordinator(capture) }
+
+    /// Pinch to zoom.
+    final class Coordinator: NSObject {
+        let capture: TurntableCapture?
+        var base: CGFloat = 1
+        init(_ capture: TurntableCapture?) { self.capture = capture }
+        @objc func pinch(_ g: UIPinchGestureRecognizer) {
+            guard let c = capture else { return }
+            if g.state == .began { base = c.zoom }
+            c.setZoom(base * g.scale)
+        }
+    }
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
@@ -114,6 +140,7 @@ struct CameraPreview: UIViewRepresentable {
         let v = PreviewView()
         v.layerView.session = session
         v.layerView.videoGravity = .resizeAspectFill
+        v.addGestureRecognizer(UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:))))
         return v
     }
 

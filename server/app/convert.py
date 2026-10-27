@@ -25,7 +25,7 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
     log: list[str] = []
     walls = scan.get("walls") or []
     if not walls:
-        raise ValueError("scan has no walls")
+        raise ValueError("No walls were found in this scan. RoomPlan needs to see the floor-to-ceiling edges and the corners: stand back, scan slowly, light the room, and avoid close-ups of one plain wall. Delete this one and scan again.")
 
     raw = [(w, *g.wall_endpoints(w)) for w in walls]
     kept = []
