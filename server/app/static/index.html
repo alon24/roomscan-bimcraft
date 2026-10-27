@@ -274,10 +274,20 @@ async function show(id) {
         loadFrames(id);
         if (r.points) views.points = withBox(drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r));
         if (r.faces) views.surface = withBox(drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r));
+        // Photo texture: every triangle drawn with the photo that sees it best, projected per pixel (built when first asked for)
+        let texturable = false;
+        if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`, { method: "HEAD" })).ok; } catch {} }
         const first = views.points ? "points" : "surface";
         const box = $("modes");
-        const pick = k => {
-          box.replaceChildren(...[["points", "Points (as on the phone)"], ["surface", "Solid surface"]].filter(([x]) => views[x]).map(([x, label]) => {
+        const pick = async k => {
+          if (k === "textured" && !views.textured) {
+            $("log").textContent = "Loading the photos onto the surface…\n" + $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
+            try { views.textured = withBox(await drawPhotoTextured(id, await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r)); }
+            catch (e) { views.textured = null; texturable = false; $("log").textContent += "\nPhoto texture failed: " + e; k = first; }
+            $("log").textContent = $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
+          }
+          box.replaceChildren(...[["points", "Points (as on the phone)"], ["surface", "Solid surface"], ["textured", "Photo texture"]]
+              .filter(([x]) => x === "textured" ? texturable : views[x]).map(([x, label]) => {
             const b = document.createElement("button");
             b.className = "btn" + (x === k ? " on" : ""); b.textContent = label;
             b.onclick = () => pick(x);
@@ -285,7 +295,7 @@ async function show(id) {
           }));
           show3d(views[k], V && k !== first);
         };
-        box.hidden = !(views.points && views.surface);
+        box.hidden = !((views.points ? 1 : 0) + (views.surface ? 1 : 0) + (texturable ? 1 : 0) > 1);
         pick(first);
       }
       catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
@@ -559,6 +569,72 @@ function drawColoured(buf, r) {
   g.setAttribute("color", new THREE.BufferAttribute(lin, 3));
   g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, n * 12 + colourBytes, r.faces * 3), 1));
   return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));  // ARKit world is already Y-up
+}
+
+// Every triangle gets the photo that sees it best; the fragment shader projects that photo onto the surface pixel by pixel,
+// so the picture is as sharp as the photos, whatever the mesh density. Up to 24 photos are kept as layers of one texture.
+async function drawPhotoTextured(id, buf, r) {
+  const plan = await (await fetch(`/api/scans/${id}/texturing.json`)).json();
+  const tri = new Int8Array(await (await fetch(`/api/scans/${id}/tri_photo.bin`)).arrayBuffer());
+  const K = plan.count, W = plan.layers[0].width, H = plan.layers[0].height;
+  const data = new Uint8Array(W * H * 4 * K);
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const c2 = cv.getContext("2d", { willReadFrequently: true });
+  const camInv = [], intr = [];
+  for (let k = 0; k < 24; k++) { camInv.push(new THREE.Matrix4()); intr.push(new THREE.Vector4(1, 1, 0, 0)); }
+  await Promise.all(plan.layers.map(async (L, k) => {
+    const bmp = await createImageBitmap(await (await fetch(`/api/scans/${id}/photos/${L.file}`)).blob());
+    const cvk = document.createElement("canvas"); cvk.width = W; cvk.height = H;
+    const cx = cvk.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(bmp, 0, 0, W, H);
+    data.set(cx.getImageData(0, 0, W, H).data, k * W * H * 4);
+    const sx = W / L.width, sy = H / L.height, Kc = L.intrinsics;
+    camInv[k] = new THREE.Matrix4().fromArray(L.transform.flat()).invert();
+    intr[k] = new THREE.Vector4(Kc[0][0] * sx, Kc[1][1] * sy, Kc[2][0] * sx, Kc[2][1] * sy);
+  }));
+  const tex = new THREE.DataArrayTexture(data, W, H, K);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
+  // one triangle = three own vertices, so each can carry its photo layer
+  const n = r.vertices, F = r.faces, colourBytes = Math.ceil(n * 3 / 4) * 4;
+  const P = new Float32Array(buf, 0, n * 3), C = new Uint8Array(buf, n * 12, n * 3), I = new Uint32Array(buf, n * 12 + colourBytes, F * 3);
+  const pos = new Float32Array(F * 9), col = new Float32Array(F * 9), lay = new Float32Array(F * 3);
+  for (let t = 0; t < F; t++) for (let k = 0; k < 3; k++) {
+    const v = I[t * 3 + k], o = t * 9 + k * 3;
+    pos[o] = P[v * 3]; pos[o + 1] = P[v * 3 + 1]; pos[o + 2] = P[v * 3 + 2];
+    col[o] = C[v * 3] / 255; col[o + 1] = C[v * 3 + 1] / 255; col[o + 2] = C[v * 3 + 2] / 255;
+    lay[t * 3 + k] = tri[t];
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("aLayer", new THREE.BufferAttribute(lay, 1));
+  const mat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3, side: THREE.DoubleSide,
+    uniforms: { uTex: { value: tex }, uCamInv: { value: camInv }, uIntr: { value: intr }, uSize: { value: new THREE.Vector2(W, H) } },
+    vertexShader: `
+      in vec3 aColor; in float aLayer;
+      out vec3 vWorld; out vec3 vColor; flat out float vLayer;
+      void main() { vWorld = position; vColor = aColor; vLayer = aLayer;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      precision highp float; precision highp sampler2DArray;
+      uniform sampler2DArray uTex; uniform mat4 uCamInv[24]; uniform vec4 uIntr[24]; uniform vec2 uSize;
+      in vec3 vWorld; in vec3 vColor; flat in float vLayer; out vec4 outColor;
+      void main() {
+        vec3 c = vColor;
+        if (vLayer > -0.5) {
+          int l = int(vLayer + 0.5);
+          vec4 pc = uCamInv[l] * vec4(vWorld, 1.0);
+          float depth = -pc.z;
+          if (depth > 0.05) {
+            vec2 uv = vec2(uIntr[l].x * pc.x / depth + uIntr[l].z, uIntr[l].w - uIntr[l].y * pc.y / depth) / uSize;
+            if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) c = texture(uTex, vec3(uv, float(l))).rgb;
+          }
+        }
+        outColor = vec4(c, 1.0);
+      }`,
+  });
+  return new THREE.Mesh(g, mat);
 }
 
 // A depth point cloud: positions | rgb, coloured on the phone from the camera image.

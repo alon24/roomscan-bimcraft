@@ -140,6 +140,59 @@ def printable(mesh: trimesh.Trimesh, d: Path) -> dict:
     return objects.report(m)
 
 
+def plan_texture(mesh: trimesh.Trimesh, d: Path, layers: int = 24, probe: int = 80) -> dict | None:
+    """Choose, for every triangle, the photo that should be drawn on it, and keep the `layers` photos that matter most.
+    The web viewer then projects those photos onto the surface pixel by pixel, so the picture is as sharp as the photos,
+    not as coarse as the mesh. Writes tri_photo.bin (one signed byte per triangle: layer number, -1 = none) and texturing.json."""
+    mf = d / "photos.json"
+    if not mf.exists() or len(mesh.faces) == 0:
+        return None
+    m = json.loads(mf.read_text())
+    photos = [p for p in (m.get("photos", []) if isinstance(m, dict) else m) if (d / "photos" / p["file"]).exists()]
+    if not photos:
+        return None
+    cen = mesh.triangles_center
+    nrm = mesh.face_normals
+
+    def scores(ph: dict) -> np.ndarray:
+        uv, depth = project(ph, cen)
+        cam = np.array(ph["transform"], dtype=float)[3, :3]
+        to_cam = cam - cen
+        dist = np.maximum(np.linalg.norm(to_cam, axis=1), 1e-6)
+        facing = np.einsum("ij,ij->i", nrm, to_cam) / dist
+        w, h = ph["width"], ph["height"]
+        ok = (depth > 0.1) & (facing > 0.2) & (uv[:, 0] > 0.02 * w) & (uv[:, 0] < 0.98 * w) & (uv[:, 1] > 0.02 * h) & (uv[:, 1] < 0.98 * h)
+        dm = _depth_map(d, ph)
+        if dm is not None and ok.any():                      # something nearer in front of the triangle: this photo cannot see it
+            dh, dw = dm.shape
+            seen = dm[np.clip((uv[:, 1] * dh / h).astype(int), 0, dh - 1), np.clip((uv[:, 0] * dw / w).astype(int), 0, dw - 1)]
+            ok &= ~((seen > 0) & (depth > seen + 0.12))
+        return np.where(ok, facing / np.maximum(depth, 0.2) ** 2, 0.0)
+
+    def assign(candidates: list[int]) -> tuple[np.ndarray, np.ndarray]:
+        best, who = np.zeros(len(cen)), np.full(len(cen), -1, dtype=np.int32)
+        for j in candidates:
+            sc = scores(photos[j])
+            better = sc > best
+            best[better], who[better] = sc[better], j
+        return best, who
+
+    first = list(range(0, len(photos), max(1, len(photos) // probe)))
+    _, who = assign(first)
+    counts = np.bincount(who[who >= 0], minlength=len(photos))
+    top = [int(j) for j in np.argsort(counts)[::-1][:layers] if counts[j] > 0]
+    if not top:
+        return None
+    _, who = assign(top)
+    layer_of = {j: k for k, j in enumerate(top)}
+    tri = np.array([layer_of.get(int(j), -1) for j in who], dtype=np.int8)
+    (d / "tri_photo.bin").write_bytes(tri.tobytes())
+    plan = {"count": len(top), "triangles": int(len(tri)), "covered": round(float((tri >= 0).mean()), 3),
+            "layers": [{k: photos[j][k] for k in ("file", "width", "height", "transform", "intrinsics")} for j in top]}
+    (d / "texturing.json").write_text(json.dumps(plan))
+    return plan
+
+
 def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit: int = 60) -> tuple[np.ndarray, float]:
     """Take the colour of each surface point from the full-size photos (the one that sees it head-on, not blocked by something
     nearer) instead of the small image the phone sampled while scanning. Points no photo sees keep their old colour."""
@@ -181,6 +234,13 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: d
                 log += f", photo colours skipped ({type(e).__name__}: {e})"
         (d / "mesh.bin").write_bytes(pack_preview(mesh, rgb))
         mesh.export(d / "colored.ply")
+        if recolour and scale == 1.0:
+            try:
+                plan = plan_texture(mesh, d)
+                if plan:
+                    log += f", photo texture from {plan['count']} photos covers {round(plan['covered'] * 100)}% of the triangles"
+            except Exception as e:
+                log += f", photo texture skipped ({type(e).__name__}: {e})"
         rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=1.0)
         log += f", surface of {rep['faces']} triangles"
         if has_fp:  # a traced part is a printable solid
@@ -210,6 +270,10 @@ def convert_mesh(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         (d / "mesh.bin").write_bytes(pack_preview(mesh, rgb))
         mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[rgb, np.full(len(rgb), 255, dtype=np.uint8)])
         mesh.export(d / "colored.ply")
+        try:
+            plan_texture(mesh, d)
+        except Exception:
+            pass
         rep = {"vertices": int(len(mesh.vertices)), "faces": int(len(mesh.faces)),
                "size_m": [round(float(x), 2) for x in mesh.extents], "coloured": round(covered, 3), "photos": len(photos)}
         (d / "report.json").write_text(json.dumps(rep))

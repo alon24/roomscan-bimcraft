@@ -20,7 +20,7 @@ from . import convert, frames as frame_tools, meshscan, ring as ring_scan_mod, t
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
-ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "footprint.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
+ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json"}
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")

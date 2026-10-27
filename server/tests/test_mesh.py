@@ -35,6 +35,9 @@ def test_mesh_scan_is_coloured_from_the_photo(tmp_path, monkeypatch):
     raw = c.get(f"/api/scans/{sid}/mesh.bin").content
     rgb = np.frombuffer(raw[4 * 12:4 * 12 + 12], dtype=np.uint8).reshape(4, 3)
     assert (abs(rgb.astype(int) - [200, 30, 30]).max() <= 6)
+    plan = c.get(f"/api/scans/{sid}/texturing.json").json()           # the photo is chosen for the triangles it sees
+    tri = np.frombuffer(c.get(f"/api/scans/{sid}/tri_photo.bin").content, dtype=np.int8)
+    assert plan["count"] == 1 and plan["layers"][0]["file"] == "p001.jpg" and (tri == 0).all()
 
 
 def test_mesh_without_photos_is_grey(tmp_path, monkeypatch):
