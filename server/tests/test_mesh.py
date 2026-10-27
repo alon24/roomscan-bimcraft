@@ -49,3 +49,17 @@ def test_mesh_without_photos_is_grey(tmp_path, monkeypatch):
 def test_mesh_kind_needs_a_mesh(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATA", tmp_path / "scans")
     assert TestClient(main.app).post("/api/scans", data={"kind": "mesh"}).status_code == 422
+
+
+def test_point_cloud_scan_is_kept_and_meshed(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    rng = np.random.default_rng(1)
+    v = rng.normal(size=(4000, 3))
+    v = 0.5 * v / np.linalg.norm(v, axis=1)[:, None]
+    trimesh.PointCloud(v, colors=np.tile([10, 200, 30, 255], (len(v), 1)).astype(np.uint8)).export(tmp_path / "c.ply")
+    c = TestClient(main.app)
+    r = c.post("/api/scans", data={"kind": "mesh"}, files=[("mesh", ("scan.ply", open(tmp_path / "c.ply", "rb")))])
+    assert r.json()["status"] == "ok", r.text
+    rep = c.get(f"/api/scans/{r.json()['id']}/report.json").json()
+    assert rep["points"] == 4000
+    assert len(c.get(f"/api/scans/{r.json()['id']}/points.bin").content) == 4000 * 15

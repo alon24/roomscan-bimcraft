@@ -1,3 +1,4 @@
+import CoreImage
 import SwiftUI
 import ARKit
 import SceneKit
@@ -17,6 +18,17 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var recorder: PhotoRecorder?
     private var timer: Timer?
     private var ticks = 0
+    // Depth point cloud, built from the LiDAR depth map of every camera frame. This does not depend on ARKit's mesh
+    // anchors, which never arrived on the test phone.
+    private var cloud: [SIMD3<Float>] = []
+    private var cloudColours: [SIMD3<Float>] = []
+    private var occupied = Set<Int64>()
+    private var cloudTimer: Timer?
+    private var shownPoints = 0
+    private let cloudNode = SCNNode()
+    private let ciContext = CIContext()
+    private let maxPoints = 1_000_000
+    private let voxel: Float = 0.015
     private let lock = NSLock()
     private var meshAnchors: [UUID: ARMeshAnchor] = [:]   // kept from the delegate, so Stop does not depend on currentFrame
 
@@ -26,12 +38,15 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         super.init()
         sceneView.delegate = self
         sceneView.automaticallyUpdatesLighting = true
+        sceneView.scene.rootNode.addChildNode(cloudNode)
     }
 
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""
         recorder = PhotoRecorder()
         ticks = 0
+        cloud = []; cloudColours = []; occupied = []; shownPoints = 0; cloudNode.geometry = nil
+        cloudTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.addPoints() }
         lock.lock(); meshAnchors = [:]; lock.unlock()
         let cfg = ARWorldTrackingConfiguration()
         cfg.sceneReconstruction = .mesh
@@ -67,19 +82,21 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         let all = Array(meshAnchors.values)
         lock.unlock()
         if ticks % 4 == 0 {
-            Reporter.log("mesh t=\(ticks / 2)s frameAnchors=\(frame.anchors.count) meshPatches=\(all.count) tracking=\(frame.camera.trackingState) depth=\(frame.sceneDepth != nil) photos=\(recorder?.count ?? 0)")
+            Reporter.log("mesh t=\(ticks / 2)s frameAnchors=\(frame.anchors.count) meshPatches=\(all.count) points=\(cloud.count) tracking=\(frame.camera.trackingState) depth=\(frame.sceneDepth != nil) photos=\(recorder?.count ?? 0)")
         }
         let tris = all.reduce(0) { $0 + $1.geometry.faces.count }
-        parts.append("\(all.count) patches · \(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
+        refreshCloud()
+        parts.append("\(cloud.count / 1000)k points · \(all.count) patches · \(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
         hud = parts.joined(separator: " · ")
     }
 
     func stop() {
         timer?.invalidate(); timer = nil
+        cloudTimer?.invalidate(); cloudTimer = nil
         lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
         sceneView.session.pause()
         scanning = false
-        guard !anchors.isEmpty else {
+        guard !anchors.isEmpty || !cloud.isEmpty else {
             let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
             status = "No surfaces were captured (\(ticks / 2) s). \(why) A report was sent."
             Reporter.report(tab: "mesh", message: "No surfaces captured after \(ticks / 2) s", detail: why)
@@ -89,8 +106,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         let rec = recorder
         DispatchQueue.global().async { [weak self] in
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("scan.ply")
-            let ok = Self.writePLY(anchors, to: url)
-            let scene = Self.modelScene(anchors)
+            // ARKit's mesh when it produced one, otherwise the depth point cloud (the server meshes it).
+            let ok = anchors.isEmpty ? self?.writeCloudPLY(to: url) ?? false : Self.writePLY(anchors, to: url)
+            let scene = anchors.isEmpty ? self?.cloudScene() ?? SCNScene() : Self.modelScene(anchors)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.plyURL = ok ? url : nil
@@ -114,6 +132,99 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             status = "Upload failed: \(error.localizedDescription) — use Share"
             Reporter.report(tab: "mesh", message: "Upload failed", detail: "\(error)")
         }
+    }
+
+    // MARK: depth point cloud
+    private func addPoints() {
+        guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
+              let depth = frame.sceneDepth, cloud.count < maxPoints else { return }
+        let dm = depth.depthMap, conf = depth.confidenceMap
+        let dw = CVPixelBufferGetWidth(dm), dh = CVPixelBufferGetHeight(dm)
+        // camera colours at the depth map's size
+        var rgba = [UInt8](repeating: 0, count: dw * dh * 4)
+        let img = CIImage(cvPixelBuffer: frame.capturedImage)
+        let small = img.transformed(by: CGAffineTransform(scaleX: CGFloat(dw) / img.extent.width, y: CGFloat(dh) / img.extent.height))
+        ciContext.render(small, toBitmap: &rgba, rowBytes: dw * 4, bounds: CGRect(x: 0, y: 0, width: dw, height: dh),
+                         format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        // intrinsics are for the full image; scale to the depth map
+        let k = frame.camera.intrinsics
+        let sx = Float(dw) / Float(frame.camera.imageResolution.width), sy = Float(dh) / Float(frame.camera.imageResolution.height)
+        let fx = k[0][0] * sx, fy = k[1][1] * sy, cx = k[2][0] * sx, cy = k[2][1] * sy
+        let t = frame.camera.transform
+        CVPixelBufferLockBaseAddress(dm, .readOnly); CVPixelBufferLockBaseAddress(conf, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(dm, .readOnly); CVPixelBufferUnlockBaseAddress(conf, .readOnly) }
+        guard let db = CVPixelBufferGetBaseAddress(dm), let cb = CVPixelBufferGetBaseAddress(conf) else { return }
+        let dbpr = CVPixelBufferGetBytesPerRow(dm), cbpr = CVPixelBufferGetBytesPerRow(conf)
+        for y in stride(from: 0, to: dh, by: 2) {
+            let drow = (db + y * dbpr).assumingMemoryBound(to: Float32.self)
+            let crow = (cb + y * cbpr).assumingMemoryBound(to: UInt8.self)
+            for x in stride(from: 0, to: dw, by: 2) {
+                let d = drow[x]
+                guard d > 0.15, d < 5, crow[x] >= 1 else { continue }
+                // ARKit camera: +X right, +Y up, looks down -Z; image rows go down
+                let w = t * SIMD4<Float>((Float(x) - cx) * d / fx, -(Float(y) - cy) * d / fy, -d, 1)
+                let key = Self.voxelKey(w, voxel)
+                guard occupied.insert(key).inserted else { continue }
+                cloud.append(SIMD3(w.x, w.y, w.z))
+                let o = (y * dw + x) * 4
+                cloudColours.append(SIMD3(Float(rgba[o]), Float(rgba[o + 1]), Float(rgba[o + 2])) / 255)
+            }
+        }
+    }
+
+    private static func voxelKey(_ p: SIMD4<Float>, _ size: Float) -> Int64 {
+        let ix = Int64((p.x / size).rounded(.down)) & 0x1FFFFF
+        let iy = Int64((p.y / size).rounded(.down)) & 0x1FFFFF
+        let iz = Int64((p.z / size).rounded(.down)) & 0x1FFFFF
+        return (ix << 42) | (iy << 21) | iz
+    }
+
+    /// Redraw the cloud as coloured dots over the camera picture.
+    private func refreshCloud() {
+        guard cloud.count != shownPoints else { return }
+        shownPoints = cloud.count
+        cloudNode.geometry = cloudGeometry()
+    }
+
+    private func cloudGeometry() -> SCNGeometry? {
+        let n = cloud.count
+        guard n > 0 else { return nil }
+        let stride = MemoryLayout<SIMD3<Float>>.stride
+        let pos = cloud.withUnsafeBufferPointer { Data(buffer: $0) }
+        let col = cloudColours.withUnsafeBufferPointer { Data(buffer: $0) }
+        let vs = SCNGeometrySource(data: pos, semantic: .vertex, vectorCount: n, usesFloatComponents: true,
+                                   componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: stride)
+        let cs = SCNGeometrySource(data: col, semantic: .color, vectorCount: n, usesFloatComponents: true,
+                                   componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: stride)
+        let el = SCNGeometryElement(data: nil, primitiveType: .point, primitiveCount: n, bytesPerIndex: 0)
+        el.pointSize = 4
+        el.minimumPointScreenSpaceRadius = 2
+        el.maximumPointScreenSpaceRadius = 5
+        let g = SCNGeometry(sources: [vs, cs], elements: [el])
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        g.firstMaterial = m
+        return g
+    }
+
+    private func cloudScene() -> SCNScene {
+        let scene = SCNScene()
+        scene.background.contents = UIColor(white: 0.1, alpha: 1)
+        scene.rootNode.addChildNode(SCNNode(geometry: cloudGeometry()))
+        return scene
+    }
+
+    /// Binary little-endian PLY of points with colours, ARKit world frame (metres, Y up).
+    private func writeCloudPLY(to url: URL) -> Bool {
+        var data = Data("ply\nformat binary_little_endian 1.0\nelement vertex \(cloud.count)\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n".utf8)
+        var body = [UInt8]()
+        body.reserveCapacity(cloud.count * 15)
+        for (p, c) in zip(cloud, cloudColours) {
+            for f in [p.x, p.y, p.z] { withUnsafeBytes(of: f.bitPattern.littleEndian) { body.append(contentsOf: $0) } }
+            body.append(contentsOf: [UInt8(max(0, min(255, c.x * 255))), UInt8(max(0, min(255, c.y * 255))), UInt8(max(0, min(255, c.z * 255)))])
+        }
+        data.append(contentsOf: body)
+        return (try? data.write(to: url)) != nil
     }
 
     // MARK: session problems are shown instead of failing silently
@@ -274,12 +385,12 @@ struct MeshScanView: View {
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
         if model.scanning {
-            return "Move slowly and point at everything you want in the model. The blue grid appears on every surface the LiDAR has seen. Gaps in the grid are not captured yet. Tap Stop when it covers what you need."
+            return "Move slowly and point at everything you want in the model. Coloured dots appear on every surface the LiDAR has seen. Gaps with no dots are not captured yet. Tap Stop when it covers what you need."
         }
         if model.plyURL != nil {
             return "Scan done. Switch to 3D model to turn it around. Upload sends it to the server, which colours it from the photos."
         }
-        return "1. Tap Start scan.  2. Walk slowly around the object or room, keeping surfaces 0.5 to 3 m away.  3. Watch the blue grid fill in.  4. Tap Stop, then Upload."
+        return "1. Tap Start scan.  2. Walk slowly around the object or room, keeping surfaces 0.5 to 3 m away.  3. Watch the dots fill in.  4. Tap Stop, then Upload."
     }
 
     var body: some View {

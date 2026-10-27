@@ -5,6 +5,7 @@ RUN git clone https://github.com/IPedrax/BIMCraft /src && cd /src && git checkou
 
 FROM python:3.12-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=cli /src/target/release/bimcraft-cli /usr/local/bin/bimcraft-cli

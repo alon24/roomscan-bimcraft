@@ -68,12 +68,58 @@ def pack_preview(mesh: trimesh.Trimesh, rgb: np.ndarray) -> bytes:
             + np.asarray(mesh.faces, dtype="<u4").tobytes())
 
 
+def poisson(points: np.ndarray, colours: np.ndarray, depth: int = 8) -> trimesh.Trimesh | None:
+    """Surface from an oriented point cloud (Open3D Poisson). None if Open3D is not installed."""
+    try:
+        import open3d as o3d
+    except ImportError:
+        return None
+    pc = o3d.geometry.PointCloud()
+    pc.points = o3d.utility.Vector3dVector(points)
+    pc.colors = o3d.utility.Vector3dVector(colours[:, :3] / 255.0)
+    pc.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.06, max_nn=30))
+    pc.orient_normals_consistent_tangent_plane(20)
+    mesh, density = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pc, depth=depth)
+    d = np.asarray(density)
+    mesh.remove_vertices_by_mask(d < np.quantile(d, 0.06))  # trim the balloon Poisson grows where there is no data
+    if len(mesh.triangles) == 0:
+        return None
+    out = trimesh.Trimesh(np.asarray(mesh.vertices), np.asarray(mesh.triangles), process=False)
+    out.visual = trimesh.visual.ColorVisuals(out, vertex_colors=(np.asarray(mesh.vertex_colors) * 255).astype(np.uint8))
+    return out
+
+
+def pack_points(points: np.ndarray, rgb: np.ndarray) -> bytes:
+    colours = rgb[:, :3].astype(np.uint8).tobytes()
+    return points.astype("<f4").tobytes() + colours
+
+
+def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float) -> tuple[bool, str]:
+    """A depth point cloud from the phone: keep it for the viewer, and mesh it if Open3D is available."""
+    pts = np.asarray(cloud.vertices, dtype=float) * scale
+    cols = np.asarray(cloud.colors) if cloud.colors is not None and len(cloud.colors) == len(pts) else np.tile([150, 150, 150, 255], (len(pts), 1))
+    (d / "points.bin").write_bytes(pack_points(pts, cols))
+    rep = {"points": int(len(pts)), "size_m": [round(float(x), 2) for x in np.ptp(pts, axis=0)], "vertices": 0, "faces": 0}
+    log = f"{len(pts)} points"
+    mesh = poisson(pts, cols) if len(pts) >= 500 else None
+    if mesh is not None:
+        rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]
+        (d / "mesh.bin").write_bytes(pack_preview(mesh, rgb))
+        mesh.export(d / "colored.ply")
+        rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=1.0)
+        log += f", surface of {rep['faces']} triangles"
+    (d / "report.json").write_text(json.dumps(rep))
+    return True, log
+
+
 def convert_mesh(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     """Write mesh.bin (viewer), colored.ply and report.json into d."""
     try:
         mesh = trimesh.load(d / "scan.ply", process=False)
+        if isinstance(mesh, trimesh.PointCloud):
+            return convert_cloud(d, mesh, scale)
         if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
-            return False, "scan.ply has no triangles"
+            return False, "scan.ply has no triangles or points"
         if scale != 1.0:
             mesh.apply_scale(scale)
         manifest = json.loads((d / "photos.json").read_text()) if (d / "photos.json").exists() else {}

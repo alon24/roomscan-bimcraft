@@ -23,7 +23,16 @@ final class ObjectScanModel: ObservableObject {
 
     var supported: Bool { ObjectCaptureSession.isSupported }
 
+    /// Stop listening to the old session so it can be released; a second session cannot start while the first lives.
+    private func releaseSession() {
+        watcher?.cancel(); watcher = nil
+        feedbackWatcher?.cancel(); feedbackWatcher = nil
+        session = nil
+    }
+
     func begin() {
+        releaseSession()
+        state = .initializing
         usdzURL = nil; status = ""; progress = 0; feedback = ""
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("object-\(UUID().uuidString)")
         let images = base.appendingPathComponent("Images")
@@ -62,9 +71,7 @@ final class ObjectScanModel: ObservableObject {
 
     func cancel() {
         session?.cancel()
-        watcher?.cancel()
-        feedbackWatcher?.cancel()
-        session = nil
+        releaseSession()
     }
 
     /// Up to 24 evenly spaced shots from Object Capture's image folder, downsized to JPEG for the web gallery.
@@ -131,7 +138,7 @@ final class ObjectScanModel: ObservableObject {
             Reporter.report(tab: "object", message: "Reconstruction failed", detail: "\(error)")
         }
         reconstructing = false
-        session = nil
+        releaseSession()
     }
 
     func upload(server: String, scale: Double) async {
