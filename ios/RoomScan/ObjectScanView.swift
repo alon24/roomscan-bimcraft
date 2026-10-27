@@ -233,6 +233,7 @@ struct ObjectScanView: View {
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 walk around the part, 1 turntable (phone fixed, part turns)
     @State private var heightText = ""
+    @State private var zoomObj: CGFloat = 1
 
     private var idle: Bool { model.session == nil && !model.reconstructing && model.usdzURL == nil }
 
@@ -265,7 +266,7 @@ struct ObjectScanView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             if let session = model.session, !model.reconstructing {
-                ObjectCaptureView(session: session).ignoresSafeArea()
+                ObjectCaptureView(session: session).ignoresSafeArea().scaleEffect(session.state == .capturing ? zoomObj : 1)
             } else if let url = model.usdzURL {
                 ModelPreview(url: url).ignoresSafeArea()
             } else if idle && mode == 1 {
@@ -313,6 +314,7 @@ struct ObjectScanView: View {
                     }
                 }
                 if let s = model.session, s.state == .capturing {
+                    ZoomControl(zoom: $zoomObj)
                     Text("\(s.numberOfShotsTaken) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
                 }
                 if !model.feedback.isEmpty { Text(model.feedback.capitalized).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }

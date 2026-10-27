@@ -479,6 +479,7 @@ struct MeshScanView: View {
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 AR overlay, 1 3D model
+    @State private var zoom: CGFloat = 1
 
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
@@ -496,7 +497,7 @@ struct MeshScanView: View {
             if mode == 1, let scene = model.modelScene {
                 OrbitSceneView(scene: scene).ignoresSafeArea()
             } else {
-                ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
+                ARSceneRepresentable(view: model.sceneView).ignoresSafeArea().scaleEffect(zoom)
             }
             if model.scanning {
                 Canvas { ctx, _ in
@@ -505,11 +506,12 @@ struct MeshScanView: View {
                                  with: .color(Color(red: Double(d.color.x), green: Double(d.color.y), blue: Double(d.color.z))))
                     }
                 }
-                .ignoresSafeArea().allowsHitTesting(false)
+                .ignoresSafeArea().allowsHitTesting(false).scaleEffect(zoom)
             }
-            TraceTapLayer(tracker: model.guided, view: model.sceneView)
+            TraceTapLayer(tracker: model.guided, view: model.sceneView, zoom: zoom)
             VStack(spacing: 8) {
                 if !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
+                if mode == 0 { ZoomControl(zoom: $zoom) }
                 if model.modelScene != nil {
                     Picker("View", selection: $mode) {
                         Text("AR view").tag(0)
@@ -549,6 +551,7 @@ struct MeshScanView: View {
             }
             .padding()
         }
+        .pinchZoom($zoom)
         .onAppear { model.startPreview() }
         .onDisappear { model.pausePreview() }
     }

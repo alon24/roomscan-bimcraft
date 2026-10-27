@@ -468,11 +468,16 @@ struct GuidedPanel: View {
 struct TraceTapLayer: View {
     @ObservedObject var tracker: CoverageTracker
     let view: ARSCNView
+    var zoom: CGFloat = 1
 
     var body: some View {
         if tracker.phase == .tracing {
             Color.clear.contentShape(Rectangle()).ignoresSafeArea()
-                .gesture(SpatialTapGesture().onEnded { tracker.addTracePoint(view, at: $0.location) })
+                .gesture(SpatialTapGesture().onEnded { tap in
+                    // the picture is magnified about the screen centre: map the tap back to the camera view's own coordinates
+                    let c = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+                    tracker.addTracePoint(view, at: CGPoint(x: c.x + (tap.location.x - c.x) / zoom, y: c.y + (tap.location.y - c.y) / zoom))
+                })
         }
     }
 }

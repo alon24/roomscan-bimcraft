@@ -66,6 +66,7 @@ struct RingCalibrationView: View {
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var markerText = ""
     @State private var outerText = ""
+    @State private var zoom: CGFloat = 1
 
     private var markerMM: Double? { Double(markerText.replacingOccurrences(of: ",", with: ".")) }
     private var outerMM: Double? { Double(outerText.replacingOccurrences(of: ",", with: ".")) }
@@ -91,7 +92,8 @@ struct RingCalibrationView: View {
             }
             Section("3. Take 6 photos of the ring") {
                 ARSceneRepresentable(view: model.sceneView)
-                    .frame(height: 320).listRowInsets(EdgeInsets())
+                    .scaleEffect(zoom).frame(height: 320).clipped().pinchZoom($zoom).listRowInsets(EdgeInsets())
+                ZoomControl(zoom: $zoom)
                 Text(model.tip).font(.callout)
                 Text("Each photo: at least 4 markers in view, sharp, no glare, steady phone.").font(.caption).foregroundStyle(.secondary)
                 HStack {

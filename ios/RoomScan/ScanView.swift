@@ -254,6 +254,7 @@ struct ScanView: View {
     @StateObject private var model = ScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 camera, 1 3D model
+    @State private var zoom: CGFloat = 1
 
     private var guide: String {
         if model.scanning {
@@ -262,12 +263,13 @@ struct ScanView: View {
         if model.jsonURL != nil {
             return "Scan done. Turn the 3D model to check it. Tap Upload to send it to the server, or Start scan to redo it."
         }
-        return "What this does: it measures a whole room and builds a floor plan with walls, doors and windows. 1. Tap Start scan.  2. Stand in the room, step back so you see the floor and the ceiling line, and slowly turn and walk, pointing at every wall and corner (about a minute).  3. Switch to 3D model to see what was captured.  4. Tap Stop, then Upload. Tip: the camera cannot zoom here, because zooming would break the measurements."
+        return "What this does: it measures a whole room and builds a floor plan with walls, doors and windows. 1. Tap Start scan.  2. Stand in the room, step back so you see the floor and the ceiling line, and slowly turn and walk, pointing at every wall and corner (about a minute).  3. Switch to 3D model to see what was captured.  4. Tap Stop, then Upload. Zoom with two fingers or the magnifier buttons: it magnifies what you see; the scan still records everything."
     }
 
     var body: some View {
         ZStack {
             CaptureViewRepresentable(view: model.captureView).ignoresSafeArea()
+                .scaleEffect(zoom)
                 .opacity(mode == 0 ? 1 : 0)
             if mode == 1 { LiveRoom3DView(model: model.live3D).ignoresSafeArea() }
             VStack(spacing: 8) {
@@ -277,6 +279,7 @@ struct ScanView: View {
                 }
                 .pickerStyle(.segmented)
                 Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                if mode == 0 { ZoomControl(zoom: $zoom) }
                 Spacer()
                 if mode == 1 {
                     SceneSummary(scene: model.live3D)
@@ -303,6 +306,7 @@ struct ScanView: View {
             }
             .padding()
         }
+        .pinchZoom($zoom)
         .toolbar {
             NavigationLink { SettingsView() } label: { Image(systemName: "gear") }
         }

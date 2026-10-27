@@ -276,7 +276,7 @@ async function show(id) {
         if (r.faces) views.surface = withBox(drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r));
         // Photo texture: every triangle drawn with the photo that sees it best, projected per pixel (built when first asked for)
         let texturable = false;
-        if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`, { method: "HEAD" })).ok; } catch {} }
+        if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`)).ok; } catch {} }
         const first = views.points ? "points" : "surface";
         const box = $("modes");
         const pick = async k => {
