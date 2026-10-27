@@ -189,3 +189,15 @@ def test_move_room_between_projects(client):
     sid = _upload(client, "Bath", "Upstairs")
     client.patch(f"/api/scans/{sid}", json={"project": "Downstairs"})
     assert {p["name"]: p["scans"] for p in client.get("/api/projects").json()} == {"Downstairs": 1}
+
+
+def test_issue_reports(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    c = TestClient(main.app)
+    r = c.post("/api/issues", json={"tab": "mesh", "message": "No surfaces", "log": ["a", "b"]})
+    assert r.status_code == 200
+    items = c.get("/api/issues").json()
+    assert items[0]["message"] == "No surfaces" and items[0]["log"] == ["a", "b"]
+    assert c.delete(f"/api/issues/{items[0]['id']}").status_code == 200
+    assert c.get("/api/issues").json() == []
+    assert c.delete("/api/issues/nope").status_code == 404

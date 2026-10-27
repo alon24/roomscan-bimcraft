@@ -59,6 +59,7 @@
   <div id="list"></div>
   <datalist id="projList"></datalist>
   <p class="mute" id="empty" hidden>No scans yet. Upload from the app.</p>
+  <button class="btn" id="issuesBtn" style="margin-top:8px">Issues</button>
   <p class="hint" id="ver"></p>
 </aside>
 <main>
@@ -78,6 +79,9 @@
   </div>
 </main>
 <dialog id="dlg"><img id="big" alt=""></dialog>
+<dialog id="issues" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(900px,96vw);max-height:90vh;overflow:auto">
+  <div style="padding:16px"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Problems reported by the app</h3>
+  <button class="btn" type="button" id="issuesClose">Close</button></div><div id="issuesList"></div></div></dialog>
 <dialog id="form"><form method="dialog">
   <h3 id="formTitle" style="margin:0 0 8px"></h3><div id="formFields"></div>
   <div class="row" style="justify-content:flex-end"><button class="btn" type="button" onclick="document.getElementById('form').close('cancel')">Cancel</button><button class="btn" id="formOk" type="submit" value="ok"></button></div>
@@ -530,6 +534,32 @@ function enterLive() {
   loadList();
 }
 
+async function loadIssues() {
+  const items = await (await fetch("/api/issues")).json();
+  $("issuesBtn").textContent = items.length ? `Issues (${items.length})` : "Issues";
+  const box = $("issuesList");
+  box.replaceChildren();
+  if (!items.length) { box.textContent = "No problems reported."; return; }
+  for (const i of items) {
+    const d = document.createElement("details");
+    d.style.cssText = "border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0";
+    const sm = document.createElement("summary");
+    sm.textContent = `${new Date(i.received_at * 1000).toLocaleString()} · ${i.tab || "?"} · ${i.message}`;
+    const pre = document.createElement("pre");
+    pre.style.cssText = "white-space:pre-wrap;font-size:12px;margin:8px 0";
+    pre.textContent = [`App: ${i.app || "?"}   Device: ${i.device || "?"}   iOS ${i.os || "?"}`, `Camera permission: ${i.camera_permission ?? "?"}   Server: ${i.server || "?"}`,
+      i.detail ? `\n${i.detail}` : "", "\n--- recent log ---", ...(i.log || [])].join("\n");
+    const del = document.createElement("button");
+    del.className = "btn"; del.textContent = "Delete";
+    del.onclick = async () => { await fetch(`/api/issues/${i.id}`, { method: "DELETE" }); loadIssues(); };
+    d.append(sm, pre, del);
+    box.append(d);
+  }
+}
+$("issuesBtn").onclick = async () => { await loadIssues(); $("issues").showModal(); };
+$("issuesClose").onclick = () => $("issues").close();
+loadIssues();
+
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`);
   ws.onmessage = async ev => {
@@ -540,6 +570,8 @@ function connect() {
     } else if (m.type === "list") {
       if (m.deleted && m.deleted === current) clearDetail();
       loadList();
+    } else if (m.type === "issue") {
+      loadIssues();
     } else if (m.type === "live_end") {
       live = false;
     } else if (m.type === "scan") {

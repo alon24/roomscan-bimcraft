@@ -43,7 +43,11 @@ final class ObjectScanModel: ObservableObject {
             for await st in s.stateUpdates {
                 guard let self else { return }
                 self.state = st
-                if case .failed(let e) = st { self.status = "Capture failed: \(e.localizedDescription)" }
+                Reporter.log("object state: \(st)")
+                if case .failed(let e) = st {
+                    self.status = "Capture failed: \(e.localizedDescription)"
+                    Reporter.report(tab: "object", message: "Capture failed", detail: "\(e)")
+                }
                 if st == .completed { await self.reconstruct() }
             }
         }
@@ -124,6 +128,7 @@ final class ObjectScanModel: ObservableObject {
             }
         } catch {
             status = "Reconstruction failed: \(error.localizedDescription)"
+            Reporter.report(tab: "object", message: "Reconstruction failed", detail: "\(error)")
         }
         reconstructing = false
         session = nil
@@ -138,6 +143,7 @@ final class ObjectScanModel: ObservableObject {
             status = "Uploaded"
         } catch {
             status = "Upload failed: \(error.localizedDescription) — use Share"
+            Reporter.report(tab: "object", message: "Upload failed", detail: "\(error)")
         }
     }
 }

@@ -394,4 +394,42 @@ def download(scan_id: str, file: str):
 
 
 STATIC.mkdir(exist_ok=True)
+
+
+# ---- problem reports from the app, so they can be read here instead of described from a phone screen ----
+def _issues() -> Path:
+    return DATA.parent / "issues"
+
+
+@app.post("/api/issues")
+async def add_issue(body: dict = Body(...)):
+    """The app posts what went wrong plus its recent log. Kept as one small JSON file per report."""
+    raw = json.dumps(body)
+    if len(raw) > 1_000_000:
+        raise HTTPException(413, "report too large")
+    _issues().mkdir(parents=True, exist_ok=True)
+    issue_id = f"{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    body = {**body, "id": issue_id, "received_at": time.time()}
+    (_issues() / f"{issue_id}.json").write_text(json.dumps(body, indent=1))
+    await hub.broadcast({"type": "issue", "id": issue_id})
+    return {"id": issue_id}
+
+
+@app.get("/api/issues")
+def list_issues():
+    if not _issues().exists():
+        return []
+    items = [json.loads(p.read_text()) for p in _issues().glob("*.json")]
+    return sorted(items, key=lambda i: i.get("received_at", 0), reverse=True)
+
+
+@app.delete("/api/issues/{issue_id}")
+def delete_issue(issue_id: str):
+    p = _issues() / f"{issue_id}.json"
+    if not re.fullmatch(r"[\w-]+", issue_id) or not p.exists():
+        raise HTTPException(404, "issue not found")
+    p.unlink()
+    return {"ok": True}
+
+
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="ui")

@@ -21,6 +21,9 @@ struct SettingsView: View {
                 LabeledContent("App", value: AppVersion.text)
                 LabeledContent("Server", value: serverVersion)
             }
+            Section(footer: Text("Sends the recent app log to the server. It appears under Issues on the web page.")) {
+                Button("Send problem report") { Reporter.report(tab: "settings", message: "Manual report") }
+            }
             Section(footer: Text("Show the room in the web UI while you scan.")) {
                 Toggle("Live preview", isOn: $liveStream)
             }

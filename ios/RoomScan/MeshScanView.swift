@@ -36,6 +36,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         let cfg = ARWorldTrackingConfiguration()
         cfg.sceneReconstruction = .mesh
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
+        Reporter.log("mesh start: supportsMesh=\(Self.supported) supportsDepth=\(ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)) reconstruction=\(cfg.sceneReconstruction.rawValue)")
         sceneView.session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
         scanning = true
@@ -61,7 +62,13 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         case .limited: parts.append("Tracking limited")
         }
         if !dark { recorder?.consider(frame) }
-        lock.lock(); let all = Array(meshAnchors.values); lock.unlock()
+        lock.lock()
+        for a in frame.anchors { if let m = a as? ARMeshAnchor { meshAnchors[m.identifier] = m } }
+        let all = Array(meshAnchors.values)
+        lock.unlock()
+        if ticks % 4 == 0 {
+            Reporter.log("mesh t=\(ticks / 2)s frameAnchors=\(frame.anchors.count) meshPatches=\(all.count) tracking=\(frame.camera.trackingState) depth=\(frame.sceneDepth != nil) photos=\(recorder?.count ?? 0)")
+        }
         let tris = all.reduce(0) { $0 + $1.geometry.faces.count }
         parts.append("\(all.count) patches · \(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
         hud = parts.joined(separator: " · ")
@@ -73,7 +80,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         sceneView.session.pause()
         scanning = false
         guard !anchors.isEmpty else {
-            status = "No surfaces were captured (\(ticks / 2) s). \(sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh.")"
+            let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
+            status = "No surfaces were captured (\(ticks / 2) s). \(why) A report was sent."
+            Reporter.report(tab: "mesh", message: "No surfaces captured after \(ticks / 2) s", detail: why)
             return
         }
         status = "Saving…"
@@ -103,12 +112,14 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             status = "Uploaded"
         } catch {
             status = "Upload failed: \(error.localizedDescription) — use Share"
+            Reporter.report(tab: "mesh", message: "Upload failed", detail: "\(error)")
         }
     }
 
     // MARK: session problems are shown instead of failing silently
     func session(_ session: ARSession, didFailWithError error: Error) {
         DispatchQueue.main.async { self.status = "AR error: \(error.localizedDescription)" }
+        Reporter.report(tab: "mesh", message: "AR session error", detail: "\(error)")
     }
     func sessionWasInterrupted(_ session: ARSession) {
         DispatchQueue.main.async { self.status = "Camera interrupted" }
@@ -302,6 +313,8 @@ struct MeshScanView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                Button("Report a problem") { Reporter.report(tab: "mesh", message: "Manual report", detail: model.status) }
+                    .font(.caption)
             }
             .padding()
         }

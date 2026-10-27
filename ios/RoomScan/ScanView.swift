@@ -197,6 +197,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
             status = "Scan ready"
         } catch {
             status = "Export failed: \(error.localizedDescription)"
+            Reporter.report(tab: "room", message: "Export failed", detail: "\(error)")
         }
     }
 
@@ -210,6 +211,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
             status = "Uploaded"
         } catch {
             status = "Upload failed: \(error.localizedDescription) — use Share"
+            Reporter.report(tab: "room", message: "Upload failed", detail: "\(error)")
         }
     }
 }
