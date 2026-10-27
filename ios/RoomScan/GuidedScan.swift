@@ -208,7 +208,7 @@ final class CoverageTracker: ObservableObject {
         case .tracing: return tracePoints.count < 3 ? "Tap the screen at the corners of the part's base on the table, going around it. \(tracePoints.count) points so far." : "\(tracePoints.count) points. Keep tapping, or tap Close outline."
         case .ready: return hasOutline ? "The white frame is the space the part is in. Slide to match its height, then tap Start capturing. Only what is inside is kept, and the server fills in the underside." : "The white ball should just wrap the part. Slide to resize it, then tap Start capturing."
         case .capturing:
-            if ring { return "Aim at the ring so at least 4 markers are in the picture and in focus. Turn the spool slowly, or walk slowly around it; the phone may move. Keep going for one or two turns, then tap Stop." }
+            if ring { return "Keep the part big in the picture with at least 4 markers in view (the rest of the ring may be cut off). Turn the spool slowly for one turn looking down at it, then one more turn with the phone low, nearly level with the top of the part. Then tap Stop." }
             if turntable { return "Keep the phone still, aimed at the part. Let the plate turn one or two full turns, slowly and steadily, then tap Stop. The server joins all the views into one model." }
             if complete { return "Coverage complete. Tap Stop to finish, or keep going to fill the last gaps." }
             return hint.isEmpty ? "Walk slowly around the part and keep it in the middle of the screen. Orange dots are views you still need, green are captured." : hint

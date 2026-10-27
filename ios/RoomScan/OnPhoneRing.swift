@@ -58,14 +58,14 @@ enum OnPhoneRing {
 
     // MARK: images
 
-    private static func pixels(_ cg: CGImage, width: Int, height: Int, gray: Bool) -> [UInt8] {
+    private static func pixels(_ cg: CGImage, width: Int, height: Int, gray: Bool, nearest: Bool = false) -> [UInt8] {
         let bpp = gray ? 1 : 4
         var px = [UInt8](repeating: 0, count: width * height * bpp)
         px.withUnsafeMutableBytes { buf in
             guard let ctx = CGContext(data: buf.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * bpp,
                                       space: gray ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: gray ? CGImageAlphaInfo.none.rawValue : CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
-            ctx.interpolationQuality = .medium
+            ctx.interpolationQuality = nearest ? .none : .medium
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
         }
         return px
@@ -365,6 +365,28 @@ enum OnPhoneRing {
         return out
     }
 
+    /// Keep the things standing in the middle of the stage; leave out the one covering the ring (the plate and ring). Nil = keep all.
+    private static func chooseInstances(_ labels: [UInt8], _ w: Int, _ h: Int, R: simd_double3x3, t: SIMD3<Double>,
+                                        fx: Double, fy: Double, cx: Double, cy: Double, ring: Ring) -> [Bool]? {
+        func label(_ p: SIMD3<Double>) -> UInt8? {
+            let c = R * p + t
+            guard c.z > 1 else { return nil }
+            let u = Int(fx * c.x / c.z + cx), v = Int(fy * c.y / c.z + cy)
+            return u >= 0 && v >= 0 && u < w && v < h ? labels[v * w + u] : nil
+        }
+        let rr = (64.0 + 98.0) / 2
+        var ringCount = [UInt8: Int](), seen = 0
+        for k in 0..<180 {
+            let a = Double(k) * 2 * .pi / 180
+            if let l = label(SIMD3(rr * cos(a), rr * sin(a), 0)) { seen += 1; ringCount[l, default: 0] += 1 }
+        }
+        let plate = Set(ringCount.filter { $0.key != 0 && Double($0.value) > 0.3 * Double(max(seen, 1)) }.keys)
+        var keep = Set<UInt8>()
+        for z in stride(from: 10.0, to: 80.0, by: 5.0) { if let l = label(SIMD3(0, 0, z)), l != 0, !plate.contains(l) { keep.insert(l) } }
+        guard !keep.isEmpty else { return nil }
+        return labels.map { keep.contains($0) }
+    }
+
     // MARK: building
 
     static func build(photos: [URL], metas: [PhotoMeta], masks: [URL], ring: Ring, progress: (String) -> Void) -> Result? {
@@ -402,6 +424,16 @@ enum OnPhoneRing {
             guard let (R, t, _, err) = pose(obj, pix, owner, fx: fx, fy: fy, cx: cx, cy: cy), err <= 4 else { posesBad += 1; continue }
             let mw = 480, mh = Int(Double(480) * Double(h) / Double(w))
             var mask = pixels(mcg, width: mw, height: mh, gray: true)
+            // the separate things Vision found: leave out the one that is the ring and plate (as the server does)
+            if let lURL = maskFor[url.deletingPathExtension().lastPathComponent + "-labels"], let lcg = cgImage(lURL) {
+                var labels = pixels(lcg, width: mw, height: mh, gray: true, nearest: true)
+                if upsideDown == true { labels = flipRows(labels, mw, mh, 1) }
+                if let chosen = chooseInstances(labels, mw, mh, R: R, t: t, fx: fx * Double(mw) / Double(w), fy: fy * Double(mh) / Double(h),
+                                                cx: cx * Double(mw) / Double(w), cy: cy * Double(mh) / Double(h), ring: ring) {
+                    mask = chosen.map { $0 ? 255 : 0 }
+                    if upsideDown == true { mask = flipRows(mask, mw, mh, 1) }   // flipped back below with the rest
+                }
+            }
             var rgb = pixels(cg, width: mw, height: mh, gray: false)
             if upsideDown == true { mask = flipRows(mask, mw, mh, 1); rgb = flipRows(rgb, mw, mh, 4) }
             views.append(View(R: R, t: t, fx: fx, fy: fy, cx: cx, cy: cy, w: w, h: h, mask: mask, mw: mw, mh: mh, rgb: rgb, cw: mw, ch: mh))

@@ -253,9 +253,13 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             var out: [URL] = []
             for (i, url) in photos.enumerated() {
                 autoreleasepool {
-                    if let png = SubjectMasker.outlinePNG(url, ctx: ctx) {
+                    if let r = SubjectMasker.outlineAndLabelsPNG(url, ctx: ctx) {
                         let dest = url.deletingPathExtension().appendingPathExtension("png")
-                        if (try? png.write(to: dest)) != nil { out.append(dest) }
+                        if (try? r.outline.write(to: dest)) != nil { out.append(dest) }
+                        if let labels = r.labels {
+                            let ldest = url.deletingLastPathComponent().appendingPathComponent(url.deletingPathExtension().lastPathComponent + "-labels.png")
+                            if (try? labels.write(to: ldest)) != nil { out.append(ldest) }
+                        }
                     }
                 }
                 if i % 10 == 0 { DispatchQueue.main.async { self?.status = "Outlining the part: \(i + 1) of \(photos.count) photos…" } }
@@ -264,7 +268,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 self?.maskURLs = out
                 self?.outlining = false
                 UIApplication.shared.isIdleTimerDisabled = false
-                self?.status = "Scan ready (\(out.count) outlines)"
+                self?.status = "Scan ready (\(out.filter { !$0.lastPathComponent.contains("-labels") }.count) outlines)"
                 Reporter.log("ring: \(out.count) outlines of \(photos.count) photos")
             }
         }

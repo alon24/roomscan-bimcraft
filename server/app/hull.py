@@ -26,6 +26,36 @@ def trusted_masks(d: Path) -> set[str]:
     return out
 
 
+def _project(ph: dict, R: np.ndarray, t: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Ring millimetres -> photo pixels (u, v)."""
+    k = np.array(ph["intrinsics"], dtype=float)
+    p = pts @ R.T + t
+    return np.c_[k[0][0] * p[:, 0] / p[:, 2] + k[2][0], k[1][1] * p[:, 1] / p[:, 2] + k[2][1]]
+
+
+def choose_instances(labels: np.ndarray, ph: dict, R: np.ndarray, t: np.ndarray, cfg: dict) -> np.ndarray | None:
+    """The phone's outline tool finds separate things in a photo (the part, the plate with the ring, a hand...). Keep the things
+    that stand in the middle of the stage, and leave out the one that is the ring and plate. None = keep everything."""
+    h, w = labels.shape
+    sx, sy = w / ph["width"], h / ph["height"]
+
+    def labels_at(pts):
+        uv = _project(ph, R, t, pts) * [sx, sy]
+        ok = (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
+        return labels[uv[ok, 1].astype(int), uv[ok, 0].astype(int)], ok.sum()
+    a = np.linspace(0, 2 * np.pi, 180, endpoint=False)
+    rr = (cfg["ring_inner_d_mm"] / 2 + cfg["ring_outer_d_mm"] / 2) / 2
+    ring_pts = np.c_[rr * np.cos(a), rr * np.sin(a), np.zeros_like(a)]
+    on_ring, n_ring = labels_at(ring_pts)
+    column = np.c_[np.zeros(14), np.zeros(14), np.arange(10, 80, 5.0)]
+    on_col, _ = labels_at(column)
+    plate = {int(l) for l in set(on_ring.tolist()) if l and (on_ring == l).sum() > 0.3 * max(n_ring, 1)}
+    keep = {int(l) for l in set(on_col.tolist()) if l and l not in plate}
+    if not keep:
+        return None
+    return np.isin(labels, list(keep))
+
+
 def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = None, height: float = 320.0):
     """Returns (mesh in metres with Y up, colours, log) or None if there are too few outlined photos."""
     from skimage.measure import marching_cubes
@@ -49,6 +79,11 @@ def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = 
         if m.size != rgb.size:
             m = m.resize(rgb.size, Image.NEAREST)
         mask = np.asarray(m) > 127          # an outline that includes the plate is fine: the other photos carve the plate away
+        lp = d / "masks" / (Path(ph["file"]).stem + "-labels.png")
+        if lp.exists():                     # the phone sent the separate things it found: drop the ring and plate
+            chosen = choose_instances(np.asarray(Image.open(lp)), ph, R, t, cfg)
+            if chosen is not None:
+                mask = np.asarray(Image.fromarray(chosen.astype(np.uint8) * 255).resize(rgb.size, Image.NEAREST)) > 127
         if mask.sum() < 100:
             continue
         views.append((ph, R, t, mask, np.asarray(rgb.resize((rgb.width // 2, rgb.height // 2)))))
