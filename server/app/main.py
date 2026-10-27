@@ -390,9 +390,10 @@ def scan_bundle(scan_id: str):
 
 
 @app.get("/api/export.zip")
-def export_all(project: str | None = None):
+def export_all(project: str | None = None, ids: str | None = None):
     metas = [_meta(d) for d in DATA.glob("*") if (d / "meta.json").exists()] if DATA.exists() else []
-    ids = [m["id"] for m in metas if project is None or m.get("project", "") == project]
+    wanted = set(ids.split(",")) if ids else None
+    ids = [m["id"] for m in metas if (project is None or m.get("project", "") == project) and (wanted is None or m["id"] in wanted)]
     if not ids:
         raise HTTPException(404, "nothing to export")
     return _zip_response(_zip_scans(ids), f"{project or 'roomscan-all'}.zip".replace("/", "_"))

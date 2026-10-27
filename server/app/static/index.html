@@ -54,7 +54,11 @@
 <aside>
   <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
   <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button><button class="btn" id="selectBtn" title="Tick scans to delete several at once">Select</button></div>
-  <div class="row" id="selectBar" hidden><button class="btn danger" id="deleteSelected">Delete selected</button><button class="btn" id="selectFailed">Tick the failed ones</button><button class="btn" id="selectNone">Clear</button></div>
+  <div class="row" id="selectBar" hidden>
+    <button class="btn" id="selectAll">Tick all</button><button class="btn" id="selectFailed">Tick the failed ones</button><button class="btn" id="selectNone">Clear</button>
+    <button class="btn" id="moveSelected">Move to home…</button><button class="btn" id="zipSelected">Download as zip</button>
+    <button class="btn" id="reconvertSelected">Re-convert</button><button class="btn danger" id="deleteSelected">Delete selected</button>
+  </div>
   <div class="row" hidden>
     <input type="file" id="importFile" accept=".zip,application/zip" hidden></div>
   <input id="search" placeholder="Search rooms and objects" type="search">
@@ -159,7 +163,24 @@ function icoBtn(label, title, fn) {
 
 // ---- deleting several scans at once
 const SEL = { on: false, ids: new Set(), all: [] };
-function selCount() { $("deleteSelected").textContent = `Delete selected (${SEL.ids.size})`; $("deleteSelected").disabled = SEL.ids.size === 0; }
+function selCount() {
+  $("deleteSelected").textContent = `Delete selected (${SEL.ids.size})`;
+  for (const b of ["deleteSelected", "moveSelected", "zipSelected", "reconvertSelected"]) $(b).disabled = SEL.ids.size === 0;
+}
+$("selectAll").onclick = () => { for (const s of SEL.all) SEL.ids.add(s.id); selCount(); loadList(); };
+$("moveSelected").onclick = async () => {
+  const v = await ask(`Move ${SEL.ids.size} scans to a home`, [{ key: "project", label: "Home (empty = none)", value: "", list: true }], "Move");
+  if (!v) return;
+  for (const id of SEL.ids) await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) });
+  loadList();
+};
+$("zipSelected").onclick = () => { location.href = `/api/export.zip?ids=${[...SEL.ids].join(",")}`; };
+$("reconvertSelected").onclick = async () => {
+  const b = $("reconvertSelected"); b.disabled = true;
+  let n = 0;
+  for (const id of SEL.ids) { b.textContent = `Re-converting ${++n} of ${SEL.ids.size}…`; await fetch(`/api/scans/${id}/convert`, { method: "POST" }); }
+  b.textContent = "Re-convert"; b.disabled = false; loadList();
+};
 $("selectBtn").onclick = () => { SEL.on = !SEL.on; SEL.ids.clear(); $("selectBar").hidden = !SEL.on; $("selectBtn").classList.toggle("on", SEL.on); selCount(); loadList(); };
 $("selectNone").onclick = () => { SEL.ids.clear(); selCount(); loadList(); };
 $("selectFailed").onclick = () => { for (const s of SEL.all) if (s.status !== "ok") SEL.ids.add(s.id); selCount(); loadList(); };

@@ -201,3 +201,15 @@ def test_issue_reports(tmp_path, monkeypatch):
     assert c.delete(f"/api/issues/{items[0]['id']}").status_code == 200
     assert c.get("/api/issues").json() == []
     assert c.delete("/api/issues/nope").status_code == 404
+
+
+def test_export_only_the_chosen_scans(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    c = TestClient(main.app)
+    ids = []
+    for n in range(3):
+        (tmp_path / "s.json").write_text(json.dumps({"walls": []}))
+        ids.append(c.post("/api/scans", data={"name": f"s{n}"}, files={"json": ("scan.json", open(tmp_path / "s.json", "rb"))}).json()["id"])
+    import io, zipfile
+    z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/export.zip?ids={ids[0]},{ids[2]}").content))
+    assert {n.split("/")[0] for n in z.namelist()} == {ids[0], ids[2]}
