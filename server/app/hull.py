@@ -26,25 +26,6 @@ def trusted_masks(d: Path) -> set[str]:
     return out
 
 
-def _without_stage(mask: np.ndarray, d: Path, ph: dict, R: np.ndarray, t: np.ndarray, cfg: dict) -> np.ndarray:
-    """Take off whatever the LiDAR says is the flat stage or ring: an outline tool often includes the plate with the part."""
-    from .ring import to_ring
-    dm = meshscan._depth_map(d, ph)
-    if dm is None:
-        return mask
-    dh, dw = dm.shape
-    pr = to_ring(frames.world_points(ph, dm).reshape(-1, 3), ph, R, t).reshape(dh, dw, 3)
-    radius, z = np.hypot(pr[..., 0], pr[..., 1]), pr[..., 2]
-    good = (dm > 0.1) & (dm < 5)
-    flat = good & (radius > cfg["ring_inner_d_mm"] / 2 + 2) & (radius < cfg["ring_outer_d_mm"] / 2 - 2) & (np.abs(z) < 25)
-    if flat.sum() > 300:
-        z = z - float(np.median(z[flat]))
-    plane = good & (np.abs(z) < 6) & (radius < cfg["ring_outer_d_mm"] / 2 + 5)
-    plane = ndi.binary_erosion(plane, iterations=1)       # stay clear of the part's own edge
-    up = np.asarray(Image.fromarray(plane.astype(np.uint8) * 255).resize((mask.shape[1], mask.shape[0]), Image.NEAREST)) > 0
-    return mask & ~up
-
-
 def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = None, height: float = 320.0):
     """Returns (mesh in metres with Y up, colours, log) or None if there are too few outlined photos."""
     from skimage.measure import marching_cubes
@@ -67,7 +48,7 @@ def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = 
         m = Image.open(mp).convert("L")
         if m.size != rgb.size:
             m = m.resize(rgb.size, Image.NEAREST)
-        mask = _without_stage(np.asarray(m) > 127, d, ph, R, t, cfg)
+        mask = np.asarray(m) > 127          # an outline that includes the plate is fine: the other photos carve the plate away
         if mask.sum() < 100:
             continue
         views.append((ph, R, t, mask, np.asarray(rgb.resize((rgb.width // 2, rgb.height // 2)))))

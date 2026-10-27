@@ -285,7 +285,7 @@ async function show(id) {
       try {
         // Points are the same picture as on the phone; the surface is the solid the server fitted through them.
         const views = {};
-        setMeasure(id, meta, 1000, (r.size_m || []).length ? r.size_m.map(x => x * 1000) : null);   // these views are in metres, scale already applied
+        setMeasure(id, meta, 1000, r.size_mm || ((r.size_m || []).length ? r.size_m.map(x => x * 1000) : null));   // views in metres, scale applied; size of the printable model if there is one
         const box3 = await outlineBox(id);
         // camera positions (tap one to open its photo), only where they share the scan's frame
         const ext = Math.max(...(r.size_m || (r.size_mm || [3000]).map(x => x / 1000)));

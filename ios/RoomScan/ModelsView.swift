@@ -9,6 +9,17 @@ struct ScanSummary: Identifiable, Decodable, Hashable {
     let name: String
     let kind: String
     let status: String
+
+    enum CodingKeys: String, CodingKey { case id, name, kind, status }
+
+    /// Old scans may lack some fields: one of them must not hide the whole list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = (try? c.decode(String.self, forKey: .name)) ?? id
+        kind = (try? c.decode(String.self, forKey: .kind)) ?? "room"
+        status = (try? c.decode(String.self, forKey: .status)) ?? "?"
+    }
 }
 
 @MainActor
@@ -23,7 +34,7 @@ final class ModelsModel: ObservableObject {
             scans = try JSONDecoder().decode([ScanSummary].self, from: data)
             error = ""
         } catch {
-            self.error = "Cannot reach the server: \(error.localizedDescription)"
+            self.error = error is DecodingError ? "The server's list could not be read: \(error)" : "Cannot reach the server at \(server): \(error.localizedDescription)"
         }
     }
 }
