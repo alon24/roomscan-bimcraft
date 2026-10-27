@@ -10,6 +10,7 @@ final class PhotoRecorder {
     private var lastPose: simd_float4x4?
     private let ciContext = CIContext()
     var maxPhotos = 120
+    var maxSide: CGFloat = 1280
 
     var count: Int { metas.count }
 
@@ -29,7 +30,7 @@ final class PhotoRecorder {
         }
         let buf = frame.capturedImage
         let w = CVPixelBufferGetWidth(buf), h = CVPixelBufferGetHeight(buf)
-        let k = min(1, 1280 / CGFloat(max(w, h)))
+        let k = min(1, maxSide / CGFloat(max(w, h)))
         let img = CIImage(cvPixelBuffer: buf).transformed(by: CGAffineTransform(scaleX: k, y: k))
         guard let jpeg = ciContext.jpegRepresentation(
             of: img, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,

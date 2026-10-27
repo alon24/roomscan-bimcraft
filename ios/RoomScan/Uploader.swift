@@ -3,7 +3,7 @@ import Foundation
 enum Uploader {
     @discardableResult
     static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room",
-                       photos: [URL] = [], photosMeta: URL? = nil, mesh: URL? = nil, footprint: URL? = nil, realHeightMM: Double? = nil, turntableScan: Bool = false) async throws -> String? {
+                       photos: [URL] = [], photosMeta: URL? = nil, mesh: URL? = nil, footprint: URL? = nil, realHeightMM: Double? = nil, turntableScan: Bool = false, ringScan: Bool = false) async throws -> String? {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else {
             throw URLError(.badURL)
         }
@@ -22,6 +22,7 @@ enum Uploader {
         field("name", name)
         field("kind", kind)
         if turntableScan { field("turntable_scan", "true") }
+        if ringScan { field("ring_scan", "true") }
         if let h = realHeightMM, h > 0 { field("real_height_mm", String(h)) }
         field("project", UserDefaults.standard.string(forKey: "project") ?? "")  // the home this room or object belongs to
         if let json { try file("json", json, "scan.json", "application/json") }

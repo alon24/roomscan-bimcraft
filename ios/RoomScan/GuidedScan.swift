@@ -18,6 +18,7 @@ final class CoverageTracker: ObservableObject {
     @Published var mode = 0                    // chosen with the picker: 0 free scan, 1 guided object, 2 turntable (phone fixed, plate turns)
     var enabled: Bool { mode != 0 }
     var turntable: Bool { mode == 2 }
+    var ring: Bool { mode == 3 }               // printed marker ring: every frame is placed by the markers, the phone may move freely
     @Published var framesTaken = 0
     private var turntableTicks = 0
     @Published var phase: Phase = .off
@@ -56,7 +57,7 @@ final class CoverageTracker: ObservableObject {
     }
 
     func begin() {
-        phase = enabled ? .placing : .off
+        phase = enabled ? (ring ? .capturing : .placing) : .off
         cells = [Bool](repeating: false, count: Self.cellCount)
         hint = ""
         announced = false
@@ -77,7 +78,7 @@ final class CoverageTracker: ObservableObject {
 
     /// Is this world point on the part (inside the capture ball)?
     func contains(_ p: SIMD3<Float>) -> Bool {
-        guard phase == .capturing else { return true }
+        guard phase == .capturing, !ring else { return true }
         guard hasOutline else { return simd_distance(p, centre) <= radius * 1.5 }
         guard p.y >= baseY - 0.02, p.y <= baseY + height + 0.02 else { return false }
         return Self.inside(SIMD2(p.x, p.z), polygon, grow: 1.1)
@@ -207,6 +208,7 @@ final class CoverageTracker: ObservableObject {
         case .tracing: return tracePoints.count < 3 ? "Tap the screen at the corners of the part's base on the table, going around it. \(tracePoints.count) points so far." : "\(tracePoints.count) points. Keep tapping, or tap Close outline."
         case .ready: return hasOutline ? "The white frame is the space the part is in. Slide to match its height, then tap Start capturing. Only what is inside is kept, and the server fills in the underside." : "The white ball should just wrap the part. Slide to resize it, then tap Start capturing."
         case .capturing:
+            if ring { return "Aim at the ring so at least 4 markers are in the picture and in focus. Turn the spool slowly, or walk slowly around it; the phone may move. Keep going for one or two turns, then tap Stop." }
             if turntable { return "Keep the phone still, aimed at the part. Let the plate turn one or two full turns, slowly and steadily, then tap Stop. The server joins all the views into one model." }
             if complete { return "Coverage complete. Tap Stop to finish, or keep going to fill the last gaps." }
             return hint.isEmpty ? "Walk slowly around the part and keep it in the middle of the screen. Orange dots are views you still need, green are captured." : hint
@@ -216,6 +218,12 @@ final class CoverageTracker: ObservableObject {
     // MARK: per update (about 5 times a second)
     func update(frame: ARFrame?, recorder: PhotoRecorder?) {
         guard phase == .capturing, let frame, case .normal = frame.camera.trackingState else { return }
+        if ring {
+            // Nothing to track here: the markers in each photo place the frame. Just keep every frame, about 2.5 a second.
+            turntableTicks += 1
+            if turntableTicks % 2 == 0 { recorder?.consider(frame, force: true); framesTaken = recorder?.count ?? 0 }
+            return
+        }
         let t = frame.camera.transform
         let cam = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         let fwd = simd_normalize(-SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z))
@@ -410,11 +418,11 @@ struct GuidedPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             Text(tracker.message).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-            if tracker.phase == .capturing && tracker.turntable {
+            if tracker.phase == .capturing && (tracker.turntable || tracker.ring) {
                 Text("\(tracker.framesTaken) frames").font(.system(size: 34, weight: .bold, design: .rounded))
                     .padding(10).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
-            if tracker.phase == .capturing && !tracker.turntable {
+            if tracker.phase == .capturing && !tracker.turntable && !tracker.ring {
                 HStack(alignment: .center, spacing: 12) {
                     CoverageRadar(tracker: tracker).frame(width: 130, height: 130)
                     VStack(alignment: .leading, spacing: 2) {

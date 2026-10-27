@@ -147,6 +147,7 @@ def main() -> None:
         "corners_mm": {str(ID0 + i): corners(i) for i in range(N)},
     }
     (OUT / "ring.json").write_text(json.dumps(ring, indent=1))
+    (Path(__file__).resolve().parent.parent / "server" / "app" / "ring.json").write_text(json.dumps(ring, indent=1))   # the server reads this copy
     (OUT / "black_cells.json").write_text(json.dumps({
         "note": "Every black rectangle as 4 corner points [x, y] in mm in ring coordinates (extrude 0.4 mm on top of the white base).",
         "markers": {str(ID0 + i): {"bits_6x6": bits(ID0 + i).tolist(), "polygons": black_polygons(i)} for i in range(N)}}, indent=1))

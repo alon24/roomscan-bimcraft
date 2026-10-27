@@ -17,6 +17,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var photosMetaURL: URL?
     private var footprintURL: URL?
     private var wasTurntable = false
+    private var wasRing = false
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
     private var timer: Timer?
@@ -92,6 +93,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
+        if guided.ring { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
         guidedActive = guided.isActive
         overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
         lastCount = 0; stalled = 0; pointCount = 0; dots = []
@@ -181,7 +183,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         sceneView.session.pause()
         scanning = false
         wasTurntable = guided.turntable
-        guard !anchors.isEmpty || !cloud.isEmpty || (guided.turntable && (recorder?.count ?? 0) > 0) else {
+        wasRing = guided.ring
+        guard !anchors.isEmpty || !cloud.isEmpty || ((guided.turntable || guided.ring) && (recorder?.count ?? 0) > 0) else {
             let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
             status = "No surfaces were captured (\(ticks / 2) s). \(why) A report was sent."
             Reporter.report(tab: "mesh", message: "No surfaces captured after \(ticks / 2) s", detail: why)
@@ -214,7 +217,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         status = "Uploading…"
         do {
             let id = try await Uploader.upload(json: nil, usdz: nil, name: "Mesh \(Date().formatted())", server: server, kind: "mesh",
-                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable)
+                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable, ringScan: wasRing)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
@@ -226,7 +229,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     // MARK: depth point cloud
     private func addPoints() {
         // A turning part would smear in a cloud built in room coordinates: show only the current view.
-        if guided.turntable && guided.phase == .capturing { cloud = []; cloudColours = []; occupied = [] }
+        if (guided.turntable || guided.ring) && guided.phase == .capturing { cloud = []; cloudColours = []; occupied = [] }
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
               guided.acceptsPoints, let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
         let vox = guided.phase == .capturing ? max(0.004, min(voxel, (guided.hasOutline ? guided.fitRadius : guided.radius) / 50)) : voxel
@@ -559,10 +562,15 @@ struct ScanTypePicker: View {
                 Text("Free scan").tag(0)
                 Text("Guided object").tag(1)
                 Text("Turntable").tag(2)
+                Text("Ring").tag(3)
             }
             .pickerStyle(.segmented)
             if tracker.mode == 1 {
                 Text("For a part on a table: you mark where it is, and the app shows which views are still missing.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            if tracker.mode == 3 {
+                Text("With the printed marker ring: the markers place every frame, so the phone and the spool can both move.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if tracker.mode == 2 {

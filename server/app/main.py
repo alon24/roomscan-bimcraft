@@ -16,7 +16,7 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import convert, frames as frame_tools, meshscan, turntable, objects, photos as photo_index
+from . import convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -68,7 +68,9 @@ def _convert(d: Path) -> dict:
     meta = _meta(d)
     log: list[str] = []
     if meta.get("kind") == "mesh":
-        if meta.get("turntable"):  # fixed phone, spinning plate: fuse the LiDAR frames in the part's own frame
+        if meta.get("ring"):  # printed marker ring: every frame knows where the ring is
+            ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
+        elif meta.get("turntable"):  # fixed phone, spinning plate: fuse the LiDAR frames in the part's own frame
             ok, out = turntable.fuse(d, meta.get("scale", 1.0))
         else:
             ok, out = meshscan.convert_mesh(d, meta.get("scale", 1.0))
@@ -120,11 +122,11 @@ def _convert(d: Path) -> dict:
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
-                 kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), project: str = Form(""),
+                 kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     if kind not in ("room", "object", "mesh"):
         raise HTTPException(422, "kind must be room, object or mesh")
-    if kind == "mesh" and mesh is None and not turntable_scan:
+    if kind == "mesh" and mesh is None and not turntable_scan and not ring_scan:
         raise HTTPException(422, "mesh scans need a mesh (ply) file")
     if kind == "room" and json_file is None:
         raise HTTPException(422, "room scans need a json file")
@@ -158,7 +160,8 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale,
                                              "photo_count": photo_count, "project": project.strip(), "created_at": time.time(),
                                              **({"real_height_mm": real_height_mm} if real_height_mm > 0 else {}),
-                                             **({"turntable": True} if turntable_scan else {})}))
+                                             **({"turntable": True} if turntable_scan else {}),
+                                             **({"ring": True} if ring_scan else {})}))
     meta = await anyio.to_thread.run_sync(_convert, d)
     hub.live = None
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
