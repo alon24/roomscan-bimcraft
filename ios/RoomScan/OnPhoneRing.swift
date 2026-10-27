@@ -8,6 +8,9 @@ import simd
 /// from its outline in every photo (the outlines are made right after Stop). The server does the same with more care; this
 /// gives a model and an STL straight away, also with no network.
 enum OnPhoneRing {
+    /// What the last build found, for the message and the problem report.
+    static var lastSummary = ""
+
     /// The 18 markers of the printed ring (ArUco DICT_4X4_50, ids 0 to 17), 6 x 6 cells each, row by row, 1 = black.
     static let bits: [String] = [
         "111111101001110101111001111011111111", "111111111111100001101101101011111111", "111111111001111001111011100101111111",
@@ -224,10 +227,12 @@ enum OnPhoneRing {
         var candidates = photos.filter { maskFor[$0.deletingPathExtension().lastPathComponent] != nil && metaFor[$0.lastPathComponent] != nil }
         if candidates.count > 60 { let step = Double(candidates.count) / 60; candidates = (0..<60).map { candidates[Int(Double($0) * step)] } }
         var views: [View] = []
+        var tried = 0, rectsTotal = 0, decodedTotal = 0, posesBad = 0
         let rect = VNDetectRectanglesRequest()
         rect.maximumObservations = 40
         rect.minimumSize = 0.02
         rect.minimumAspectRatio = 0.2
+        rect.maximumAspectRatio = 1.0        // the default (0.5) leaves out squares, and the markers are squares
         rect.quadratureTolerance = 40
         rect.minimumConfidence = 0.3
         for (n, url) in candidates.enumerated() {
@@ -239,23 +244,37 @@ enum OnPhoneRing {
             guard (try? VNImageRequestHandler(cgImage: cg).perform([rect])) != nil else { continue }
             var obj: [SIMD2<Double>] = [], pix: [SIMD2<Double>] = [], owner: [Int] = []
             var seen = Set<Int>()
+            tried += 1
+            rectsTotal += rect.results?.count ?? 0
             for o in rect.results ?? [] {
-                let q = [o.topLeft, o.topRight, o.bottomRight, o.bottomLeft].map { SIMD2(Double($0.x) * Double(w), (1 - Double($0.y)) * Double(h)) }
-                guard let (id, k) = decode(gray, w, h, q), !seen.contains(id) else { continue }
+                let q0 = [o.topLeft, o.topRight, o.bottomRight, o.bottomLeft].map { SIMD2(Double($0.x) * Double(w), (1 - Double($0.y)) * Double(h)) }
+                // the found square may sit a little inside or outside the black border: try it as found, then slightly bigger and smaller
+                let mid = (q0[0] + q0[1] + q0[2] + q0[3]) / 4
+                var found: (Int, Int)?
+                var q = q0
+                for f in [1.0, 1.06, 0.95, 1.12] {
+                    q = q0.map { mid + ($0 - mid) * f }
+                    if let r = decode(gray, w, h, q) { found = r; break }
+                }
+                guard let (id, k) = found, !seen.contains(id) else { continue }
                 seen.insert(id)
                 let cs = ring.corners(id)
                 for i in 0..<4 { obj.append(cs[i]); pix.append(q[(i - k + 4) % 4]); owner.append(id) }
             }
+            decodedTotal += seen.count
             guard seen.count >= 4 else { continue }
             let K = meta.intrinsics                     // columns: [fx,0,0],[0,fy,0],[cx,cy,1] for the photo size
             let sx = Double(w) / Double(meta.width), sy = Double(h) / Double(meta.height)
             let fx = Double(K[0][0]) * sx, fy = Double(K[1][1]) * sy, cx = Double(K[2][0]) * sx, cy = Double(K[2][1]) * sy
-            guard let (R, t, _, err) = pose(obj, pix, owner, fx: fx, fy: fy, cx: cx, cy: cy), err <= 4 else { continue }
+            guard let (R, t, _, err) = pose(obj, pix, owner, fx: fx, fy: fy, cx: cx, cy: cy), err <= 4 else { posesBad += 1; continue }
             let mw = 480, mh = Int(Double(480) * Double(h) / Double(w))
             let mask = pixels(mcg, width: mw, height: mh, gray: true)
             let rgb = pixels(cg, width: mw, height: mh, gray: false)
             views.append(View(R: R, t: t, fx: fx, fy: fy, cx: cx, cy: cy, w: w, h: h, mask: mask, mw: mw, mh: mh, rgb: rgb, cw: mw, ch: mh))
         }
+        let summary = "phone build: \(tried) photos, \(rectsTotal / max(tried, 1)) squares and \(decodedTotal / max(tried, 1)) markers read per photo, \(posesBad) camera fits rejected, \(views.count) photos usable"
+        Reporter.log(summary)
+        lastSummary = summary
         guard views.count >= 6 else { return nil }
         progress("Carving the part from \(views.count) photos…")
         return carve(views, ring: ring)

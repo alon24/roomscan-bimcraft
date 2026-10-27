@@ -283,8 +283,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                     self.status = String(format: "Built on the phone from %d photos: %.1f × %.1f × %.1f mm", r.views, r.sizeMM.x, r.sizeMM.y, r.sizeMM.z)
                     Reporter.log("phone build: \(r.views) views, \(r.triangles) triangles, size \(r.sizeMM)")
                 } else {
-                    self.status = "Could not build on the phone: too few photos where both the ring and the part were found. Upload it instead."
-                    Reporter.report(tab: "ring", message: "Phone build failed", detail: "photos \(photos.count), outlines \(masks.count)")
+                    self.status = "Could not build on the phone (\(OnPhoneRing.lastSummary)). Upload it instead."
+                    Reporter.report(tab: "ring", message: "Phone build failed", detail: "photos \(photos.count), outlines \(masks.count); \(OnPhoneRing.lastSummary)")
                 }
             }
         }
