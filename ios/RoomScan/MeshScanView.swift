@@ -260,17 +260,29 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
     }
 
+    private var package: ScanPackage? {
+        guard let plyURL else { return nil }
+        return ScanPackage(name: (wasRing ? "Part " : "3D room ") + Date().formatted(), kind: "mesh", mesh: plyURL, footprint: footprintURL,
+                           photosMeta: photosMetaURL, photos: photoURLs, masks: maskURLs, turntableScan: wasTurntable, ringScan: wasRing, info: scanInfo)
+    }
+
+    func saveOnPhone() {
+        if outlining { status = "Still outlining the part in the photos, save again in a moment"; return }
+        guard let package else { return }
+        status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+    }
+
     @MainActor func upload(server: String) async {
-        guard let plyURL else { return }
+        guard let package else { return }
         if outlining { status = "Still outlining the part in the photos, upload again in a moment"; return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(json: nil, usdz: nil, name: "Mesh \(Date().formatted())", server: server, kind: "mesh",
-                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable, ringScan: wasRing, info: scanInfo, masks: maskURLs)
+            let id = try await Uploader.upload(package, server: server)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
-            status = "Upload failed: \(error.localizedDescription) — use Share"
+            let saved = (try? LocalStore.save(package)) != nil
+            status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "mesh", message: "Upload failed", detail: "\(error)")
         }
     }
@@ -589,9 +601,9 @@ struct MeshScanView: View {
                     } else if MeshScanModel.supported && model.plyURL == nil {
                         Button("Start scan") { mode = 0; model.start() }
                     }
-                    if let url = model.plyURL, !model.scanning {
+                    if model.plyURL != nil, !model.scanning {
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
-                        ShareLink(item: url) { Text("Share") }
+                        Button("Save") { model.saveOnPhone() }
                         Button("New scan", role: .destructive) { mode = 0; model.discard() }
                     }
                 }

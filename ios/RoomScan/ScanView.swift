@@ -229,16 +229,28 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         }
     }
 
+    private var package: ScanPackage? {
+        guard let jsonURL else { return nil }
+        return ScanPackage(name: "Floor plan \(Date().formatted())", kind: "room", json: jsonURL, usdz: usdzURL,
+                           photosMeta: photosMetaURL, photos: photoURLs,
+                           info: ["scan type": "Floor plan (RoomPlan)", "app": AppVersion.text, "device": Reporter.deviceModel()])
+    }
+
+    func saveOnPhone() {
+        guard let package else { return }
+        status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+    }
+
     @MainActor func upload(server: String) async {
-        guard let jsonURL else { return }
+        guard let package else { return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(json: jsonURL, usdz: usdzURL, name: "Scan \(Date().formatted())", server: server,
-                                      photos: photoURLs, photosMeta: photosMetaURL)
+            let id = try await Uploader.upload(package, server: server)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
-            status = "Upload failed: \(error.localizedDescription) — use Share"
+            let saved = (try? LocalStore.save(package)) != nil
+            status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "room", message: "Upload failed", detail: "\(error)")
         }
     }
@@ -299,7 +311,7 @@ struct ScanView: View {
                     if mode == 1 { Button("Recenter") { model.live3D.recenter() } }
                     if model.jsonURL != nil, !model.scanning {
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
-                        if let url = model.jsonURL { ShareLink(item: url) { Text("Share") } }
+                        Button("Save") { model.saveOnPhone() }
                     }
                 }
                 .buttonStyle(.borderedProminent)

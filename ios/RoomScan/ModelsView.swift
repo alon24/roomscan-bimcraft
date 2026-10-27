@@ -45,6 +45,8 @@ struct ModelsView: View {
 
     var body: some View {
         List {
+            SavedScansSection()
+            Section("On the server") {
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red) }
             ForEach(model.scans) { s in
                 NavigationLink {
@@ -55,6 +57,7 @@ struct ModelsView: View {
                         Text("\(s.kind) · \(s.status)").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+            }
             }
         }
         .refreshable { await model.load(server: serverURL) }

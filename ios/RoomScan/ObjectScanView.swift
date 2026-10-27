@@ -213,16 +213,29 @@ final class ObjectScanModel: ObservableObject {
         releaseSession()
     }
 
+    private var package: ScanPackage? {
+        guard let usdzURL else { return nil }
+        return ScanPackage(name: "Part \(Date().formatted())", kind: "object", usdz: usdzURL, photosMeta: photosMetaURL, photos: photoURLs,
+                           realHeightMM: realHeightMM,
+                           info: ["scan type": "Object capture (walk around)", "app": AppVersion.text, "device": Reporter.deviceModel(),
+                                  "ios": UIDevice.current.systemVersion, "photos sent": photoURLs.count, "detail": "reduced"])
+    }
+
+    func saveOnPhone() {
+        guard let package else { return }
+        status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+    }
+
     func upload(server: String, scale: Double) async {
-        guard let usdzURL else { return }
+        guard let package else { return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL, realHeightMM: realHeightMM,
-                                               info: ["scan type": "Object capture (walk around)", "app": AppVersion.text, "device": Reporter.deviceModel(), "ios": UIDevice.current.systemVersion, "photos sent": photoURLs.count, "detail": "reduced"])
+            let id = try await Uploader.upload(package, server: server)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
-            status = "Upload failed: \(error.localizedDescription) — use Share"
+            let saved = (try? LocalStore.save(package)) != nil
+            status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "object", message: "Upload failed", detail: "\(error)")
         }
     }
@@ -373,9 +386,9 @@ struct ObjectScanView: View {
                         }
                         Button("Cancel") { model.cancel() }
                     }
-                    if let url = model.usdzURL {
+                    if model.usdzURL != nil {
                         Button("Upload") { Task { await model.upload(server: serverURL, scale: 1) } }
-                        ShareLink(item: url) { Text("Share") }
+                        Button("Save") { model.saveOnPhone() }
                     }
                 }
                 .buttonStyle(.borderedProminent)
