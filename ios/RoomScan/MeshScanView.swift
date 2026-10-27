@@ -20,6 +20,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var outlining = false
     private var wasTurntable = false
     private var wasRing = false
+    @Published var serverOnly = false     // turntable and ring scans: only the server can put the frames together
     private var lastMode = 0
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
@@ -92,7 +93,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     func start() {
-        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
@@ -168,7 +169,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         cloudNode.geometry = nil
         lock.lock(); meshAnchors = [:]; lock.unlock()
         recorder = nil
-        plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil; serverOnly = false
         scanning = false
         hud = ""; status = ""
         Reporter.log("mesh: reset by user")
@@ -187,6 +188,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         scanning = false
         wasTurntable = guided.turntable
         wasRing = guided.ring
+        serverOnly = guided.turntable || guided.ring
         lastMode = guided.mode
         guard !anchors.isEmpty || !cloud.isEmpty || ((guided.turntable || guided.ring) && (recorder?.count ?? 0) > 0) else {
             let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
@@ -535,16 +537,21 @@ struct MeshScanView: View {
         if model.scanning {
             return "The LiDAR is measuring the surfaces in front of the camera. Each coloured dot is a point it measured. Move slowly: dots appear on everything you have seen, and gaps with no dots are not captured yet. Tap Stop when it covers what you need, or Reset to start over."
         }
+        if model.plyURL != nil && model.serverOnly {
+            return "Scan done. The phone cannot join turntable or ring frames itself: tap Upload, then open the Models tab to see the finished model (it takes a minute). New scan throws this one away."
+        }
         if model.plyURL != nil {
-            return "Scan done. Switch to 3D model to turn it around. Upload sends it to the server, which makes a solid surface and colours it. New scan throws it away."
+            return "Scan done. This is what the phone captured: turn it with one finger, pinch to zoom. Tap Upload for the finished model (solid surface, colours, STL) in the Models tab. New scan throws it away."
         }
         return "What this does: it measures a room or an object with the LiDAR and shows the result as coloured dots over the camera picture while you scan, so you can see what is captured. Tap Start scan, then walk slowly around what you want, 0.5 to 3 m away. For one small part on a table, pick Guided object."
     }
 
     var body: some View {
         ZStack {
-            if mode == 1, let scene = model.modelScene {
+            if let scene = model.modelScene, !model.scanning, !model.serverOnly {
                 OrbitSceneView(scene: scene).ignoresSafeArea()
+            } else if model.plyURL != nil && model.serverOnly {
+                Color(white: 0.1).ignoresSafeArea()
             } else {
                 ARSceneRepresentable(view: model.sceneView).ignoresSafeArea().scaleEffect(zoom)
             }
@@ -560,14 +567,7 @@ struct MeshScanView: View {
             TraceTapLayer(tracker: model.guided, view: model.sceneView, zoom: zoom)
             VStack(spacing: 8) {
                 if !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
-                if mode == 0 { ZoomControl(zoom: $zoom) }
-                if model.modelScene != nil {
-                    Picker("View", selection: $mode) {
-                        Text("AR view").tag(0)
-                        Text("3D model").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                }
+                if model.modelScene == nil || model.scanning { ZoomControl(zoom: $zoom) }
                 if !model.guidedActive {
                     Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
