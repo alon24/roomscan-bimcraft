@@ -16,6 +16,8 @@ final class ObjectScanModel: ObservableObject {
     @Published var photoURLs: [URL] = []
     @Published var photosMetaURL: URL?
     private var sampledIndexes: [Int] = []
+    private var photoSession: PhotogrammetrySession?
+    private var cancelled = false
 
     private var imagesDir: URL?
     private var watcher: Task<Void, Never>?
@@ -111,7 +113,7 @@ final class ObjectScanModel: ObservableObject {
         if let data = try? JSONSerialization.data(withJSONObject: manifest) , (try? data.write(to: url)) != nil { photosMetaURL = url }
     }
 
-    /// Build the model from the turntable photos.
+    /// Build the model from the turntable photos. The photos are kept unless the build succeeds, so a failure can be retried.
     func buildFromTurntable(_ turntable: TurntableCapture) {
         guard let dir = turntable.imagesDir else { return }
         turntable.shutdown()
@@ -119,38 +121,70 @@ final class ObjectScanModel: ObservableObject {
         usdzURL = nil; status = ""; progress = 0
         Task {
             await reconstruct(sequential: true)
-            turntable.reset()
+            if usdzURL != nil { turntable.reset() }
         }
+    }
+
+    /// Clear the finished or failed result so a new scan can start.
+    func resetResult() {
+        usdzURL = nil; status = ""; progress = 0; photoURLs = []; photosMetaURL = nil
+    }
+
+    func cancelBuild() {
+        cancelled = true
+        photoSession?.cancel()
+        status = "Build cancelled"
     }
 
     private func reconstruct(sequential: Bool = false) async {
         guard let imagesDir else { return }
+        let count = ((try? FileManager.default.contentsOfDirectory(at: imagesDir, includingPropertiesForKeys: nil)) ?? []).count
+        Reporter.log("reconstruct: \(count) files, sequential=\(sequential)")
+        guard count >= 8 else {
+            status = "Only \(count) photos were captured. Scan longer and from more sides."
+            Reporter.report(tab: "object", message: "Too few photos to build", detail: "\(count) files in \(imagesDir.lastPathComponent)")
+            releaseSession()
+            return
+        }
         photoURLs = samplePhotos(from: imagesDir)
         reconstructing = true
+        cancelled = false
         status = "Building model…"
         let out = imagesDir.deletingLastPathComponent().appendingPathComponent("scan.usdz")
-        do {
-            var config = PhotogrammetrySession.Configuration()
-            if sequential { config.sampleOrdering = .sequential }   // turntable photos follow each other around the part
-            let ps = try PhotogrammetrySession(input: imagesDir, configuration: config)
-            try ps.process(requests: [.modelFile(url: out, detail: .reduced), .poses])
-            for try await o in ps.outputs {
-                switch o {
-                case .requestProgress(_, let f): progress = f
-                case .requestError(_, let e): throw e
-                case .requestComplete(_, let result):
-                    switch result {
-                    case .poses(let p): writePoses(p, in: imagesDir.deletingLastPathComponent())
-                    case .modelFile: usdzURL = out; status = "Model ready"
+        // First with the camera poses too; if Apple's engine refuses that combination, again for the model alone.
+        for withPoses in [true, false] {
+            do {
+                var config = PhotogrammetrySession.Configuration()
+                if sequential { config.sampleOrdering = .sequential }   // turntable photos follow each other around the part
+                let ps = try PhotogrammetrySession(input: imagesDir, configuration: config)
+                photoSession = ps
+                try ps.process(requests: withPoses ? [.modelFile(url: out, detail: .reduced), .poses] : [.modelFile(url: out, detail: .reduced)])
+                for try await o in ps.outputs {
+                    switch o {
+                    case .requestProgress(_, let f): progress = f
+                    case .requestError(_, let e): throw e
+                    case .requestComplete(_, let result):
+                        switch result {
+                        case .poses(let p): writePoses(p, in: imagesDir.deletingLastPathComponent())
+                        case .modelFile: usdzURL = out; status = "Model ready"
+                        default: break
+                        }
                     default: break
                     }
-                default: break
+                }
+                if usdzURL != nil || cancelled { break }
+            } catch {
+                if cancelled { break }
+                Reporter.report(tab: "object", message: withPoses ? "Reconstruction failed (with poses)" : "Reconstruction failed",
+                                detail: "\(error)\nimages: \(count)")
+                if !withPoses || usdzURL != nil {
+                    status = "Reconstruction failed: \(error.localizedDescription)"
+                } else {
+                    status = "Retrying without camera poses…"
                 }
             }
-        } catch {
-            status = "Reconstruction failed: \(error.localizedDescription)"
-            Reporter.report(tab: "object", message: "Reconstruction failed", detail: "\(error)")
         }
+        photoSession = nil
         reconstructing = false
         releaseSession()
     }
@@ -254,7 +288,13 @@ struct ObjectScanView: View {
                             }
                         }
                     } else if model.session == nil {
-                        Button("New object") { mode = 0; model.begin() }
+                        if model.reconstructing {
+                            Button("Cancel build") { model.cancelBuild() }
+                        } else if mode == 1 {
+                            Button("New turntable scan") { model.resetResult(); turntable.reset() }
+                        } else {
+                            Button("New object") { model.begin() }
+                        }
                     } else if !model.reconstructing {
                         switch model.session?.state ?? .initializing {
                         case .ready: Button("Detect object") { _ = model.session?.startDetecting() }
