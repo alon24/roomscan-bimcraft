@@ -70,7 +70,19 @@
     <div class="row" id="actions"></div>
     <div class="row" id="modes" hidden></div>
     <div class="grid">
-      <div><div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
+      <div>
+        <div id="measureBar" class="row" hidden style="margin:6px 0;align-items:center">
+          <button class="btn" id="measureBtn" title="Click two points on the model">Measure</button>
+          <span class="hint" id="sizeInfo"></span>
+          <span id="measureOut" hidden>
+            <b id="measureVal"></b>
+            <span class="hint" id="measureDelta"></span>
+            real length <input id="realVal" type="number" step="any" min="0" style="width:7em"> mm
+            <button class="btn" id="applyReal">Apply to model</button>
+            <button class="btn" id="clearMeasure">Clear</button>
+          </span>
+        </div>
+        <div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
       <div><img id="plan" alt="Plan"></div>
     </div>
     <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs"></div></div>
@@ -210,7 +222,7 @@ async function show(id) {
   current = id;
   const meta = await (await fetch(`/api/scans/${id}`)).json();
   $("hint").hidden = true; $("detail").hidden = false;
-  $("modes").hidden = true; ctx = null; $("framesBox").hidden = true;
+  $("modes").hidden = true; ctx = null; $("framesBox").hidden = true; $("measureBar").hidden = true; MEAS.on = false;
   $("title").textContent = meta.name;
   $("status").textContent = meta.status; $("status").className = meta.status;
   $("log").textContent = meta.log || "";
@@ -264,6 +276,7 @@ async function show(id) {
       try {
         // Points are the same picture as on the phone; the surface is the solid the server fitted through them.
         const views = {};
+        setMeasure(id, meta, 1000, (r.size_m || []).length ? r.size_m.map(x => x * 1000) : null);   // these views are in metres, scale already applied
         const box3 = await outlineBox(id);
         // camera positions (tap one to open its photo), only where they share the scan's frame
         const ext = Math.max(...(r.size_m || (r.size_mm || [3000]).map(x => x / 1000)));
@@ -309,6 +322,7 @@ async function show(id) {
       $("log").textContent = `Size: ${r.size_mm.join(" × ")} mm\nWatertight: ${r.watertight ? "yes" : "NO – slicer may need repair"}\nVolume: ${r.volume_mm3 ?? "n/a"} mm³\nFaces: ${r.faces}\n\n` + (meta.log || "");
       try {
         const t = await fetch(`/api/scans/${id}/textured.json`);
+        setMeasure(id, meta, t.ok ? (meta.scale ?? 1) : 1, r.size_mm);     // the textured model is shown before the scale is applied
         if (t.ok) drawTextured(id, await t.json());
         else drawMesh(await (await fetch(`/api/scans/${id}/preview.json`)).json());
       }
@@ -668,6 +682,62 @@ function draw(scan, keepView = false, markers = []) {
 
 let V = null;  // persistent 3D view: {scene, cam, group, place, fit}
 
+// ---- measuring: click two points on the model; give the real length to rescale the model (and its STL / 3MF) to match
+const MEAS = { on: false, unit: 1, id: null, scale: 1, pts: [], objs: [], mm: 0 };
+
+function setMeasure(id, meta, unitMM, sizeMM) {
+  Object.assign(MEAS, { id, scale: meta.scale ?? 1, unit: unitMM });
+  $("measureBar").hidden = false;
+  $("sizeInfo").textContent = sizeMM ? `Size ${sizeMM.map(x => x.toFixed(1)).join(" × ")} mm  (x × y × height)` : "";
+  clearMeasure();
+}
+
+function clearMeasure() {
+  for (const o of MEAS.objs) { o.parent?.remove(o); o.geometry?.dispose(); }
+  MEAS.objs = []; MEAS.pts = []; MEAS.mm = 0;
+  $("measureOut").hidden = true;
+}
+
+function measurePick(ray) {
+  const targets = [];
+  V.group.traverse(o => { if ((o.isMesh || o.isPoints) && !o.userData.nofit && !o.userData.photo) targets.push(o); });
+  const box = new THREE.Box3().setFromObject(V.group), size = box.getSize(new THREE.Vector3()).length() || 1;
+  ray.params.Points.threshold = size * 0.004;
+  const hit = ray.intersectObjects(targets)[0];
+  if (!hit) return;
+  if (MEAS.pts.length >= 2) clearMeasure();
+  MEAS.pts.push(hit.point.clone());
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(size * 0.006, 12, 8), new THREE.MeshBasicMaterial({ color: 0xff2020, depthTest: false }));
+  dot.position.copy(hit.point); dot.renderOrder = 10;
+  V.scene.add(dot); MEAS.objs.push(dot);
+  if (MEAS.pts.length === 2) {
+    const [a, b] = MEAS.pts;
+    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+    const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xff2020, depthTest: false })); line.renderOrder = 10;
+    V.scene.add(line); MEAS.objs.push(line);
+    MEAS.mm = a.distanceTo(b) * MEAS.unit;
+    const d = b.clone().sub(a).multiplyScalar(MEAS.unit);
+    $("measureVal").textContent = `${MEAS.mm.toFixed(2)} mm`;
+    $("measureDelta").textContent = `(across x ${Math.abs(d.x).toFixed(1)}, height ${Math.abs(d.y).toFixed(1)}, depth z ${Math.abs(d.z).toFixed(1)})`;
+    $("measureOut").hidden = false;
+  }
+}
+$("measureBtn").onclick = () => {
+  MEAS.on = !MEAS.on;
+  $("measureBtn").classList.toggle("on", MEAS.on);
+  $("view").style.cursor = MEAS.on ? "crosshair" : "";
+};
+$("clearMeasure").onclick = clearMeasure;
+$("applyReal").onclick = async () => {
+  const real = parseFloat($("realVal").value);
+  if (!(real > 0) || !(MEAS.mm > 0)) { $("realVal").focus(); return; }
+  const b = $("applyReal"); b.disabled = true; b.textContent = "Rescaling…";
+  const factor = MEAS.scale * real / MEAS.mm;       // the measured length already includes the current scale
+  await fetch(`/api/scans/${MEAS.id}/convert?scale=${factor}`, { method: "POST" });
+  b.disabled = false; b.textContent = "Apply to model";
+  await show(MEAS.id); loadList();
+};
+
 function show3d(group, keepView = false) {
   if (keepView && V && V.renderer.domElement.isConnected) {  // live frame: swap the model, keep the camera
     V.scene.remove(V.group); V.scene.add(group); V.group = group;
@@ -676,6 +746,7 @@ function show3d(group, keepView = false) {
   }
   cancelAnimationFrame(raf);
   const el = $("view");
+  MEAS.objs = []; MEAS.pts = []; $("measureOut").hidden = true;
   if (renderer) { renderer.dispose(); el.replaceChildren(); }
   const W = el.clientWidth, H = el.clientHeight;
   renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -749,8 +820,11 @@ function show3d(group, keepView = false) {
       const rect = cv.getBoundingClientRect();
       const ray = new THREE.Raycaster();
       ray.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
-      const hit = ray.intersectObjects(V.group.children.filter(o => o.userData.photo))[0];
-      if (hit) openPhoto(...hit.object.userData.photo);
+      if (MEAS.on) { measurePick(ray); }
+      else {
+        const hit = ray.intersectObjects(V.group.children.filter(o => o.userData.photo))[0];
+        if (hit) openPhoto(...hit.object.userData.photo);
+      }
     }
     downAt = null; lastPinch = 0;
   };
