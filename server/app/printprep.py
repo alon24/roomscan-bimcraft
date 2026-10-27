@@ -38,33 +38,212 @@ def _bounds(mesh: trimesh.Trimesh, axis: str) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
-def cut(mesh: trimesh.Trimesh, axis: str, at_mm: float) -> tuple[list[trimesh.Trimesh], list[str]]:
-    """Split at the plane `axis = at_mm` (a position along the part, from its low end), cap both
-    cut faces, and lay each half cut-face down on the bed. Returns (parts, log)."""
-    if axis not in AXES:
-        raise ValueError("axis must be x, y or z")
-    i = AXES[axis]
-    lo, hi = _bounds(mesh, axis)
-    pos = lo + at_mm
-    if not (lo < pos < hi):
-        raise ValueError(f"cut at {at_mm} mm is outside the part (0 to {hi - lo:.1f} mm along {axis})")
-    log = []
-    origin = np.zeros(3); origin[i] = pos
-    normal = np.zeros(3); normal[i] = 1
-    parts = []
-    for sign in (-1, 1):  # low half, then high half
-        half = mesh.slice_plane(origin, normal * sign, cap=True)
+CONNECTORS = ("none", "dowel", "peg", "key")
+WALL_MM = 2.0   # material kept between a connector and the outside of the part
+GAP_MM = 10.0   # space between parts laid out for the bed / in the 3MF
+
+
+class Piece:
+    """One part while cutting: its mesh and the cut faces it has (axis index, outward sign, position, has pegs)."""
+    def __init__(self, mesh, faces=()):
+        self.mesh, self.faces = mesh, list(faces)
+
+
+def _axis_vec(i: int, sign: float = 1.0) -> np.ndarray:
+    v = np.zeros(3); v[i] = sign
+    return v
+
+
+def _split(mesh: trimesh.Trimesh, i: int, pos: float):
+    origin, normal = _axis_vec(i) * pos, _axis_vec(i)
+    low = mesh.slice_plane(origin, -normal, cap=True)
+    high = mesh.slice_plane(origin, normal, cap=True)
+    for half in (low, high):
         if len(half.faces) == 0:
             raise ValueError("one side of the cut is empty")
         if not half.is_watertight:
             trimesh.repair.fill_holes(half)
-        log.append(f"part {len(parts) + 1}: {'watertight' if half.is_watertight else 'NOT watertight'}")
-        # lay it cut face down: that face's outward normal is +axis on the low half, -axis on the high half
-        half.apply_transform(trimesh.geometry.align_vectors(normal * (1 if sign == -1 else -1), [0, 0, -1]))
-        lo2, hi2 = half.bounds
-        half.apply_translation([-(lo2[0] + hi2[0]) / 2, -(lo2[1] + hi2[1]) / 2, -lo2[2]])
-        parts.append(half)
-    return parts, log
+    return low, high
+
+
+def connector_points(mesh: trimesh.Trimesh, i: int, pos: float, size: float, count: int):
+    """Where connectors go on this cut face: spread out, each with WALL_MM of material round it.
+    Returns (points as 3D, to3d transform of the section's plane, log)."""
+    from shapely.ops import polylabel
+    sec = mesh.section(plane_origin=_axis_vec(i) * pos, plane_normal=_axis_vec(i))
+    if sec is None:
+        return [], None, ["the cut misses the part"]
+    planar, to3d = sec.to_planar()
+    pts = []
+    for poly in planar.polygons_full:
+        inset = poly.buffer(-(size / 2 + WALL_MM))
+        if inset.is_empty:
+            continue
+        if inset.geom_type == "MultiPolygon":
+            inset = max(inset.geoms, key=lambda g: g.area)
+        seed = polylabel(inset, tolerance=0.25)
+        chosen = [(seed.x, seed.y)]
+        if count > 1:
+            x0, y0, x1, y1 = inset.bounds
+            step = max(0.5, max(x1 - x0, y1 - y0) / 40)
+            from shapely.geometry import Point
+            grid = [(x, y) for x in np.arange(x0, x1 + step, step) for y in np.arange(y0, y1 + step, step)
+                    if inset.contains(Point(x, y))]
+            while len(chosen) < count and grid:   # farthest from the ones already chosen
+                far = max(grid, key=lambda g: min(np.hypot(g[0] - c[0], g[1] - c[1]) for c in chosen))
+                if min(np.hypot(far[0] - c[0], far[1] - c[1]) for c in chosen) < size * 2.5:
+                    break
+                chosen.append(far)
+        pts += chosen
+    return [np.array(to3d @ [x, y, 0, 1])[:3] for x, y in pts], to3d, []
+
+
+def _prism(shape: str, size: float, z0: float, z1: float, to3d, centre) -> trimesh.Trimesh:
+    """A round or square bar standing on the cut plane at `centre`, from z0 to z1 along the plane's own z."""
+    m = (trimesh.creation.cylinder(radius=size / 2, height=z1 - z0, sections=48) if shape == "round"
+         else trimesh.creation.box(extents=(size, size, z1 - z0)))
+    m.apply_translation([0, 0, (z0 + z1) / 2])
+    rot = np.array(to3d, dtype=float).copy()
+    rot[:3, 3] = centre
+    m.apply_transform(rot)
+    return m
+
+
+def _boolean(op: str, a: trimesh.Trimesh, b: trimesh.Trimesh) -> trimesh.Trimesh | None:
+    try:
+        out = getattr(trimesh.boolean, op)([a, b], engine="manifold")
+    except Exception:
+        return None
+    return out if out is not None and len(out.faces) and out.is_watertight else None
+
+
+def _join(low: trimesh.Trimesh, high: trimesh.Trimesh, i: int, pos: float, mesh: trimesh.Trimesh, kind: str,
+          size: float, depth: float, clearance: float, count: int, log: list[str], pins: list, at_mm: float):
+    """Add connectors across the cut `i = pos` between `low` and `high`. Returns (low, high, pegged)."""
+    pts, to3d, notes = connector_points(mesh, i, pos, size, count)
+    log += notes
+    if not pts:
+        log.append(f"cut face too small for a {size:g} mm connector: joined with nothing")
+        return low, high, False
+    if not (low.is_watertight and high.is_watertight):
+        log.append("a part is not watertight, so no connectors were added")
+        return low, high, False
+    s = 1.0 if np.dot(np.array(to3d, dtype=float)[:3, 2], _axis_vec(i)) > 0 else -1.0  # plane z -> +axis
+    shape = "square" if kind == "key" else "round"
+    done = 0
+    for c in pts:
+        if kind == "dowel":   # a hole in each half and a loose pin between them
+            hole = lambda z0, z1: _prism("round", size + 2 * clearance, *sorted((s * z0, s * z1)), to3d, c)
+            l2 = _boolean("difference", low, hole(-depth, 0.5))
+            h2 = _boolean("difference", high, hole(-0.5, depth))
+            if l2 is None or h2 is None:
+                log.append("a dowel hole could not be cut")
+                continue
+            low, high = l2, h2
+            pins.append((size, 2 * depth - 1.0))
+        else:                 # peg or key standing from the low half into a socket in the high half
+            peg = _prism(shape, size, *sorted((s * -1.0, s * depth)), to3d, c)
+            sock = _prism(shape, size + 2 * clearance, *sorted((s * -0.5, s * (depth + 0.5))), to3d, c)
+            l2, h2 = _boolean("union", low, peg), _boolean("difference", high, sock)
+            if l2 is None or h2 is None:
+                log.append("a peg could not be added")
+                continue
+            low, high = l2, h2
+        done += 1
+    if done:
+        log.append(f"{done} {'dowel hole pairs' if kind == 'dowel' else 'square keys' if kind == 'key' else 'round pegs'} "
+                   f"({size:g} mm, {depth:g} mm deep) at the cut {'xyz'[i].upper()} = {at_mm:g} mm")
+    return low, high, done > 0 and kind in ("peg", "key")
+
+
+def _face_area(mesh: trimesh.Trimesh, i: int, sign: float, pos: float) -> float:
+    n = mesh.face_normals[:, i] * sign
+    near = np.abs(mesh.triangles_center[:, i] - pos) < 0.5
+    return float(mesh.area_faces[(n > 0.99) & near].sum())
+
+
+def _lay_down(piece: Piece, log: list[str], number: int):
+    """Rotate a part so its biggest flat cut face (one without pegs) lies on the bed. A part whose cut
+    faces all carry pegs stands pegs up instead, and may need supports."""
+    m = piece.mesh
+    flat = [f for f in piece.faces if not f["pegged"]]
+    if flat:
+        f = max(flat, key=lambda f: _face_area(m, f["axis"], f["sign"], f["pos"]))
+        m.apply_transform(trimesh.geometry.align_vectors(_axis_vec(f["axis"], f["sign"]), [0, 0, -1]))
+    elif piece.faces:
+        f = piece.faces[0]
+        m.apply_transform(trimesh.geometry.align_vectors(_axis_vec(f["axis"], f["sign"]), [0, 0, 1]))
+        log.append(f"part {number} prints with its pegs up: it may need supports (dowel holes lie flat instead)")
+    lo, hi = m.bounds
+    m.apply_translation([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
+
+
+def cut_all(mesh: trimesh.Trimesh, cuts: list[tuple[str, float]], kind: str = "none", size: float = 6.0,
+            depth: float = 8.0, clearance: float = 0.3, count: int = 2):
+    """Cut the part at every plane (`axis`, mm from the low end of the whole part), joining each cut
+    with connectors of `kind` (none, dowel, peg, key). Returns (parts laid flat, pins as (diameter, length), log)."""
+    if kind not in CONNECTORS:
+        raise ValueError(f"connector must be one of {', '.join(CONNECTORS)}")
+    if not cuts:
+        raise ValueError("no cuts given")
+    origin = mesh.bounds[0].copy()
+    log: list[str] = []
+    pins: list = []
+    pieces = [Piece(mesh.copy())]
+    for axis, at in cuts:
+        if axis not in AXES:
+            raise ValueError("axis must be x, y or z")
+        i = AXES[axis]
+        pos = float(origin[i] + at)
+        lo, hi = _bounds(mesh, axis)
+        if not (lo < pos < hi):
+            raise ValueError(f"cut at {at:g} mm is outside the part (0 to {hi - lo:.1f} mm along {axis})")
+        nxt, crossed = [], 0
+        for pc in pieces:
+            plo, phi = pc.mesh.bounds[:, i]
+            if not (plo + 0.01 < pos < phi - 0.01):
+                nxt.append(pc)
+                continue
+            crossed += 1
+            low, high = _split(pc.mesh, i, pos)
+            pegged = False
+            if kind != "none":
+                low, high, pegged = _join(low, high, i, pos, pc.mesh, kind, size, depth, clearance, count, log, pins, at)
+            nxt.append(Piece(low, pc.faces + [dict(axis=i, sign=1.0, pos=pos, pegged=pegged)]))
+            nxt.append(Piece(high, pc.faces + [dict(axis=i, sign=-1.0, pos=pos, pegged=False)]))
+        if not crossed:
+            raise ValueError(f"cut {axis.upper()} = {at:g} mm touches no part")
+        pieces = nxt
+    for n, pc in enumerate(pieces, 1):
+        _lay_down(pc, log, n)
+        log.append(f"part {n}: {'watertight' if pc.mesh.is_watertight else 'NOT watertight'}, "
+                   + " × ".join(f"{x:.0f}" for x in pc.mesh.extents) + " mm")
+    return [pc.mesh for pc in pieces], pins, log
+
+
+def pin_meshes(pins: list) -> list[trimesh.Trimesh]:
+    """Loose dowel pins, lying on their side (printed along their length they are strongest)."""
+    out = []
+    for d, length in pins:
+        m = trimesh.creation.cylinder(radius=d / 2 - 0.05, height=length, sections=48)
+        m.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+        lo = m.bounds[0]
+        m.apply_translation([-m.bounds.mean(axis=0)[0], -m.bounds.mean(axis=0)[1], -lo[2]])
+        out.append(m)
+    return out
+
+
+def lay_out(parts: list[trimesh.Trimesh], extra: list[trimesh.Trimesh] = ()) -> trimesh.Scene:
+    """Every part side by side on the bed (left to right, GAP_MM apart): for the one 3MF that holds all cuts."""
+    scene, x = trimesh.Scene(), 0.0
+    for n, m in enumerate(list(parts) + list(extra), 1):
+        m = m.copy()
+        w = m.extents[0]
+        m.apply_translation([x + w / 2, 0, 0])
+        scene.add_geometry(m, node_name=f"part{n}" if n <= len(parts) else f"pin{n - len(parts)}",
+                           geom_name=f"part{n}" if n <= len(parts) else f"pin{n - len(parts)}")
+        x += w + GAP_MM
+    return scene
 
 
 def section_svg(mesh: trimesh.Trimesh, axis: str, at_mm: float) -> str:

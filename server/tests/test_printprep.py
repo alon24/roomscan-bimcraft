@@ -17,21 +17,63 @@ def box(size=(40, 30, 20)):
 @pytest.mark.parametrize("axis", ["x", "y", "z"])
 def test_cut_halves_add_up_and_lie_on_the_bed(axis):
     m = box()
-    parts, log = pp.cut(m, axis, 10)
-    assert len(parts) == 2
+    parts, pins, log = pp.cut_all(m, [(axis, 10)])
+    assert len(parts) == 2 and not pins
     assert sum(p.volume for p in parts) == pytest.approx(m.volume, rel=1e-6)
     assert all(p.is_watertight for p in parts)
     assert all(p.bounds[0][2] == pytest.approx(0, abs=1e-6) for p in parts)
 
 
 def test_cut_low_part_is_the_smaller_side():
-    parts, _ = pp.cut(box(), "x", 10)   # 10 mm from the low end of a 40 mm part
-    assert parts[0].volume == pytest.approx(10 * 30 * 20) and parts[1].volume == pytest.approx(30 * 30 * 20)
+    parts, _, _ = pp.cut_all(box(), [("x", 10)])   # 10 mm from the low end of a 40 mm part
+    assert sorted(round(p.volume) for p in parts) == [10 * 30 * 20, 30 * 30 * 20]
 
 
 def test_cut_outside_the_part_is_refused():
     with pytest.raises(ValueError):
-        pp.cut(box(), "x", 99)
+        pp.cut_all(box(), [("x", 99)])
+
+
+def test_several_cuts_make_every_part_and_keep_the_volume():
+    m = box((60, 40, 100))
+    parts, _, log = pp.cut_all(m, [("z", 30), ("z", 70), ("x", 30)])
+    assert len(parts) == 6
+    assert sum(p.volume for p in parts) == pytest.approx(m.volume, rel=1e-6)
+    assert all(p.is_watertight and p.bounds[0][2] == pytest.approx(0, abs=1e-6) for p in parts)
+
+
+@pytest.mark.parametrize("kind", ["dowel", "peg", "key"])
+def test_connectors_take_and_add_material_where_expected(kind):
+    m = box((60, 40, 100))
+    parts, pins, log = pp.cut_all(m, [("z", 50)], kind, size=6, depth=8, count=2)
+    assert all(p.is_watertight for p in parts)
+    delta = sum(p.volume for p in parts) - m.volume
+    if kind == "dowel":
+        assert delta < 0 and len(pins) == 2           # two holes in each half, two loose pins
+    else:
+        assert not pins and abs(delta) < 400           # a peg added to one half, a slightly bigger socket cut from the other
+    assert any("2 " in l for l in log)
+
+
+def test_pegged_part_stands_pegs_up_and_dowel_parts_lie_flat():
+    m = box((60, 40, 100))
+    pegs, _, log = pp.cut_all(m, [("z", 50)], "peg")
+    assert max(p.extents[2] for p in pegs) == pytest.approx(58, abs=0.1) and any("pegs up" in l for l in log)
+    flat, _, log = pp.cut_all(m, [("z", 50)], "dowel")
+    assert all(p.extents[2] == pytest.approx(50, abs=0.1) for p in flat) and not any("pegs up" in l for l in log)
+
+
+def test_connector_too_big_for_the_cut_face_is_skipped_not_fatal():
+    parts, pins, log = pp.cut_all(box((12, 12, 40)), [("z", 20)], "dowel", size=10)
+    assert len(parts) == 2 and not pins and any("too small" in l for l in log)
+
+
+def test_one_3mf_holds_every_part_and_pin():
+    parts, pins, _ = pp.cut_all(box((60, 40, 100)), [("z", 30), ("z", 70)], "dowel")
+    scene = pp.lay_out(parts, pp.pin_meshes(pins))
+    assert len(scene.geometry) == 3 + len(pins)
+    xs = sorted(g.bounds[0][0] for g in scene.geometry.values())
+    assert all(b > a for a, b in zip(xs, xs[1:]))      # side by side, none on top of another
 
 
 def test_suggest_cut_only_when_it_does_not_fit():
@@ -72,12 +114,17 @@ def test_routes_cut_section_colours(tmp_path, monkeypatch):
     c = TestClient(main.app)
     info = c.get("/api/scans/abc/print").json()
     assert info["suggested_cut"]["axis"] == "z"
-    r = c.post("/api/scans/abc/cut", json={"axis": "z", "at": 150}).json()
-    assert r["files"] == ["model_part1.stl", "model_part2.stl", "model_parts.3mf"]
-    assert c.get("/api/scans/abc/model_part2.stl").status_code == 200
-    assert c.post("/api/scans/abc/cut", json={"axis": "z", "at": 999}).status_code == 400
+    r = c.post("/api/scans/abc/cut", json={"cuts": [{"axis": "z", "at": 100}, {"axis": "z", "at": 200}],
+                                           "connector": {"type": "dowel", "diameter": 6, "depth": 8, "count": 1}}).json()
+    assert r["parts"] == 3 and r["pins"] == 2 and r["files"][0] == "model_parts.3mf"
+    assert {"model_part3.stl", "dowels.stl"} <= set(r["files"])
+    assert c.get("/api/scans/abc/model_part3.stl").status_code == 200
+    assert c.get("/api/scans/abc/model_parts.3mf").status_code == 200
+    assert len(c.get("/api/scans/abc/print/mesh.json").json()["faces"]) == 36
+    r = c.post("/api/scans/abc/cut", json={"cuts": [{"axis": "z", "at": 150}]}).json()   # a new cut replaces the old parts
+    assert r["parts"] == 2 and c.get("/api/scans/abc/model_part3.stl").status_code == 404
+    assert c.post("/api/scans/abc/cut", json={"cuts": [{"axis": "z", "at": 999}]}).status_code == 400
     assert c.get("/api/scans/abc/section.svg?axis=x&at=20").text.startswith("<svg")
     assert c.get("/api/scans/abc/colours").status_code == 404   # no colour information
-    main._convert  # a re-convert clears stale parts
-    for f in main.PRINT_PREP:
-        (d / f).unlink(missing_ok=True)
+    main._clear_print_prep(d)   # what a re-convert does: the parts no longer match model.stl
+    assert not list(d.glob("model_part*")) and not (d / "dowels.stl").exists() and (d / "model.stl").exists()

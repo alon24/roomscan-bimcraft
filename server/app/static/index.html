@@ -101,17 +101,39 @@
             <button class="btn" id="clearMeasure">Clear</button>
           </span>
         </div>
-        <div id="printBar" hidden style="margin:6px 0">
-          <div class="row" style="align-items:center">
-            <b>Cut &amp; section</b>
+        <div id="printBar" hidden style="margin:6px 0 14px;padding:10px;border:1px solid var(--line);border-radius:8px">
+          <b>Cut into parts</b>
+          <p class="hint" style="margin:4px 0 8px">Pick an axis, move the slider (or click the model) until the blue plane sits where you want the cut, then <b>Add cut</b>. Add as many as you like, then <b>Make parts</b>: every part goes into one 3MF.</p>
+          <div class="row" style="align-items:center;margin:4px 0">
             <select id="cutAxis"><option value="z">Height (Z)</option><option value="x">Width (X)</option><option value="y">Depth (Y)</option></select>
             <input id="cutAt" type="range" min="0" max="100" step="0.5" value="50" style="flex:1;min-width:8em">
-            <span id="cutVal" class="hint"></span>
-            <button class="btn" id="cutBtn" title="Split the model here into two printable parts, each laid cut face down">Cut here</button>
+            <input id="cutNum" type="number" step="0.5" min="0" style="width:5.5em"><span class="hint">mm</span>
+            <button class="btn" id="cutAdd">Add cut</button>
+          </div>
+          <div class="row" id="cutChips" style="margin:4px 0"></div>
+          <div class="row" style="align-items:center;margin:4px 0">
+            <span>Join with</span>
+            <select id="connType">
+              <option value="dowel">Dowel holes + loose pins (prints flat)</option>
+              <option value="peg">Round pegs and sockets</option>
+              <option value="key">Square keys and sockets</option>
+              <option value="none">Nothing (glue only)</option>
+            </select>
+            <label class="hint">Ø <input id="connD" type="number" value="6" min="2" max="30" step="0.5" style="width:4.5em"> mm</label>
+            <label class="hint">depth <input id="connDepth" type="number" value="8" min="2" max="40" step="0.5" style="width:4.5em"> mm</label>
+            <label class="hint">per cut <input id="connN" type="number" value="2" min="1" max="6" style="width:3.5em"></label>
+            <label class="hint">play <input id="connClr" type="number" value="0.3" min="0" max="1" step="0.05" style="width:4.5em"> mm</label>
+          </div>
+          <div class="hint" id="connHelp"></div>
+          <div class="row" style="margin:8px 0 4px">
+            <button class="btn" id="cutBtn">Make parts</button>
             <button class="btn" id="colourBtn" title="Filament colours that match the scan">Colour suggestions</button>
           </div>
           <div class="hint" id="cutHint"></div>
-          <div class="row" id="cutOut" style="align-items:flex-start"></div>
+          <div class="row" style="align-items:flex-start;gap:12px">
+            <div id="cutView" style="flex:2;min-width:240px;height:340px;border:1px solid var(--line);border-radius:6px;position:relative"></div>
+            <div id="cutOut" style="flex:1;min-width:140px"></div>
+          </div>
           <div id="colourOut" class="row" style="margin-top:6px"></div>
         </div>
         <div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
@@ -365,7 +387,7 @@ async function show(id) {
         a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}`; a.download = f;
         actions.append(a);
       }
-      if (r.stl) setupPrint(id, false);   // the cut and colours work on model.stl; the 3D view here is in the phone's frame, so no live clip
+      if (r.stl) setupPrint(id);   // cut and colours work on model.stl, shown in their own small viewer
       try {
         // Points are the same picture as on the phone; the surface is the solid the server fitted through them.
         const views = {};
@@ -418,7 +440,7 @@ async function show(id) {
         setMeasure(id, meta, t.ok ? (meta.scale ?? 1) : 1, r.size_mm);     // the textured model is shown before the scale is applied
         if (t.ok) drawTextured(id, await t.json());
         else drawMesh(await (await fetch(`/api/scans/${id}/preview.json`)).json());
-        await setupPrint(id, true);
+        await setupPrint(id);
       }
       catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
     }
@@ -755,52 +777,165 @@ function drawPoints(buf, r) {
   return new THREE.Points(g, new THREE.PointsMaterial({ size: 0.015, vertexColors: true }));
 }
 
-// ---- print prep: cut into parts, cross-section, filament colours (server: printprep.py; model.stl is Z-up, mm)
-const PRINT = { id: null, size: [0, 0, 0], clip: false };
+// ---- print prep: cut into parts, joined with connectors, cross-section, filament colours (server: printprep.py; model.stl is Z-up, mm)
+const PRINT = { id: null, size: [0, 0, 0], origin: [0, 0, 0], cuts: [], view: null };
 const AXIS_I = { x: 0, y: 1, z: 2 };
+const CONN_HELP = {
+  dowel: "A round hole goes into each side of the cut and a loose pin joins them (print dowels.stl, or use wooden dowels of the same Ø). Both parts lie flat on their cut face.",
+  peg: "A round peg grows out of one part into a socket in the other. The part with the pegs prints pegs-up and may need supports.",
+  key: "A square key instead of a round peg: it also stops the parts from twisting. The keyed part prints key-up and may need supports.",
+  none: "No connector: glue the flat cut faces together.",
+};
 
-async function setupPrint(id, clip) {
+// A small viewer of model.stl in its own frame, with a plane for every cut. Click the model to put the cut there.
+async function cutViewer(id) {
+  const holder = $("cutView");
+  PRINT.view?.dispose();
+  holder.replaceChildren();
+  const r = await fetch(`/api/scans/${id}/print/mesh.json`);
+  if (!r.ok || current !== id) return;
+  const m = await r.json();
+  PRINT.origin = m.origin_mm;
+  const W = holder.clientWidth || 400, H = holder.clientHeight || 340;
+  const rend = new THREE.WebGLRenderer({ antialias: true });
+  rend.setSize(W, H); holder.append(rend.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(300, -400, 500); scene.add(sun);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(m.vertices, 3));
+  g.setIndex(m.faces); g.computeVertexNormals();
+  const model = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xc9a46c, roughness: 0.7, side: THREE.DoubleSide }));
+  scene.add(model);
+  const box = new THREE.Box3().setFromObject(model), c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+  const R = size.length();
+  const cam = new THREE.PerspectiveCamera(45, W / H, R / 100, R * 20);
+  cam.up.set(0, 0, 1);
+  let az = -0.8, el = 0.5, dist = R * 1.4;
+  const planes = new THREE.Group(); scene.add(planes);
+  const place = () => {
+    cam.position.set(c.x + dist * Math.cos(el) * Math.sin(az), c.y - dist * Math.cos(el) * Math.cos(az), c.z + dist * Math.sin(el));
+    cam.lookAt(c);
+  };
+  const draw = () => { place(); rend.render(scene, cam); };
+  const el_ = rend.domElement;
+  let drag = null;
+  el_.onpointerdown = e => { drag = { x: e.clientX, y: e.clientY, moved: 0 }; el_.setPointerCapture(e.pointerId); };
+  el_.onpointermove = e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.moved += Math.abs(dx) + Math.abs(dy); drag.x = e.clientX; drag.y = e.clientY;
+    az -= dx * 0.01; el = Math.max(-1.5, Math.min(1.5, el + dy * 0.01)); draw();
+  };
+  el_.onpointerup = e => {
+    if (drag && drag.moved < 5) {   // a tap: the cut goes where the model was hit
+      const b = el_.getBoundingClientRect(), ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1), cam);
+      const hit = ray.intersectObject(model)[0];
+      if (hit) {
+        const i = AXIS_I[$("cutAxis").value];
+        const at = Math.max(0.5, Math.min(PRINT.size[i] - 0.5, [hit.point.x, hit.point.y, hit.point.z][i] - PRINT.origin[i]));
+        $("cutAt").value = at; $("cutAt").oninput();
+      }
+    }
+    drag = null;
+  };
+  el_.onwheel = e => { e.preventDefault(); dist = Math.max(R * 0.3, Math.min(R * 4, dist * (e.deltaY > 0 ? 1.1 : 0.9))); draw(); };
+  const quad = (axis, at, colour, opacity) => {   // a plane across the whole part at `at` mm from its low end
+    const i = AXIS_I[axis], pos = PRINT.origin[i] + at, k = 1.15;
+    const [u, v] = [0, 1, 2].filter(j => j !== i);
+    const sz = [size.x, size.y, size.z];
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(sz[u] * k, sz[v] * k),
+      new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }));
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: colour })));
+    // PlaneGeometry lies in XY facing +Z; turn it to face the axis
+    if (i === 0) mesh.rotation.y = Math.PI / 2; else if (i === 1) mesh.rotation.x = Math.PI / 2;
+    const cc = [c.x, c.y, c.z]; cc[i] = pos; mesh.position.set(...cc);
+    return mesh;
+  };
+  PRINT.view = {
+    draw, dispose() { rend.dispose(); },
+    setPlanes(cuts, current) {
+      planes.clear();
+      for (const k of cuts) planes.add(quad(k.axis, k.at, 0xe08a1e, 0.28));      // added cuts: orange
+      if (current) planes.add(quad(current.axis, current.at, 0x2a7de1, 0.4));    // the one being placed: blue
+      draw();
+    },
+  };
+  draw();
+}
+
+async function setupPrint(id) {
   const bar = $("printBar");
   bar.hidden = true;
-  $("cutOut").replaceChildren(); $("colourOut").replaceChildren();
+  $("cutOut").replaceChildren(); $("colourOut").replaceChildren(); $("cutChips").replaceChildren();
+  PRINT.cuts = []; PRINT.view?.dispose(); PRINT.view = null;
   const r = await fetch(`/api/scans/${id}/print`);
   if (!r.ok || current !== id) return;
   const info = await r.json();
-  Object.assign(PRINT, { id, size: info.size_mm, clip });
+  Object.assign(PRINT, { id, size: info.size_mm });
+  bar.hidden = false;                      // the viewer needs a visible box to measure
   const sug = info.suggested_cut;
-  $("cutHint").textContent = sug
-    ? `Too big for a ${info.bed_mm.join(" × ")} mm bed: cut across ${sug.axis.toUpperCase()} at ${sug.at} mm (set the slider there with the button).`
-    : `Fits a ${info.bed_mm.join(" × ")} mm bed. Move the slider to see a cross-section${clip ? " (the 3D model is cut open too)" : ""}.`;
-  if (sug) {
-    const b = document.createElement("button"); b.className = "btn"; b.textContent = "Use suggested cut";
-    b.onclick = () => { $("cutAxis").value = sug.axis; syncCut(); $("cutAt").value = sug.at; update(); };
-    $("cutHint").append(" ", b);
-  }
+  const axisI = () => AXIS_I[$("cutAxis").value];
+  const here = () => ({ axis: $("cutAxis").value, at: +$("cutAt").value });
+  const syncAxis = () => { const s = PRINT.size[axisI()]; $("cutAt").max = s; $("cutNum").max = s; $("cutAt").value = s / 2; };
   let timer = 0;
-  const syncCut = () => { const s = PRINT.size[AXIS_I[$("cutAxis").value]]; $("cutAt").max = s; $("cutAt").value = s / 2; };
   const update = () => {
-    const axis = $("cutAxis").value, at = +$("cutAt").value, s = PRINT.size[AXIS_I[axis]];
-    $("cutVal").textContent = `${at.toFixed(1)} of ${s.toFixed(1)} mm`;
-    if (PRINT.clip) applyClip(axis, at / s);
+    const cur = here();
+    $("cutNum").value = cur.at.toFixed(1);
+    PRINT.view?.setPlanes(PRINT.cuts, cur);
     clearTimeout(timer);
-    timer = setTimeout(() => {   // the outline is drawn on the server; ask once the slider stops
-      const img = new Image(); img.alt = "Cross-section"; img.style.cssText = "max-height:160px;background:#fff;border:1px solid #888";
-      img.src = `/api/scans/${id}/section.svg?axis=${axis}&at=${at}`;
-      img.onload = () => { $("cutOut").querySelector("img")?.remove(); $("cutOut").prepend(img); };
+    timer = setTimeout(() => {              // the outline of the cut face is drawn on the server; ask once the slider stops
+      const img = new Image(); img.alt = "Cross-section at the blue plane"; img.style.cssText = "max-width:100%;max-height:200px;background:#fff;border:1px solid #888";
+      img.src = `/api/scans/${id}/section.svg?axis=${cur.axis}&at=${cur.at}`;
+      img.onload = () => { $("cutOut").replaceChildren(img, Object.assign(document.createElement("div"), { className: "hint", textContent: "What the blue cut shows (the cut face)" })); };
     }, 250);
   };
-  $("cutAxis").onchange = () => { syncCut(); update(); };
+  const chips = () => {
+    const out = $("cutChips"); out.replaceChildren();
+    PRINT.cuts.forEach((k, n) => {
+      const x = document.createElement("span");
+      x.style.cssText = "display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid #e08a1e;border-radius:12px";
+      x.textContent = `${k.axis.toUpperCase()} = ${k.at.toFixed(1)} mm`;
+      const del = Object.assign(document.createElement("button"), { textContent: "✕", title: "Remove this cut" });
+      del.style.cssText = "all:unset;cursor:pointer;color:var(--mute)";
+      del.onclick = () => { PRINT.cuts.splice(n, 1); chips(); update(); };
+      x.append(del); out.append(x);
+    });
+    $("cutBtn").textContent = PRINT.cuts.length > 1 ? `Make parts (${PRINT.cuts.length} cuts)` : "Make parts";
+  };
+  const conn = () => {
+    const t = $("connType").value;
+    for (const e of ["connD", "connDepth", "connN", "connClr"]) $(e).disabled = t === "none";
+    $("connClr").disabled = t === "none";
+    $("connHelp").textContent = CONN_HELP[t];
+  };
+  $("cutHint").textContent = sug
+    ? `Too big for a ${info.bed_mm.join(" × ")} mm bed: try a cut across ${sug.axis.toUpperCase()} at ${sug.at} mm.`
+    : `Fits a ${info.bed_mm.join(" × ")} mm bed.`;
+  if (sug) {
+    const b = document.createElement("button"); b.className = "btn"; b.textContent = "Use that cut";
+    b.onclick = () => { $("cutAxis").value = sug.axis; syncAxis(); $("cutAt").value = sug.at; update(); };
+    $("cutHint").append(" ", b);
+  }
+  $("cutAxis").onchange = () => { syncAxis(); update(); };
   $("cutAt").oninput = update;
+  $("cutNum").onchange = () => { $("cutAt").value = Math.max(0.5, Math.min(PRINT.size[axisI()] - 0.5, +$("cutNum").value || 0)); update(); };
+  $("cutAdd").onclick = () => { PRINT.cuts.push(here()); chips(); update(); };
+  $("connType").onchange = conn;
   $("cutBtn").onclick = async () => {
-    $("cutBtn").disabled = true;
+    const cuts = PRINT.cuts.length ? PRINT.cuts : [here()];   // nothing added yet: use the blue plane
+    $("cutBtn").disabled = true; $("cutHint").textContent = "Cutting…";
+    const type = $("connType").value;
     const res = await fetch(`/api/scans/${id}/cut`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ axis: $("cutAxis").value, at: +$("cutAt").value }) });
+      body: JSON.stringify({ cuts, connector: { type, diameter: +$("connD").value, depth: +$("connDepth").value, count: +$("connN").value, clearance: +$("connClr").value } }) });
     $("cutBtn").disabled = false;
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) { $("cutHint").textContent = "Cut failed: " + (j.detail || res.status); return; }
-    $("cutHint").textContent = `Cut in two (${j.log.join("; ")}). Part sizes: ${j.size_mm.map(s => s.join(" × ")).join(" and ")} mm. Each part lies cut face down; print them and glue.`;
+    if (!res.ok) { $("cutHint").textContent = "Cut failed: " + (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || res.status)); return; }
+    $("cutHint").textContent = `${j.parts} parts${j.pins ? ` and ${j.pins} dowel pins` : ""}, all in model_parts.3mf. ` + j.log.join(". ") + ".";
+    for (const a of [...$("actions").querySelectorAll("a")]) if (/^(model_part|dowels)/.test(a.download)) a.remove();
     for (const f of j.files) {
-      $("actions").querySelector(`a[download="${f}"]`)?.remove();
       const a = document.createElement("a"); a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}?t=${Date.now()}`; a.download = f;
       $("actions").append(a);
     }
@@ -819,19 +954,9 @@ async function setupPrint(id, clip) {
     const n = document.createElement("div"); n.className = "hint"; n.style.flexBasis = "100%";
     n.textContent = `From the ${j.source}. ${j.note}`; out.append(n);
   };
-  syncCut(); update();
-  bar.hidden = false;
-}
-
-// Clip the shown model open at a fraction of its length along a model axis (model X, Y, Z -> world x, -z, y).
-function applyClip(axis, f) {
-  if (!V || !renderer) return;
-  renderer.localClippingEnabled = true;
-  const box = new THREE.Box3().setFromObject(V.group);
-  const plane = axis === "x" ? new THREE.Plane(new THREE.Vector3(-1, 0, 0), box.min.x + f * (box.max.x - box.min.x))
-              : axis === "z" ? new THREE.Plane(new THREE.Vector3(0, -1, 0), box.min.y + f * (box.max.y - box.min.y))
-              : new THREE.Plane(new THREE.Vector3(0, 0, 1), -(box.max.z - f * (box.max.z - box.min.z)));
-  V.group.traverse(o => { if (o.material) { o.material.clippingPlanes = [plane]; o.material.needsUpdate = true; } });
+  syncAxis(); conn(); chips();
+  await cutViewer(id);
+  update();
 }
 
 function drawMesh(m) {

@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import anyio.to_thread
+import numpy as np
 import trimesh
 from anyio import from_thread
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -23,8 +24,14 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/sc
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
-             "model_part1.stl", "model_part2.stl", "model_parts.3mf", "colours.json"}
-PRINT_PREP = ("model_part1.stl", "model_part2.stl", "model_parts.3mf", "colours.json")  # derived from model.stl: stale once it changes
+             "model_parts.3mf", "colours.json", "dowels.stl"}
+PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json)$")  # derived from model.stl: stale once it changes
+
+
+def _clear_print_prep(d: Path, keep_colours: bool = False):
+    for f in d.iterdir():
+        if PRINT_FILE.match(f.name) and not (keep_colours and f.name == "colours.json"):
+            f.unlink()
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
@@ -68,8 +75,7 @@ def _meta(d: Path) -> dict:
 
 
 def _convert(d: Path) -> dict:
-    for f in PRINT_PREP:
-        (d / f).unlink(missing_ok=True)
+    _clear_print_prep(d)
     meta = _meta(d)
     log: list[str] = []
     if meta.get("kind") == "mesh":
@@ -284,8 +290,7 @@ def detect_frame(scan_id: str, file: str):
 def rebuild(scan_id: str):
     """Fuse every frame (its depth, colour and mask) into a new point cloud and surface."""
     d = _dir(scan_id)
-    for f in PRINT_PREP:
-        (d / f).unlink(missing_ok=True)
+    _clear_print_prep(d)
     meta = _meta(d)
     if meta.get("ring"):        # ring scans: the outlines (phone or corrected by hand) carve the shape
         ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
@@ -549,27 +554,59 @@ def print_info(scan_id: str):
     return {"size_mm": size, "bed_mm": printprep.BED_MM, "suggested_cut": printprep.suggest_cut(size)}
 
 
-class CutRequest(BaseModel):
+class Cut(BaseModel):
     axis: str = Field(pattern="^[xyz]$")
-    at: float = Field(gt=0, description="mm from the low end of the part along the axis")
+    at: float = Field(gt=0, description="mm from the low end of the whole part along the axis")
+
+
+class Connector(BaseModel):
+    type: str = Field("dowel", pattern="^(none|dowel|peg|key)$")
+    diameter: float = Field(6.0, ge=2, le=30, description="mm; a key is this wide")
+    depth: float = Field(8.0, ge=2, le=40, description="mm into each half")
+    clearance: float = Field(0.3, ge=0, le=1, description="mm of play in each hole")
+    count: int = Field(2, ge=1, le=6, description="per cut face")
+
+
+class CutRequest(BaseModel):
+    cuts: list[Cut] = Field(min_length=1, max_length=8)
+    connector: Connector = Connector()
 
 
 @app.post("/api/scans/{scan_id}/cut")
 def cut_model(scan_id: str, req: CutRequest):
-    """Split model.stl in two at a plane; each half is capped and laid cut face down."""
+    """Split model.stl at every plane, join the cuts with connectors, lay each part flat. One 3MF holds all parts."""
     d = _dir(scan_id)
+    c = req.connector
     try:
-        parts, log = printprep.cut(_model(d), req.axis, req.at)
+        parts, pins, log = printprep.cut_all(_model(d), [(x.axis, x.at) for x in req.cuts], c.type, c.diameter, c.depth, c.clearance, c.count)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    _clear_print_prep(d, keep_colours=True)   # an earlier cut's parts are replaced; the colours still hold
+    files = []
     for i, part in enumerate(parts, 1):
         part.export(d / f"model_part{i}.stl")
-    sizes = [[round(float(x), 1) for x in p.extents] for p in parts]
-    parts[1].apply_translation([parts[0].extents[0] / 2 + parts[1].extents[0] / 2 + 10, 0, 0])   # side by side on the bed
-    scene = trimesh.Scene({f"part{i}": p for i, p in enumerate(parts, 1)})
-    scene.export(d / "model_parts.3mf")
-    return {"files": ["model_part1.stl", "model_part2.stl", "model_parts.3mf"], "log": log,
-            "size_mm": sizes}
+        files.append(f"model_part{i}.stl")
+    pin_meshes = printprep.pin_meshes(pins)
+    if pin_meshes:
+        trimesh.util.concatenate(pin_meshes).export(d / "dowels.stl")
+        files.append("dowels.stl")
+    printprep.lay_out(parts, pin_meshes).export(d / "model_parts.3mf")
+    files.append("model_parts.3mf")
+    return {"files": files[-1:] + files[:-1], "log": log, "parts": len(parts), "pins": len(pins),
+            "size_mm": [[round(float(x), 1) for x in p.extents] for p in parts]}
+
+
+@app.get("/api/scans/{scan_id}/print/mesh.json")
+def print_mesh(scan_id: str, max_faces: int = 60000):
+    """model.stl as vertices and faces (mm, Z up) for the cut view; very dense meshes are thinned for the browser."""
+    m = _model(_dir(scan_id))
+    if len(m.faces) > max_faces:
+        import open3d as o3d
+        o = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(m.vertices), o3d.utility.Vector3iVector(m.faces))
+        o = o.simplify_quadric_decimation(max_faces)
+        m = trimesh.Trimesh(vertices=np.asarray(o.vertices), faces=np.asarray(o.triangles), process=False)
+    return {"vertices": np.round(m.vertices, 2).ravel().tolist(), "faces": m.faces.ravel().tolist(),
+            "size_mm": [round(float(x), 1) for x in m.extents], "origin_mm": [round(float(x), 2) for x in m.bounds[0]]}
 
 
 @app.get("/api/scans/{scan_id}/section.svg")
@@ -629,7 +666,7 @@ def photo(scan_id: str, name: str, up: bool = False):
 @app.get("/api/scans/{scan_id}/{file}")
 def download(scan_id: str, file: str):
     p = _dir(scan_id) / file
-    if file not in ARTIFACTS or not p.exists():
+    if not (file in ARTIFACTS or PRINT_FILE.match(file)) or not p.exists():
         raise HTTPException(404, "file not found")
     return FileResponse(p, filename=file)
 
