@@ -21,6 +21,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var wasTurntable = false
     private var wasRing = false
     @Published var serverOnly = false     // turntable and ring scans: only the server can put the frames together
+    @Published var phoneResult: OnPhoneRing.Result?
+    @Published var buildingOnPhone = false
+    var canBuildOnPhone: Bool { wasRing && !outlining && !maskURLs.isEmpty && !buildingOnPhone && phoneResult == nil }
     private var lastMode = 0
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
@@ -93,7 +96,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     func start() {
-        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false; phoneResult = nil
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
@@ -169,7 +172,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         cloudNode.geometry = nil
         lock.lock(); meshAnchors = [:]; lock.unlock()
         recorder = nil
-        plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil; serverOnly = false
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
         scanning = false
         hud = ""; status = ""
         Reporter.log("mesh: reset by user")
@@ -256,6 +259,33 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 self?.outlining = false
                 self?.status = "Scan ready (\(out.count) outlines)"
                 Reporter.log("ring: \(out.count) outlines of \(photos.count) photos")
+            }
+        }
+    }
+
+    /// Ring scans: make the model here on the phone (no server needed), from the ring markers and the part outlines.
+    func buildOnPhone() {
+        guard let rec = recorder, canBuildOnPhone else { return }
+        buildingOnPhone = true
+        status = "Building on the phone…"
+        let photos = photoURLs.filter { $0.pathExtension == "jpg" }, metas = rec.metas, masks = maskURLs
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let r = OnPhoneRing.build(photos: photos, metas: metas, masks: masks, ring: .current()) { text in
+                DispatchQueue.main.async { self?.status = text }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.buildingOnPhone = false
+                if let r {
+                    self.phoneResult = r
+                    self.modelScene = r.scene
+                    self.serverOnly = false
+                    self.status = String(format: "Built on the phone from %d photos: %.1f × %.1f × %.1f mm", r.views, r.sizeMM.x, r.sizeMM.y, r.sizeMM.z)
+                    Reporter.log("phone build: \(r.views) views, \(r.triangles) triangles, size \(r.sizeMM)")
+                } else {
+                    self.status = "Could not build on the phone: too few photos where both the ring and the part were found. Upload it instead."
+                    Reporter.report(tab: "ring", message: "Phone build failed", detail: "photos \(photos.count), outlines \(masks.count)")
+                }
             }
         }
     }
@@ -550,8 +580,11 @@ struct MeshScanView: View {
         if model.scanning {
             return "The LiDAR is measuring the surfaces in front of the camera. Each coloured dot is a point it measured. Move slowly: dots appear on everything you have seen, and gaps with no dots are not captured yet. Tap Stop when it covers what you need, or Reset to start over."
         }
+        if model.plyURL != nil && model.phoneResult != nil {
+            return "Built on the phone. Turn it with one finger, pinch to zoom; STL shares the file (for example to Orca). Upload gives the server's version (more careful, with the full web page). New scan throws this one away."
+        }
         if model.plyURL != nil && model.serverOnly {
-            return "Scan done. The phone cannot join turntable or ring frames itself: tap Upload, then open the Models tab to see the finished model (it takes a minute). New scan throws this one away."
+            return "Scan done. Build here makes the model on the phone now (about a minute, no server needed). Upload sends it to the server, which builds it more carefully: see the Models tab. Save keeps it on the phone for later. New scan throws it away."
         }
         if model.plyURL != nil {
             return "Scan done. This is what the phone captured: turn it with one finger, pinch to zoom. Tap Upload for the finished model (solid surface, colours, STL) in the Models tab. New scan throws it away."
@@ -602,6 +635,8 @@ struct MeshScanView: View {
                         Button("Start scan") { mode = 0; model.start() }
                     }
                     if model.plyURL != nil, !model.scanning {
+                        if model.canBuildOnPhone { Button("Build here") { model.buildOnPhone() } }
+                        if let stl = model.phoneResult?.stl { ShareLink(item: stl) { Text("STL") } }
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
                         Button("Save") { model.saveOnPhone() }
                         Button("New scan", role: .destructive) { mode = 0; model.discard() }

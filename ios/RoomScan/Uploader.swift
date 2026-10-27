@@ -1,3 +1,4 @@
+import SwiftUI
 import Foundation
 
 enum Uploader {
@@ -39,7 +40,9 @@ enum Uploader {
         req.httpMethod = "POST"
         req.timeoutInterval = 300
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let (data, resp) = try await URLSession.shared.upload(for: req, from: body)
+        let progress = UploadSpeed()
+        defer { DispatchQueue.main.async { UploadProgress.shared.active = false } }
+        let (data, resp) = try await URLSession.shared.upload(for: req, from: body, delegate: progress)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
@@ -82,5 +85,44 @@ enum Uploader {
         guard (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.badServerResponse) }
         return obj
+    }
+}
+
+
+/// How the current upload is going, shown at the bottom of every tab.
+final class UploadProgress: ObservableObject {
+    static let shared = UploadProgress()
+    @Published var text = ""
+    @Published var active = false
+}
+
+/// Counts the bytes as they are sent: amount, speed per second (smoothed) and time left.
+final class UploadSpeed: NSObject, URLSessionTaskDelegate {
+    private var lastBytes: Int64 = 0
+    private var lastTime = Date()
+    private var rate = 0.0
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        let now = Date(), dt = now.timeIntervalSince(lastTime)
+        guard dt >= 0.5 || totalBytesSent == totalBytesExpectedToSend else { return }
+        let instant = Double(totalBytesSent - lastBytes) / max(dt, 0.001)
+        rate = rate == 0 ? instant : 0.6 * rate + 0.4 * instant
+        lastBytes = totalBytesSent; lastTime = now
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        let left = rate > 0 ? Double(totalBytesExpectedToSend - totalBytesSent) / rate : 0
+        let text = "Uploading \(f.string(fromByteCount: totalBytesSent)) of \(f.string(fromByteCount: totalBytesExpectedToSend))"
+            + " · \(f.string(fromByteCount: Int64(rate)))/s" + (totalBytesSent < totalBytesExpectedToSend ? " · \(Int(left.rounded())) s left" : " · the server is building the model…")
+        DispatchQueue.main.async { UploadProgress.shared.text = text; UploadProgress.shared.active = true }
+    }
+}
+
+struct UploadProgressLine: View {
+    @ObservedObject private var p = UploadProgress.shared
+    var body: some View {
+        if p.active {
+            Text(p.text).font(.caption.monospacedDigit()).padding(.horizontal, 10).padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
+        }
     }
 }
