@@ -153,7 +153,7 @@ struct ObjectScanView: View {
         guard let s = model.session else {
             return "Put the part on a table with a plain background and good light. Tap New object."
         }
-        switch model.state {
+        switch s.state {
         case .initializing: return "Getting ready…"
         case .ready: return "Point the camera at the part so it is in the middle of the screen, about 30 cm away. Then tap Detect object."
         case .detecting: return "The box shows what will be scanned. Drag its sides to fit the part, then tap Start capture."
@@ -179,7 +179,7 @@ struct ObjectScanView: View {
             VStack(spacing: 8) {
                 if !guide.isEmpty { Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10)) }
                 Spacer()
-                if let s = model.session, model.state == .capturing {
+                if let s = model.session, s.state == .capturing {
                     Text("\(s.numberOfShotsTaken) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
                 }
                 if !model.feedback.isEmpty { Text(model.feedback.capitalized).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
@@ -191,7 +191,7 @@ struct ObjectScanView: View {
                     } else if model.session == nil {
                         Button("New object") { model.begin() }
                     } else if !model.reconstructing {
-                        switch model.state {
+                        switch model.session?.state ?? .initializing {
                         case .ready: Button("Detect object") { _ = model.session?.startDetecting() }
                         case .detecting: Button("Start capture") { model.session?.startCapturing() }
                         case .capturing:
@@ -199,6 +199,7 @@ struct ObjectScanView: View {
                                 Button("Flip and continue") { model.session?.beginNewScanPassAfterFlip() }
                             }
                             Button("Finish") { model.session?.finish() }
+                        case .failed: Text("Capture failed. Tap Cancel and try again.").font(.caption)
                         default: EmptyView()
                         }
                         Button("Cancel") { model.cancel() }
