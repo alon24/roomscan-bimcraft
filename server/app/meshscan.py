@@ -209,7 +209,8 @@ def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit:
     return out, float(seen.mean())
 
 
-def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: dict | None = None, recolour: bool = True) -> tuple[bool, str]:
+def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: dict | None = None, recolour: bool = True,
+                  surface: bool = True) -> tuple[bool, str]:
     """A depth point cloud from the phone: keep it for the viewer, and mesh it if Open3D is available."""
     pts = np.asarray(cloud.vertices, dtype=float) * scale
     cols = np.asarray(cloud.colors) if cloud.colors is not None and len(cloud.colors) == len(pts) else np.tile([150, 150, 150, 255], (len(pts), 1))
@@ -222,7 +223,7 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: d
     (d / "points.bin").write_bytes(pack_points(pts, cols))
     rep = {"points": int(len(pts)), "size_m": [round(float(x), 2) for x in np.ptp(pts, axis=0)], "vertices": 0, "faces": 0}
     log = f"{len(pts)} points" + fp_note
-    mesh = poisson(pts, cols, depth=9 if len(pts) < 300_000 else 8) if len(pts) >= 500 else None
+    mesh = poisson(pts, cols, depth=9 if len(pts) < 300_000 else 8) if surface and len(pts) >= 500 else None
     if mesh is not None:
         rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]
         if recolour and scale == 1.0:       # the cloud is in the phone's world frame, the same one the photos' poses use
@@ -254,12 +255,12 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: d
     return True, log
 
 
-def convert_mesh(d: Path, scale: float = 1.0) -> tuple[bool, str]:
+def convert_mesh(d: Path, scale: float = 1.0, surface: bool = True) -> tuple[bool, str]:
     """Write mesh.bin (viewer), colored.ply and report.json into d."""
     try:
         mesh = trimesh.load(d / "scan.ply", process=False)
         if isinstance(mesh, trimesh.PointCloud):
-            return convert_cloud(d, mesh, scale)
+            return convert_cloud(d, mesh, scale, surface=surface)
         if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
             return False, "scan.ply has no triangles or points"
         if scale != 1.0:

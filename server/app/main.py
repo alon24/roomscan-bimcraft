@@ -73,7 +73,19 @@ def _convert(d: Path) -> dict:
         elif meta.get("turntable"):  # fixed phone, spinning plate: fuse the LiDAR frames in the part's own frame
             ok, out = turntable.fuse(d, meta.get("scale", 1.0))
         else:
-            ok, out = meshscan.convert_mesh(d, meta.get("scale", 1.0))
+            # a free scan with depth frames (a room, a corner): merge the depth into a clean surface; else fit one through the points
+            room = not (d / "footprint.json").exists() and frame_tools.depth_frames(d) >= 5
+            ok, out = meshscan.convert_mesh(d, meta.get("scale", 1.0), surface=not room)
+            if room:
+                try:
+                    ok2, log2 = frame_tools.tsdf_room(d, meta.get("scale", 1.0))
+                except Exception as e:
+                    ok2, log2 = False, f"{type(e).__name__}: {e}"
+                if ok2:
+                    ok, out = True, out + "\n" + log2
+                else:
+                    ok, out = meshscan.convert_mesh(d, meta.get("scale", 1.0))
+                    out += f"\n(merged-depth surface failed: {log2}; fitted through the points instead)"
         try:  # automatic "this is the part" mask for every frame that has LiDAR depth
             n = frame_tools.detect_all(d)
             if n:
@@ -478,10 +490,25 @@ async def delete_project(name: str, delete_scans: bool = False):
 
 
 @app.get("/api/scans/{scan_id}/photos/{name}")
-def photo(scan_id: str, name: str):
-    p = _dir(scan_id) / "photos" / name
+def photo(scan_id: str, name: str, up: bool = False):
+    """The photo. With ?up=1 turned the right way up using the phone's position (the sensor image is always landscape)."""
+    d = _dir(scan_id)
+    p = d / "photos" / name
     if not PHOTO_NAME.match(name) or not p.exists():
         raise HTTPException(404, "photo not found")
+    if up and name.endswith(".jpg"):
+        meta = next((x for x in frame_tools.manifest(d) if x.get("file") == name), None)
+        if meta and meta.get("transform"):
+            x_up, y_up = meta["transform"][0][1], meta["transform"][1][1]   # world height of the camera's right and up axes
+            angle = (90 if x_up > 0 else -90) if abs(x_up) > abs(y_up) else (180 if y_up < 0 else 0)
+            if angle:
+                from io import BytesIO
+
+                from fastapi.responses import Response
+                from PIL import Image
+                buf = BytesIO()
+                Image.open(p).rotate(angle, expand=True).save(buf, "JPEG", quality=88)
+                return Response(buf.getvalue(), media_type="image/jpeg")
     return FileResponse(p)
 
 

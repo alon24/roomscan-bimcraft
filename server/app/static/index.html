@@ -52,7 +52,7 @@
 </head>
 <body>
 <aside>
-  <h1>RoomScan</h1>
+  <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
   <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button>
     <input type="file" id="importFile" accept=".zip,application/zip" hidden></div>
   <input id="search" placeholder="Search rooms and objects" type="search">
@@ -270,14 +270,14 @@ async function show(id) {
         const cams = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform).map(p => {
           const m = photoMarker(id, p); m.scale.setScalar(Math.max(0.05, ext / 8) / 0.25); return m;
         });
-        const withBox = o => { const g = new THREE.Group(); g.add(o); if (box3) g.add(box3.clone()); for (const m of cams) g.add(m.clone()); return g; };
+        const withBox = o => { const g = new THREE.Group(); g.add(o); if (box3) { const b = box3.clone(); b.userData.nofit = true; g.add(b); } for (const m of cams) { const c = m.clone(); c.userData.nofit = true; g.add(c); } return g; };
         loadFrames(id);
         if (r.points) views.points = withBox(drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r));
         if (r.faces) views.surface = withBox(drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r));
         // Photo texture: every triangle drawn with the photo that sees it best, projected per pixel (built when first asked for)
         let texturable = false;
         if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`)).ok; } catch {} }
-        const first = views.points ? "points" : "surface";
+        const first = texturable ? "textured" : views.surface ? "surface" : "points";
         const box = $("modes");
         const pick = async k => {
           if (k === "textured" && !views.textured) {
@@ -433,7 +433,7 @@ async function outlineBox(id) {
 }
 
 function openPhoto(id, name) {
-  $("big").src = `/api/scans/${id}/photos/${name}`;
+  $("big").src = `/api/scans/${id}/photos/${name}?up=1`;
   $("dlg").showModal();
 }
 $("dlg").onclick = () => $("dlg").close();
@@ -454,7 +454,7 @@ async function loadPhotos(meta) {
 
 function addThumb(id, file) {
   const img = document.createElement("img");
-  img.loading = "lazy"; img.src = `/api/scans/${id}/photos/${file}`; img.onclick = () => openPhoto(id, file);
+  img.loading = "lazy"; img.src = `/api/scans/${id}/photos/${file}?up=1`; img.onclick = () => openPhoto(id, file);
   $("photos").append(img);
 }
 
@@ -696,7 +696,7 @@ function show3d(group, keepView = false) {
     cam.position.copy(c).add(new THREE.Vector3(0, 0, dist).applyQuaternion(q));
   };
   const fit = () => {  // frame the current model and reset the view
-    const box = new THREE.Box3().setFromObject(V.group);
+    const box = new THREE.Box3(); for (const o of V.group.children) if (!o.userData.nofit) box.expandByObject(o); if (box.isEmpty()) box.setFromObject(V.group);
     if (box.isEmpty()) return false;
     box.getCenter(c); r = box.getSize(new THREE.Vector3()).length() || 5; dist = r * 1.1;
     q.copy(q0);
@@ -829,7 +829,7 @@ connect();
 const params = new URLSearchParams(location.search);
 if (params.get("embed")) document.body.classList.add("embed");  // inside the iPhone app: no list, just the viewer
 loadList().then(() => { if (params.get("scan")) show(params.get("scan")); });
-fetch('/api/version').then(r => r.json()).then(v => { document.getElementById('ver').textContent = `Server v${v.version} · build ${v.build}`; }).catch(() => {});
+fetch('/api/version').then(r => r.json()).then(v => { document.getElementById('ver').textContent = `Server v${v.version} · build ${v.build}`; document.getElementById('verTop').textContent = `server v${v.version} · build ${v.build}`; }).catch(() => {});
 </script>
 </body>
 </html>

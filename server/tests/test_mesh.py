@@ -182,3 +182,53 @@ def test_turntable_fusion_recovers_the_whole_part_from_one_side(tmp_path, monkey
     rep = TestClient(main.app).get(f"/api/scans/{r.json()['id']}/report.json").json()
     ext = sorted(rep["size_mm"])
     assert 45 < ext[0] < 95 and 105 < ext[1] < 150 and 125 < ext[2] < 170, (rep["size_mm"], meta["log"])   # the 60 x 120 x 140 mm part
+
+
+def test_room_scan_becomes_a_clean_closed_surface_the_size_of_the_room(tmp_path, monkeypatch):
+    """Eight frames from the middle of a 3 x 2.5 x 4 m room: merged depth gives the walls, floor and ceiling at the right size."""
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    lo, hi = np.array([-1.5, 0.0, -2.0]), np.array([1.5, 2.5, 2.0])
+    w, h, fx, fy = 96, 72, 45.0, 45.0
+    cx, cy = w / 2, h / 2
+    uu, vv = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
+    dcam = np.stack([(uu - cx) / fx, -(vv - cy) / fy, -np.ones_like(uu)], axis=-1)       # ARKit camera rays with z = -1
+    photos, files = [], []
+    (tmp_path / "scans").mkdir(parents=True, exist_ok=True)
+    pos = np.array([0.2, 1.2, 0.1])
+    for k in range(16):
+        yaw, pitch = np.radians(k * 45), np.radians(-25 if k % 2 else 25)
+        Ry = np.array([[np.cos(yaw), 0, np.sin(yaw)], [0, 1, 0], [-np.sin(yaw), 0, np.cos(yaw)]])
+        Rx = np.array([[1, 0, 0], [0, np.cos(pitch), -np.sin(pitch)], [0, np.sin(pitch), np.cos(pitch)]])
+        R = Ry @ Rx
+        dirs = dcam @ R.T
+        best = np.full((h, w), np.inf); colour = np.zeros((h, w, 3), np.uint8)
+        for ax in range(3):
+            for bound, base in ((lo[ax], 60), (hi[ax], 200)):
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    t = (bound - pos[ax]) / dirs[..., ax]
+                hit = (t > 0) & (t < best)
+                best[hit] = t[hit]
+                colour[hit] = [base if ax == 0 else 120, base if ax == 1 else 120, base if ax == 2 else 120]
+        depth = np.where(np.isfinite(best), best, 0).astype("<f4")
+        name = f"p{k + 1:03d}"
+        depth.tofile(tmp_path / f"{name}.depth")
+        Image.fromarray(colour).save(tmp_path / f"{name}.jpg")
+        M = np.eye(4); M[:3, :3], M[:3, 3] = R, pos
+        photos.append({"file": f"{name}.jpg", "timestamp": k, "width": w, "height": h, "depth_file": f"{name}.depth", "depth_width": w, "depth_height": h,
+                       "transform": [M[:3, 0].tolist() + [0], M[:3, 1].tolist() + [0], M[:3, 2].tolist() + [0], pos.tolist() + [1]],
+                       "intrinsics": [[fx, 0, 0], [0, fy, 0], [cx, cy, 1]]})
+        files += [("photos", (f"{name}.jpg", open(tmp_path / f"{name}.jpg", "rb"), "image/jpeg")),
+                  ("photos", (f"{name}.depth", open(tmp_path / f"{name}.depth", "rb"), "application/octet-stream"))]
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+    rng = np.random.default_rng(1)
+    trimesh.PointCloud(rng.uniform(lo, hi, (800, 3))).export(tmp_path / "c.ply")
+    c = TestClient(main.app)
+    r = c.post("/api/scans", data={"kind": "mesh"}, files=files + [("mesh", ("scan.ply", open(tmp_path / "c.ply", "rb"))),
+                                                                     ("photos_meta", ("photos.json", open(tmp_path / "photos.json", "rb")))])
+    meta = c.get(f"/api/scans/{r.json()['id']}").json()
+    assert meta["status"] == "ok" and "surface from" in meta["log"], meta["log"]
+    rep = c.get(f"/api/scans/{r.json()['id']}/report.json").json()
+    assert rep["faces"] > 1000, rep
+    ext = sorted(rep["size_m"])
+    assert 2.3 < ext[0] < 2.8 and 2.8 < ext[1] < 3.3 and 3.7 < ext[2] < 4.3, rep["size_m"]         # 2.5 x 3 x 4 m
+    assert c.get(f"/api/scans/{r.json()['id']}/texturing.json").status_code == 200

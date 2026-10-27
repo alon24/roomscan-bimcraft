@@ -136,3 +136,86 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     cloud = trimesh.PointCloud(pts, colors=np.c_[cols, np.full(len(cols), 255, dtype=np.uint8)])
     ok, log = meshscan.convert_cloud(d, cloud, scale)
     return ok, f"fused {used} frames: " + log
+
+
+def depth_frames(d: Path) -> int:
+    return sum(1 for ph in manifest(d) if ph.get("depth_file") and (d / "photos" / ph["depth_file"]).exists())
+
+
+def tsdf_room(d: Path, scale: float = 1.0, voxel: float = 0.02) -> tuple[bool, str]:
+    """A clean surface for a room (or any free scan): every frame's depth and colour is merged into one signed-distance volume,
+    which averages out the noise and the stray points at depth edges, and leaves flat walls flat. The surface is then coloured
+    from the full-size photos and prepared for per-pixel photo texturing."""
+    import open3d as o3d
+    # size the volume to what the frames saw (outliers ignored): a cube with a margin, at most 320 voxels a side
+    seen = []
+    for ph in manifest(d):
+        dm = meshscan._depth_map(d, ph)
+        if dm is not None:
+            w = world_points(ph, dm)[::4, ::4].reshape(-1, 3)
+            ok = (dm[::4, ::4].reshape(-1) > 0.1) & (dm[::4, ::4].reshape(-1) < 4.5)
+            seen.append(w[ok])
+    if not seen:
+        return False, "no depth frames"
+    seen = np.vstack(seen)
+    lo, hi = np.percentile(seen, 0.5, axis=0) - 0.3, np.percentile(seen, 99.5, axis=0) + 0.3
+    length = float(np.max(hi - lo))
+    voxel = max(voxel, length / 320)
+    vol = o3d.pipelines.integration.UniformTSDFVolume(
+        length, int(np.ceil(length / voxel)), voxel * 4, o3d.pipelines.integration.TSDFVolumeColorType.RGB8, lo)
+    flip = np.diag([1.0, -1.0, -1.0, 1.0])       # ARKit camera -> OpenCV camera
+    used = 0
+    for ph in manifest(d):
+        dm = meshscan._depth_map(d, ph)
+        path = d / "photos" / ph["file"]
+        if dm is None or not path.exists():
+            continue
+        dh, dw = dm.shape
+        dm = dm.astype(np.float32).copy()
+        dm[~((dm > 0.1) & (dm < 4.5))] = 0
+        dm[(ndi.maximum_filter(dm, 3) - ndi.minimum_filter(dm, 3)) > (0.04 * dm + 0.01)] = 0
+        col = np.ascontiguousarray(np.asarray(Image.open(path).convert("RGB").resize((dw, dh), Image.BILINEAR)))
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            o3d.geometry.Image(col), o3d.geometry.Image(dm), depth_scale=1.0, depth_trunc=4.5, convert_rgb_to_intensity=False)
+        k = np.array(ph["intrinsics"], dtype=float)
+        sx, sy = dw / ph["width"], dh / ph["height"]
+        intr = o3d.camera.PinholeCameraIntrinsic(dw, dh, k[0][0] * sx, k[1][1] * sy, k[2][0] * sx, k[2][1] * sy)
+        vol.integrate(rgbd, intr, np.linalg.inv(_mat(ph["transform"]) @ flip))
+        used += 1
+    if used < 3:
+        return False, "too few frames with depth"
+    om = vol.extract_triangle_mesh()
+    if len(om.triangles) == 0:
+        return False, "the depth frames produced no surface"
+    cluster, n_tri, _ = om.cluster_connected_triangles()
+    cluster, n_tri = np.asarray(cluster), np.asarray(n_tri)
+    om.remove_triangles_by_mask(n_tri[cluster] < 400)          # drop little floating pieces
+    om.remove_unreferenced_vertices()
+    if len(om.triangles) > 400_000:
+        om = om.simplify_quadric_decimation(target_number_of_triangles=400_000)
+    mesh = trimesh.Trimesh(np.asarray(om.vertices) * scale, np.asarray(om.triangles), process=False)
+    rgb = (np.asarray(om.vertex_colors) * 255).astype(np.uint8)
+    log = f"surface from {used} frames (merged depth), {len(mesh.faces)} triangles"
+    seen = 0.0
+    if scale == 1.0:
+        try:
+            rgb, seen = meshscan.recolour_from_photos(mesh, d, rgb)
+            log += f", {round(seen * 100)}% coloured from the photos"
+        except Exception as e:
+            log += f", photo colours skipped ({type(e).__name__}: {e})"
+    mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[rgb, np.full(len(rgb), 255, dtype=np.uint8)])
+    (d / "mesh.bin").write_bytes(meshscan.pack_preview(mesh, rgb))
+    mesh.export(d / "colored.ply")
+    if scale == 1.0:
+        try:
+            plan = meshscan.plan_texture(mesh, d)
+            if plan:
+                log += f", photo texture from {plan['count']} photos covers {round(plan['covered'] * 100)}% of the triangles"
+        except Exception as e:
+            log += f", photo texture skipped ({type(e).__name__}: {e})"
+    rp = d / "report.json"
+    rep = json.loads(rp.read_text()) if rp.exists() else {}
+    rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=round(float(seen), 3),
+               size_m=[round(float(x), 2) for x in mesh.extents])
+    rp.write_text(json.dumps(rep))
+    return True, log
