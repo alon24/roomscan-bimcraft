@@ -108,7 +108,7 @@ final class ObjectScanModel: ObservableObject {
         let out = imagesDir.deletingLastPathComponent().appendingPathComponent("scan.usdz")
         do {
             let ps = try PhotogrammetrySession(input: imagesDir, configuration: PhotogrammetrySession.Configuration())
-            try ps.process(requests: [.modelFile(url: out, detail: .reduced), .poses])
+            try ps.process(requests: [.modelFile(url: out, detail: .medium), .poses])
             for try await o in ps.outputs {
                 switch o {
                 case .requestProgress(_, let f): progress = f

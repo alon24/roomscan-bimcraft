@@ -1,5 +1,7 @@
 """Object Capture USDZ -> printable mesh (STL / 3MF). Output units: millimetres, Z up, sitting on z=0."""
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +41,51 @@ def load_usdz(path: Path) -> trimesh.Trimesh:
     if UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y:  # (x, y, z) -> (x, -z, y)
         v = np.c_[v[:, 0], -v[:, 2], v[:, 1]]
     return trimesh.Trimesh(v, np.array(faces), process=False)
+
+
+def extract_textured(path: Path, outdir: Path) -> bool:
+    """Write textured.json (+ texture.jpg) so the web preview shows the real surface colours.
+    Positions stay in the stage's own frame (mm); `zup` says whether to rotate for three.js.
+    Vertices are unrolled per triangle corner because UVs are usually per corner."""
+    from PIL import Image
+    stage = Usd.Stage.Open(str(path))
+    prim = next((p for p in stage.Traverse() if p.IsA(UsdGeom.Mesh)), None)
+    with zipfile.ZipFile(path) as z:
+        tex = [n for n in z.namelist() if n.lower().endswith((".png", ".jpg", ".jpeg")) and "tex" in n.lower()
+               and "norm" not in n.lower()]
+        if prim is None or not tex:
+            return False
+        image = Image.open(io.BytesIO(z.read(max(tex, key=lambda n: z.getinfo(n).file_size)))).convert("RGB")
+    mesh = UsdGeom.Mesh(prim)
+    pv = next((p for p in UsdGeom.PrimvarsAPI(prim).GetPrimvars() if p.GetPrimvarName() in ("st", "st0", "UVMap")), None)
+    if pv is None:
+        return False
+    st = np.array(pv.Get(), dtype=float)
+    st_idx = pv.GetIndices()
+    face_varying = pv.GetInterpolation() == UsdGeom.Tokens.faceVarying
+    mm = (UsdGeom.GetStageMetersPerUnit(stage) or 1.0) * 1000.0
+    pts = np.array(mesh.GetPointsAttr().Get(), dtype=float)
+    m = np.array(UsdGeom.XformCache().GetLocalToWorldTransform(prim))
+    pts = (np.c_[pts, np.ones(len(pts))] @ m)[:, :3] * mm
+    idx = mesh.GetFaceVertexIndicesAttr().Get()
+    pos, uv, i = [], [], 0
+    for c in mesh.GetFaceVertexCountsAttr().Get():
+        for k in range(1, c - 1):
+            for corner in (0, k, k + 1):
+                vi = idx[i + corner]
+                ui = (i + corner) if face_varying else vi
+                if len(st_idx):
+                    ui = st_idx[ui]
+                pos.append(pts[vi])
+                uv.append(st[ui])
+        i += c
+    image.thumbnail((2048, 2048))
+    image.save(outdir / "texture.jpg", quality=85)
+    (outdir / "textured.json").write_text(json.dumps({
+        "zup": UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z,
+        "positions": np.round(np.array(pos), 2).ravel().tolist(),
+        "uvs": np.round(np.array(uv), 4).ravel().tolist()}))
+    return True
 
 
 def clean(mesh: trimesh.Trimesh, scale: float = 1.0) -> tuple[trimesh.Trimesh, list[str]]:
@@ -82,6 +129,11 @@ def convert_object(src: Path, outdir: Path, scale: float = 1.0) -> tuple[bool, s
         (outdir / "preview.json").write_text(json.dumps({
             "vertices": np.round(mesh.vertices, 2).ravel().tolist(),
             "faces": mesh.faces.ravel().tolist()}))
+        try:
+            if extract_textured(src, outdir):
+                log.append("textured preview written")
+        except Exception as e:  # the plain preview still works
+            log.append(f"no textured preview: {type(e).__name__}: {e}")
         rep = report(mesh)
         log.append(json.dumps(rep))
         (outdir / "report.json").write_text(json.dumps(rep))
