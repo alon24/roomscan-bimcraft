@@ -263,7 +263,23 @@ struct ObjectScanView: View {
         }
     }
 
+    /// "LiDAR turntable" is the Mesh tab's turntable and ring scanner (LiDAR depth, real size), shown here under the same mode switch.
     var body: some View {
+        if mode == 1 && idle {
+            VStack(spacing: 0) {
+                Picker("Mode", selection: $mode) {
+                    Text("Walk around").tag(0)
+                    Text("LiDAR turntable").tag(1)
+                }
+                .pickerStyle(.segmented).padding(.horizontal).padding(.top, 8)
+                MeshScanView(initialMode: 3)
+            }
+        } else {
+            walkBody
+        }
+    }
+
+    private var walkBody: some View {
         ZStack(alignment: .bottom) {
             if let session = model.session, !model.reconstructing {
                 ObjectCaptureView(session: session).ignoresSafeArea().scaleEffect(session.state == .capturing ? zoomObj : 1)
@@ -285,7 +301,7 @@ struct ObjectScanView: View {
                 if idle {
                     Picker("Mode", selection: $mode) {
                         Text("Walk around").tag(0)
-                        Text("Turntable (photos)").tag(1)
+                        Text("LiDAR turntable").tag(1)
                     }
                     .pickerStyle(.segmented)
                     .disabled(turntable.running)

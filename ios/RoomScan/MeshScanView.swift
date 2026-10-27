@@ -476,10 +476,12 @@ struct OrbitSceneView: UIViewRepresentable {
 }
 
 struct MeshScanView: View {
+    var initialMode = 0     // 0 free scan, 1 guided object, 2 turntable, 3 ring: the Object tab opens this with the ring
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 AR overlay, 1 3D model
     @State private var zoom: CGFloat = 1
+    @State private var didSetMode = false
 
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
@@ -552,7 +554,7 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom)
-        .onAppear { model.startPreview() }
+        .onAppear { if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = initialMode; didSetMode = true }; model.startPreview() }
         .onDisappear { model.pausePreview() }
     }
 }
