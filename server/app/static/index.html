@@ -14,8 +14,19 @@
   main { padding:16px; min-width:0; }
   h1 { font-size:18px; margin:0 0 12px; }
   ul { list-style:none; padding:0; margin:0; }
-  li button { all:unset; display:block; width:100%; padding:8px; border-radius:6px; cursor:pointer; }
-  li button:hover, li button.sel { background:color-mix(in srgb, var(--acc) 14%, transparent); }
+  li { display:flex; align-items:center; gap:4px; border-radius:6px; border-left:3px solid transparent; }
+  li button { all:unset; display:block; flex:1; min-width:0; padding:8px; border-radius:6px; cursor:pointer; }
+  li:hover, li button.sel { background:color-mix(in srgb, var(--acc) 14%, transparent); }
+  li.picked { background:color-mix(in srgb, var(--acc) 30%, transparent); border-left-color:var(--acc); }
+  .tick { appearance:none; -webkit-appearance:none; flex:none; width:22px; height:22px; margin:0 0 0 6px; border:2px solid var(--mute); border-radius:50%; cursor:pointer; display:grid; place-content:center; opacity:.7; }
+  .tick:hover { border-color:var(--acc); opacity:1; }
+  .tick:checked { background:var(--acc); border-color:var(--acc); opacity:1; }
+  .tick:checked::after { content:"✓"; color:#fff; font-size:14px; font-weight:700; line-height:1; }
+  .tick:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  .grp .tick { margin-left:0; width:18px; height:18px; }
+  .grp .tick:checked::after { font-size:12px; }
+  .tick:indeterminate { border-color:var(--acc); }
+  .tick:indeterminate::after { content:"–"; color:var(--acc); font-weight:700; line-height:1; }
   li small { color:var(--mute); display:block; }
   .row { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
   .btn { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:none; color:var(--fg); text-decoration:none; cursor:pointer; font:inherit; }
@@ -53,8 +64,9 @@
 <body>
 <aside>
   <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
-  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button><button class="btn" id="selectBtn" title="Tick scans to delete several at once">Select</button></div>
+  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button></div>
   <div class="row" id="selectBar" hidden>
+    <b id="selLabel" style="align-self:center"></b>
     <button class="btn" id="selectAll">Tick all</button><button class="btn" id="selectFailed">Tick the failed ones</button><button class="btn" id="selectNone">Clear</button>
     <button class="btn" id="moveSelected">Move to home…</button><button class="btn" id="zipSelected">Download as zip</button>
     <button class="btn" id="reconvertSelected">Re-convert</button><button class="btn danger" id="deleteSelected">Delete selected</button>
@@ -87,6 +99,19 @@
             <button class="btn" id="applyReal">Apply to model</button>
             <button class="btn" id="clearMeasure">Clear</button>
           </span>
+        </div>
+        <div id="printBar" hidden style="margin:6px 0">
+          <div class="row" style="align-items:center">
+            <b>Cut &amp; section</b>
+            <select id="cutAxis"><option value="z">Height (Z)</option><option value="x">Width (X)</option><option value="y">Depth (Y)</option></select>
+            <input id="cutAt" type="range" min="0" max="100" step="0.5" value="50" style="flex:1;min-width:8em">
+            <span id="cutVal" class="hint"></span>
+            <button class="btn" id="cutBtn" title="Split the model here into two printable parts, each laid cut face down">Cut here</button>
+            <button class="btn" id="colourBtn" title="Filament colours that match the scan">Colour suggestions</button>
+          </div>
+          <div class="hint" id="cutHint"></div>
+          <div class="row" id="cutOut" style="align-items:flex-start"></div>
+          <div id="colourOut" class="row" style="margin-top:6px"></div>
         </div>
         <div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
       <div><img id="plan" alt="Plan"></div>
@@ -162,9 +187,12 @@ function icoBtn(label, title, fn) {
 }
 
 // ---- deleting several scans at once
-const SEL = { on: false, ids: new Set(), all: [] };
+const SEL = { ids: new Set(), all: [], last: null };
 function selCount() {
-  $("deleteSelected").textContent = `Delete selected (${SEL.ids.size})`;
+  const n = SEL.ids.size;
+  $("selectBar").hidden = n === 0;            // the bar is there while something is ticked
+  $("selLabel").textContent = `${n} selected`;
+  $("deleteSelected").textContent = `Delete selected (${n})`;
   for (const b of ["deleteSelected", "moveSelected", "zipSelected", "reconvertSelected"]) $(b).disabled = SEL.ids.size === 0;
 }
 $("selectAll").onclick = () => { for (const s of SEL.all) SEL.ids.add(s.id); selCount(); loadList(); };
@@ -181,7 +209,7 @@ $("reconvertSelected").onclick = async () => {
   for (const id of SEL.ids) { b.textContent = `Re-converting ${++n} of ${SEL.ids.size}…`; await fetch(`/api/scans/${id}/convert`, { method: "POST" }); }
   b.textContent = "Re-convert"; b.disabled = false; loadList();
 };
-$("selectBtn").onclick = () => { SEL.on = !SEL.on; SEL.ids.clear(); $("selectBar").hidden = !SEL.on; $("selectBtn").classList.toggle("on", SEL.on); selCount(); loadList(); };
+document.addEventListener("keydown", e => { if (e.key === "Escape" && SEL.ids.size && !document.querySelector("dialog[open]")) { SEL.ids.clear(); selCount(); loadList(); } });
 $("selectNone").onclick = () => { SEL.ids.clear(); selCount(); loadList(); };
 $("selectFailed").onclick = () => { for (const s of SEL.all) if (s.status !== "ok") SEL.ids.add(s.id); selCount(); loadList(); };
 $("deleteSelected").onclick = async () => {
@@ -196,6 +224,8 @@ async function loadList() {
   const q = $("search").value.trim().toLowerCase();
   const visible = scans.filter(s => !q || s.name.toLowerCase().includes(q));
   SEL.all = visible;
+  for (const id of [...SEL.ids]) if (!scans.some(x => x.id === id)) SEL.ids.delete(id);   // deleted elsewhere
+  selCount();
   $("empty").hidden = scans.length > 0 || projects.length > 0;
   const groups = [...projects.map(p => ({ project: p, items: visible.filter(s => s.project === p.name) })),
                   { project: null, items: visible.filter(s => !s.project) }];
@@ -207,7 +237,11 @@ async function loadList() {
     const title = document.createElement("span"); title.textContent = g.project ? g.project.name : "No home";
     const count = document.createElement("small"); count.textContent = g.items.length;
     const sp = Object.assign(document.createElement("span"), { className: "sp" });
-    head.append(title, count, sp);
+    const ids = g.items.map(x => x.id), picked = ids.filter(id => SEL.ids.has(id)).length;
+    const gcb = Object.assign(document.createElement("input"), { type: "checkbox", className: "tick", title: "Select every room in this home",
+      checked: ids.length > 0 && picked === ids.length, indeterminate: picked > 0 && picked < ids.length, disabled: !ids.length });
+    gcb.onclick = () => { for (const id of ids) gcb.checked ? SEL.ids.add(id) : SEL.ids.delete(id); selCount(); loadList(); };
+    head.append(gcb, title, count, sp);
     if (g.project) {
       const name = g.project.name;
       head.append(
@@ -227,19 +261,22 @@ async function loadList() {
     const ul = document.createElement("ul");
     for (const s of g.items) {
       const li = document.createElement("li"), b = document.createElement("button");
+      li.className = SEL.ids.has(s.id) ? "picked" : "";
       b.className = s.id === current ? "sel" : "";
-      if (SEL.on) {                       // tick boxes for deleting several scans at once
-        const cb = Object.assign(document.createElement("input"), { type: "checkbox", checked: SEL.ids.has(s.id) });
-        cb.style.cssText = "margin-right:6px";
-        cb.onclick = e => { e.stopPropagation(); cb.checked ? SEL.ids.add(s.id) : SEL.ids.delete(s.id); selCount(); };
-        b.prepend(cb);
-        b.onclick = () => { cb.click(); };
-      }
+      const cb = Object.assign(document.createElement("input"), { type: "checkbox", className: "tick", checked: SEL.ids.has(s.id), title: "Select (shift-click for a range)" });
+      cb.onclick = e => {
+        e.stopPropagation();
+        const order = SEL.all.map(x => x.id), i = order.indexOf(s.id), j = order.indexOf(SEL.last);
+        const ids = e.shiftKey && j >= 0 ? order.slice(Math.min(i, j), Math.max(i, j) + 1) : [s.id];   // shift: everything between the last tick and this one
+        for (const id of ids) cb.checked ? SEL.ids.add(id) : SEL.ids.delete(id);
+        SEL.last = s.id; selCount(); loadList();
+      };
       b.textContent = (s.kind === "object" ? "◆ " : s.kind === "mesh" ? "◉ " : "▢ ") + s.name;
       const small = document.createElement("small");
       small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?");
-      b.append(small); if (!SEL.on) b.onclick = () => show(s.id);
-      li.append(b); ul.append(li);
+      b.append(small);
+      b.onclick = () => { if (SEL.ids.size) cb.click(); else show(s.id); };   // while anything is ticked a tap ticks; otherwise it opens
+      li.append(cb, b); ul.append(li);
     }
     out.push(ul);
   }
@@ -279,6 +316,7 @@ async function show(id) {
     $("settingsBox").hidden = lines.length === 0;
   }
   const isObj = meta.kind === "object", isMesh = meta.kind === "mesh";
+  $("printBar").hidden = true;
   $("plan").hidden = isObj || isMesh;
   $("plan").src = !isObj && !isMesh && meta.status === "ok" ? `/api/scans/${id}/plan.png?t=${Date.now()}` : "";
   const actions = $("actions");
@@ -326,6 +364,7 @@ async function show(id) {
         a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}`; a.download = f;
         actions.append(a);
       }
+      if (r.stl) setupPrint(id, false);   // the cut and colours work on model.stl; the 3D view here is in the phone's frame, so no live clip
       try {
         // Points are the same picture as on the phone; the surface is the solid the server fitted through them.
         const views = {};
@@ -378,6 +417,7 @@ async function show(id) {
         setMeasure(id, meta, t.ok ? (meta.scale ?? 1) : 1, r.size_mm);     // the textured model is shown before the scale is applied
         if (t.ok) drawTextured(id, await t.json());
         else drawMesh(await (await fetch(`/api/scans/${id}/preview.json`)).json());
+        await setupPrint(id, true);
       }
       catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
     }
@@ -712,6 +752,85 @@ function drawPoints(buf, r) {
   g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(buf, 0, n * 3), 3));
   g.setAttribute("color", new THREE.BufferAttribute(lin, 3));
   return new THREE.Points(g, new THREE.PointsMaterial({ size: 0.015, vertexColors: true }));
+}
+
+// ---- print prep: cut into parts, cross-section, filament colours (server: printprep.py; model.stl is Z-up, mm)
+const PRINT = { id: null, size: [0, 0, 0], clip: false };
+const AXIS_I = { x: 0, y: 1, z: 2 };
+
+async function setupPrint(id, clip) {
+  const bar = $("printBar");
+  bar.hidden = true;
+  $("cutOut").replaceChildren(); $("colourOut").replaceChildren();
+  const r = await fetch(`/api/scans/${id}/print`);
+  if (!r.ok || current !== id) return;
+  const info = await r.json();
+  Object.assign(PRINT, { id, size: info.size_mm, clip });
+  const sug = info.suggested_cut;
+  $("cutHint").textContent = sug
+    ? `Too big for a ${info.bed_mm.join(" × ")} mm bed: cut across ${sug.axis.toUpperCase()} at ${sug.at} mm (set the slider there with the button).`
+    : `Fits a ${info.bed_mm.join(" × ")} mm bed. Move the slider to see a cross-section${clip ? " (the 3D model is cut open too)" : ""}.`;
+  if (sug) {
+    const b = document.createElement("button"); b.className = "btn"; b.textContent = "Use suggested cut";
+    b.onclick = () => { $("cutAxis").value = sug.axis; syncCut(); $("cutAt").value = sug.at; update(); };
+    $("cutHint").append(" ", b);
+  }
+  let timer = 0;
+  const syncCut = () => { const s = PRINT.size[AXIS_I[$("cutAxis").value]]; $("cutAt").max = s; $("cutAt").value = s / 2; };
+  const update = () => {
+    const axis = $("cutAxis").value, at = +$("cutAt").value, s = PRINT.size[AXIS_I[axis]];
+    $("cutVal").textContent = `${at.toFixed(1)} of ${s.toFixed(1)} mm`;
+    if (PRINT.clip) applyClip(axis, at / s);
+    clearTimeout(timer);
+    timer = setTimeout(() => {   // the outline is drawn on the server; ask once the slider stops
+      const img = new Image(); img.alt = "Cross-section"; img.style.cssText = "max-height:160px;background:#fff;border:1px solid #888";
+      img.src = `/api/scans/${id}/section.svg?axis=${axis}&at=${at}`;
+      img.onload = () => { $("cutOut").querySelector("img")?.remove(); $("cutOut").prepend(img); };
+    }, 250);
+  };
+  $("cutAxis").onchange = () => { syncCut(); update(); };
+  $("cutAt").oninput = update;
+  $("cutBtn").onclick = async () => {
+    $("cutBtn").disabled = true;
+    const res = await fetch(`/api/scans/${id}/cut`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ axis: $("cutAxis").value, at: +$("cutAt").value }) });
+    $("cutBtn").disabled = false;
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) { $("cutHint").textContent = "Cut failed: " + (j.detail || res.status); return; }
+    $("cutHint").textContent = `Cut in two (${j.log.join("; ")}). Part sizes: ${j.size_mm.map(s => s.join(" × ")).join(" and ")} mm. Each part lies cut face down; print them and glue.`;
+    for (const f of j.files) {
+      $("actions").querySelector(`a[download="${f}"]`)?.remove();
+      const a = document.createElement("a"); a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}?t=${Date.now()}`; a.download = f;
+      $("actions").append(a);
+    }
+  };
+  $("colourBtn").onclick = async () => {
+    const res = await fetch(`/api/scans/${id}/colours`);
+    const j = await res.json().catch(() => ({}));
+    const out = $("colourOut"); out.replaceChildren();
+    if (!res.ok) { out.textContent = j.detail || "No colours found"; return; }
+    for (const c of j.colours) {
+      const chip = document.createElement("span");
+      chip.style.cssText = "display:inline-flex;align-items:center;gap:6px;margin-right:12px";
+      chip.innerHTML = `<span style="width:22px;height:22px;border-radius:4px;border:1px solid #888;background:${c.hex}"></span>${c.filament} · ${c.percent}% <span class="hint">${c.hex}</span>`;
+      out.append(chip);
+    }
+    const n = document.createElement("div"); n.className = "hint"; n.style.flexBasis = "100%";
+    n.textContent = `From the ${j.source}. ${j.note}`; out.append(n);
+  };
+  syncCut(); update();
+  bar.hidden = false;
+}
+
+// Clip the shown model open at a fraction of its length along a model axis (model X, Y, Z -> world x, -z, y).
+function applyClip(axis, f) {
+  if (!V || !renderer) return;
+  renderer.localClippingEnabled = true;
+  const box = new THREE.Box3().setFromObject(V.group);
+  const plane = axis === "x" ? new THREE.Plane(new THREE.Vector3(-1, 0, 0), box.min.x + f * (box.max.x - box.min.x))
+              : axis === "z" ? new THREE.Plane(new THREE.Vector3(0, -1, 0), box.min.y + f * (box.max.y - box.min.y))
+              : new THREE.Plane(new THREE.Vector3(0, 0, 1), -(box.max.z - f * (box.max.z - box.min.z)));
+  V.group.traverse(o => { if (o.material) { o.material.clippingPlanes = [plane]; o.material.needsUpdate = true; } });
 }
 
 function drawMesh(m) {

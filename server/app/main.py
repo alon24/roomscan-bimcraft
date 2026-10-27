@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import anyio.to_thread
+import trimesh
 from anyio import from_thread
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -16,12 +17,14 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index
+from . import convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
-             "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json"}
+             "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
+             "model_part1.stl", "model_part2.stl", "model_parts.3mf", "colours.json"}
+PRINT_PREP = ("model_part1.stl", "model_part2.stl", "model_parts.3mf", "colours.json")  # derived from model.stl: stale once it changes
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
@@ -65,6 +68,8 @@ def _meta(d: Path) -> dict:
 
 
 def _convert(d: Path) -> dict:
+    for f in PRINT_PREP:
+        (d / f).unlink(missing_ok=True)
     meta = _meta(d)
     log: list[str] = []
     if meta.get("kind") == "mesh":
@@ -279,6 +284,8 @@ def detect_frame(scan_id: str, file: str):
 def rebuild(scan_id: str):
     """Fuse every frame (its depth, colour and mask) into a new point cloud and surface."""
     d = _dir(scan_id)
+    for f in PRINT_PREP:
+        (d / f).unlink(missing_ok=True)
     meta = _meta(d)
     if meta.get("ring"):        # ring scans: the outlines (phone or corrected by hand) carve the shape
         ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
@@ -526,6 +533,74 @@ async def delete_project(name: str, delete_scans: bool = False):
     _save_projects([n for n in _stored_projects() if n != name])
     await hub.broadcast({"type": "list"})
     return {"deleted": name, "scans_deleted": removed}
+
+
+def _model(d: Path):
+    if not (d / "model.stl").exists():
+        raise HTTPException(404, "this scan has no printable model.stl")
+    return printprep.load(d / "model.stl")
+
+
+@app.get("/api/scans/{scan_id}/print")
+def print_info(scan_id: str):
+    """Size, bed fit and a suggested cut for the printable model."""
+    m = _model(_dir(scan_id))
+    size = [round(float(x), 1) for x in m.extents]
+    return {"size_mm": size, "bed_mm": printprep.BED_MM, "suggested_cut": printprep.suggest_cut(size)}
+
+
+class CutRequest(BaseModel):
+    axis: str = Field(pattern="^[xyz]$")
+    at: float = Field(gt=0, description="mm from the low end of the part along the axis")
+
+
+@app.post("/api/scans/{scan_id}/cut")
+def cut_model(scan_id: str, req: CutRequest):
+    """Split model.stl in two at a plane; each half is capped and laid cut face down."""
+    d = _dir(scan_id)
+    try:
+        parts, log = printprep.cut(_model(d), req.axis, req.at)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    for i, part in enumerate(parts, 1):
+        part.export(d / f"model_part{i}.stl")
+    sizes = [[round(float(x), 1) for x in p.extents] for p in parts]
+    parts[1].apply_translation([parts[0].extents[0] / 2 + parts[1].extents[0] / 2 + 10, 0, 0])   # side by side on the bed
+    scene = trimesh.Scene({f"part{i}": p for i, p in enumerate(parts, 1)})
+    scene.export(d / "model_parts.3mf")
+    return {"files": ["model_part1.stl", "model_part2.stl", "model_parts.3mf"], "log": log,
+            "size_mm": sizes}
+
+
+@app.get("/api/scans/{scan_id}/section.svg")
+def section(scan_id: str, axis: str = "z", at: float = 1.0):
+    """Cross-section outline of model.stl at a plane (mm from the low end along the axis)."""
+    from fastapi.responses import Response
+    if axis not in "xyz" or len(axis) != 1:
+        raise HTTPException(400, "axis must be x, y or z")
+    m = _model(_dir(scan_id))
+    lo, hi = m.bounds[:, "xyz".index(axis)]
+    try:
+        svg = printprep.section_svg(m, axis, min(max(at, 0.01), float(hi - lo) - 0.01))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(svg, media_type="image/svg+xml", headers={"Content-Disposition": 'inline; filename="section.svg"'})
+
+
+@app.get("/api/scans/{scan_id}/colours")
+def colours(scan_id: str, k: int = 4):
+    """Filament colour suggestions from the scan's own colours (cached as colours.json)."""
+    d = _dir(scan_id)
+    p = d / "colours.json"
+    if not p.exists() or k != 4:
+        try:
+            res = printprep.suggest_colours(d, max(1, min(k, 8)))
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        if k == 4:
+            p.write_text(json.dumps(res))
+        return res
+    return json.loads(p.read_text())
 
 
 @app.get("/api/scans/{scan_id}/photos/{name}")
