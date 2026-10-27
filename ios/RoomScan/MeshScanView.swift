@@ -16,6 +16,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
     private var timer: Timer?
+    private var ticks = 0
+    private let lock = NSLock()
+    private var meshAnchors: [UUID: ARMeshAnchor] = [:]   // kept from the delegate, so Stop does not depend on currentFrame
 
     static var supported: Bool { ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) }
 
@@ -28,6 +31,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""
         recorder = PhotoRecorder()
+        ticks = 0
+        lock.lock(); meshAnchors = [:]; lock.unlock()
         let cfg = ARWorldTrackingConfiguration()
         cfg.sceneReconstruction = .mesh
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
@@ -37,7 +42,11 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     private func tick() {
-        guard let frame = sceneView.session.currentFrame else { return }
+        ticks += 1
+        guard let frame = sceneView.session.currentFrame else {
+            hud = "Waiting for the camera… (\(ticks))"
+            return
+        }
         var parts: [String] = []
         var dark = false
         if let light = frame.lightEstimate?.ambientIntensity {
@@ -52,17 +61,21 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         case .limited: parts.append("Tracking limited")
         }
         if !dark { recorder?.consider(frame) }
-        let tris = frame.anchors.compactMap { $0 as? ARMeshAnchor }.reduce(0) { $0 + $1.geometry.faces.count }
-        parts.append("\(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
+        lock.lock(); let all = Array(meshAnchors.values); lock.unlock()
+        let tris = all.reduce(0) { $0 + $1.geometry.faces.count }
+        parts.append("\(all.count) patches · \(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
         hud = parts.joined(separator: " · ")
     }
 
     func stop() {
         timer?.invalidate(); timer = nil
-        let anchors = (sceneView.session.currentFrame?.anchors ?? []).compactMap { $0 as? ARMeshAnchor }
+        lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
         sceneView.session.pause()
         scanning = false
-        guard !anchors.isEmpty else { status = "No surfaces were captured"; return }
+        guard !anchors.isEmpty else {
+            status = "No surfaces were captured (\(ticks / 2) s). \(sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh.")"
+            return
+        }
         status = "Saving…"
         let rec = recorder
         DispatchQueue.global().async { [weak self] in
@@ -93,9 +106,21 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
     }
 
+    // MARK: session problems are shown instead of failing silently
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        DispatchQueue.main.async { self.status = "AR error: \(error.localizedDescription)" }
+    }
+    func sessionWasInterrupted(_ session: ARSession) {
+        DispatchQueue.main.async { self.status = "Camera interrupted" }
+    }
+    func sessionInterruptionEnded(_ session: ARSession) {
+        DispatchQueue.main.async { self.status = "" }
+    }
+
     // MARK: live overlay
     func renderer(_ renderer: SCNSceneRenderer, nodeFor anchor: ARAnchor) -> SCNNode? {
         guard let a = anchor as? ARMeshAnchor else { return nil }
+        lock.lock(); meshAnchors[a.identifier] = a; lock.unlock()
         let node = SCNNode()
         Self.fill(node, a)
         return node
@@ -103,6 +128,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     func renderer(_ renderer: SCNSceneRenderer, didUpdate node: SCNNode, for anchor: ARAnchor) {
         guard let a = anchor as? ARMeshAnchor else { return }
+        lock.lock(); meshAnchors[a.identifier] = a; lock.unlock()
         Self.fill(node, a)
     }
 
