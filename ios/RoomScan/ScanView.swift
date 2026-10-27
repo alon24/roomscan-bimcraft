@@ -37,6 +37,8 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     @Published var usdzURL: URL?
     @Published var photoURLs: [URL] = []
     @Published var hud = ""
+    let live3D = LiveRoomScene()
+    private var lastScene = Date.distantPast
     private var liveRoom: CapturedRoom?
     private var tooDark = false
     @Published var photosMetaURL: URL?
@@ -64,6 +66,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     func start() {
         jsonURL = nil; usdzURL = nil; result = nil; status = ""
         photoURLs = []; photosMetaURL = nil; photoMetas = []; lastPose = nil
+        live3D.reset()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("room-photos-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         photoDir = dir
@@ -76,6 +79,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     /// Ambient intensity is about 1000 in a well-lit room; LiDAR works in the dark, but the photos do not.
     private func updateHUD() {
         guard let frame = captureView.captureSession.arSession.currentFrame else { return }
+        live3D.setPhone(frame.camera.transform)
         var parts: [String] = []
         if let light = frame.lightEstimate?.ambientIntensity {
             tooDark = light < 150
@@ -165,6 +169,10 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     // MARK: RoomCaptureSessionDelegate: stream the partial room to the web UI (about 2 per second)
     func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
         liveRoom = room
+        if Date().timeIntervalSince(lastScene) > 0.5 {
+            lastScene = Date()
+            DispatchQueue.main.async { [live3D] in live3D.update(room) }
+        }
         guard liveStream, Date().timeIntervalSince(lastLive) > 0.5,
               let data = try? JSONEncoder().encode(room) else { return }
         lastLive = Date()
@@ -177,6 +185,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
 
     func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
         result = processedResult
+        DispatchQueue.main.async { [live3D] in live3D.update(processedResult) }
         let dir = FileManager.default.temporaryDirectory
         let json = dir.appendingPathComponent("scan.json")
         let usdz = dir.appendingPathComponent("scan.usdz")
@@ -214,11 +223,35 @@ struct CaptureViewRepresentable: UIViewRepresentable {
 struct ScanView: View {
     @StateObject private var model = ScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @State private var mode = 0   // 0 camera, 1 3D model
+
+    private var guide: String {
+        if model.scanning {
+            return "Walk slowly around the room and point at every wall, corner, door, window, the floor and the ceiling. In the 3D model, solid lines are finished edges and dashed lines are still missing. Tap Stop when the outline is closed."
+        }
+        if model.jsonURL != nil {
+            return "Scan done. Turn the 3D model to check it. Tap Upload to send it to the server, or Start scan to redo it."
+        }
+        return "1. Tap Start scan.  2. Walk slowly and point the phone at all walls.  3. Switch to 3D model to see what was captured, and zoom with two fingers.  4. Tap Stop, then Upload."
+    }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             CaptureViewRepresentable(view: model.captureView).ignoresSafeArea()
+                .opacity(mode == 0 ? 1 : 0)
+            if mode == 1 { LiveRoom3DView(model: model.live3D).ignoresSafeArea() }
             VStack(spacing: 8) {
+                Picker("View", selection: $mode) {
+                    Text("Camera").tag(0)
+                    Text("3D model").tag(1)
+                }
+                .pickerStyle(.segmented)
+                Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                Spacer()
+                if mode == 1 {
+                    SceneSummary(scene: model.live3D)
+                    Text("One finger turns, pinch zooms, two fingers move, double-tap resets").font(.caption2).foregroundStyle(.secondary)
+                }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
                 HStack {
@@ -227,6 +260,7 @@ struct ScanView: View {
                     } else {
                         Button("Start scan") { model.start() }
                     }
+                    if mode == 1 { Button("Recenter") { model.live3D.recenter() } }
                     if model.jsonURL != nil, !model.scanning {
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
                         if let url = model.jsonURL { ShareLink(item: url) { Text("Share") } }
@@ -239,5 +273,13 @@ struct ScanView: View {
         .toolbar {
             NavigationLink { SettingsView() } label: { Image(systemName: "gear") }
         }
+    }
+}
+
+/// Observes the 3D scene directly, because ScanView does not see changes inside a nested object.
+struct SceneSummary: View {
+    @ObservedObject var scene: LiveRoomScene
+    var body: some View {
+        Text(scene.summary).font(.caption).padding(6).background(.thinMaterial, in: Capsule())
     }
 }

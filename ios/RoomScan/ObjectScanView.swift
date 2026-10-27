@@ -10,6 +10,7 @@ final class ObjectScanModel: ObservableObject {
     @Published var state: ObjectCaptureSession.CaptureState = .initializing
     @Published var status = ""
     @Published var progress = 0.0
+    @Published var feedback = ""
     @Published var reconstructing = false
     @Published var usdzURL: URL?
     @Published var photoURLs: [URL] = []
@@ -18,11 +19,12 @@ final class ObjectScanModel: ObservableObject {
 
     private var imagesDir: URL?
     private var watcher: Task<Void, Never>?
+    private var feedbackWatcher: Task<Void, Never>?
 
     var supported: Bool { ObjectCaptureSession.isSupported }
 
     func begin() {
-        usdzURL = nil; status = ""; progress = 0
+        usdzURL = nil; status = ""; progress = 0; feedback = ""
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("object-\(UUID().uuidString)")
         let images = base.appendingPathComponent("Images")
         try? FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
@@ -32,6 +34,11 @@ final class ObjectScanModel: ObservableObject {
         config.checkpointDirectory = base.appendingPathComponent("Snapshots")
         s.start(imagesDirectory: images, configuration: config)
         session = s
+        feedbackWatcher = Task { [weak self] in
+            for await set in s.feedbackUpdates {
+                self?.feedback = set.map { Self.words("\($0)") }.sorted().joined(separator: ", ")
+            }
+        }
         watcher = Task { [weak self] in
             for await st in s.stateUpdates {
                 guard let self else { return }
@@ -42,9 +49,17 @@ final class ObjectScanModel: ObservableObject {
         }
     }
 
+    /// "objectTooClose" -> "object too close"
+    private static func words(_ s: String) -> String {
+        var out = ""
+        for ch in s { if ch.isUppercase { out += " " + ch.lowercased() } else { out.append(ch) } }
+        return out
+    }
+
     func cancel() {
         session?.cancel()
         watcher?.cancel()
+        feedbackWatcher?.cancel()
         session = nil
     }
 
@@ -131,26 +146,59 @@ struct ObjectScanView: View {
     @StateObject private var model = ObjectScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
 
+    private var guide: String {
+        if !model.supported { return "Object Capture needs an iPhone with LiDAR." }
+        if model.reconstructing { return "Building the 3D model on the phone. Keep the app open; this takes a few minutes." }
+        if model.usdzURL != nil { return "Done. Turn the model to check it, then tap Upload." }
+        guard let s = model.session else {
+            return "Put the part on a table with a plain background and good light. Tap New object."
+        }
+        switch model.state {
+        case .initializing: return "Getting ready…"
+        case .ready: return "Point the camera at the part so it is in the middle of the screen, about 30 cm away. Then tap Detect object."
+        case .detecting: return "The box shows what will be scanned. Drag its sides to fit the part, then tap Start capture."
+        case .capturing:
+            if s.userCompletedScanPass {
+                return "That side is done. Turn the part onto another side so the underside shows, then tap Flip and continue. Tap Finish when every side is done."
+            }
+            return "Walk slowly around the part, keeping it in view. The ring fills as photos are taken, and dots show what has been captured. Tap Finish when done."
+        case .finishing: return "Finishing…"
+        default: return ""
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             if let session = model.session, !model.reconstructing {
                 ObjectCaptureView(session: session).ignoresSafeArea()
+            } else if let url = model.usdzURL {
+                ModelPreview(url: url).ignoresSafeArea()
             } else {
                 Color(.systemBackground).ignoresSafeArea()
             }
             VStack(spacing: 8) {
+                if !guide.isEmpty { Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10)) }
+                Spacer()
+                if let s = model.session, model.state == .capturing {
+                    Text("\(s.numberOfShotsTaken) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
+                }
+                if !model.feedback.isEmpty { Text(model.feedback.capitalized).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
                 if model.reconstructing { ProgressView(value: model.progress).padding(.horizontal) }
                 HStack {
                     if !model.supported {
-                        Text("Object Capture needs a LiDAR iPhone").foregroundStyle(.secondary)
+                        EmptyView()
                     } else if model.session == nil {
                         Button("New object") { model.begin() }
-                    } else {
+                    } else if !model.reconstructing {
                         switch model.state {
                         case .ready: Button("Detect object") { _ = model.session?.startDetecting() }
                         case .detecting: Button("Start capture") { model.session?.startCapturing() }
-                        case .capturing: Button("Finish") { model.session?.finish() }
+                        case .capturing:
+                            if model.session?.userCompletedScanPass == true {
+                                Button("Flip and continue") { model.session?.beginNewScanPassAfterFlip() }
+                            }
+                            Button("Finish") { model.session?.finish() }
                         default: EmptyView()
                         }
                         Button("Cancel") { model.cancel() }
