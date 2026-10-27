@@ -525,7 +525,8 @@ struct OrbitSceneView: UIViewRepresentable {
 }
 
 struct MeshScanView: View {
-    var initialMode = 0     // 0 free scan, 1 guided object, 2 turntable, 3 ring: the Object tab opens this with the ring
+    var initialMode = 0     // 0 free scan, 1 guided object, 2 turntable, 3 ring
+    var fixedMode: Int? = nil   // the Room and Object tabs each use one kind of scan, without the picker
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 AR overlay, 1 3D model
@@ -566,7 +567,7 @@ struct MeshScanView: View {
             }
             TraceTapLayer(tracker: model.guided, view: model.sceneView, zoom: zoom)
             VStack(spacing: 8) {
-                if !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
+                if fixedMode == nil && !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
                 if model.modelScene == nil || model.scanning { ZoomControl(zoom: $zoom) }
                 if !model.guidedActive {
                     Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -601,7 +602,7 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom)
-        .onAppear { if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = initialMode; didSetMode = true }; model.startPreview() }
+        .onAppear { if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
         .onDisappear { model.pausePreview() }
     }
 }

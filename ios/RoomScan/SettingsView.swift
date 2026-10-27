@@ -15,7 +15,7 @@ struct SettingsView: View {
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
             }
-            Section(header: Text("Home"), footer: Text("New scans are filed under this home. Rename, move or delete them in the Viewer tab.")) {
+            Section(header: Text("Home"), footer: Text("New scans are filed under this home. Rename, move or delete them on the full page of a model (Models tab).")) {
                 TextField("e.g. My house", text: $project)
             }
             Section("Version") {

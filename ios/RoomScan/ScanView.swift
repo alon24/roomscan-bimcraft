@@ -307,9 +307,6 @@ struct ScanView: View {
             .padding()
         }
         .pinchZoom($zoom)
-        .toolbar {
-            NavigationLink { SettingsView() } label: { Image(systemName: "gear") }
-        }
     }
 }
 

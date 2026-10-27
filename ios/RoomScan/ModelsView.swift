@@ -87,6 +87,9 @@ struct ModelDetailView: View {
                     if let threeMF { ShareLink(item: threeMF) { Label("3MF", systemImage: "square.and.arrow.up") } }
                 }
             }
+            Section {
+                NavigationLink("Open the full page (floor plan, frames, measure, downloads)") { WebPage(scanID: scan.id) }
+            }
             if !details.isEmpty {
                 Section("Settings used for this model") {
                     ForEach(details, id: \.0) { k, v in
@@ -137,7 +140,7 @@ struct ModelDetailView: View {
             if file != "model.stl" { local = await fetch(file) }
             if let local, let s = Self.scene(local) { scene = s; return }
         }
-        note = scan.kind == "room" ? "Rooms are shown in the Viewer tab (floor plan and walls)." : "No 3D model for this scan yet."
+        note = scan.kind == "room" ? "Floor plans are shown on the full page below." : "No 3D model for this scan yet."
     }
 
     private static func scene(_ url: URL) -> SCNScene? {
@@ -146,5 +149,23 @@ struct ModelDetailView: View {
         let s = SCNScene(mdlAsset: asset)
         s.background.contents = UIColor(white: 0.1, alpha: 1)
         return s
+    }
+}
+
+/// The server's page for one scan, inside the app.
+struct WebPage: View {
+    let scanID: String
+    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @State private var reload = 0
+
+    var body: some View {
+        Group {
+            if let url = URL(string: serverURL + "/?embed=1&scan=" + scanID) {
+                WebViewer(url: url).id(reload).ignoresSafeArea(edges: .bottom)
+            } else {
+                Text("Set a valid server address in Settings")
+            }
+        }
+        .toolbar { Button("Reload") { reload += 1 } }
     }
 }

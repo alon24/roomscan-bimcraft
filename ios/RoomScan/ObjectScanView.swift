@@ -232,6 +232,7 @@ struct ObjectScanView: View {
     @StateObject private var model = ObjectScanModel()
     @StateObject private var turntable = TurntableCapture()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    var walkOnly = false          // the Object tab's "Without the ring": Apple's walk-around capture only
     @State private var mode = 0   // 0 walk around the part, 1 turntable (phone fixed, part turns)
     @State private var heightText = ""
     @State private var zoomObj: CGFloat = 1
@@ -242,7 +243,7 @@ struct ObjectScanView: View {
         if idle && mode == 1 {
             if turntable.running { return "Capturing every \(String(format: "%.1f", turntable.interval)) s. Let the part turn once or twice, slowly, then tap Stop." }
             if turntable.count > 0 { return "\(turntable.count) photos taken. Tap Build model, or lay the part on another side and tap Add pass to cover the underside." }
-            return "PHOTOS ONLY: this mode does not use the LiDAR, so the size is not real and plain white parts reconstruct badly. For real size, LiDAR and the printed ring, use the Mesh tab, Ring. Phone on a stand, 20 to 40 cm from the plate. Hang a plain sheet behind the part so nothing else is in the picture, keep hands out of view, and use steady light. A plain white part has nothing to match: stick on some tape or paper marks. Start the plate turning slowly, then tap Start."
+            return "PHOTOS ONLY: this mode does not use the LiDAR, so the size is not real and plain white parts reconstruct badly. For real size, LiDAR and the printed ring, use the Object tab, With the ring. Phone on a stand, 20 to 40 cm from the plate. Hang a plain sheet behind the part so nothing else is in the picture, keep hands out of view, and use steady light. A plain white part has nothing to match: stick on some tape or paper marks. Start the plate turning slowly, then tap Start."
         }
         if !model.supported { return "Object Capture needs an iPhone with LiDAR." }
         if model.reconstructing { return "Building the 3D model on the phone. Keep the app open; this takes a few minutes." }
@@ -266,7 +267,7 @@ struct ObjectScanView: View {
 
     /// "LiDAR turntable" is the Mesh tab's turntable and ring scanner (LiDAR depth, real size), shown here under the same mode switch.
     var body: some View {
-        if mode == 1 && idle {
+        if mode == 1 && idle && !walkOnly {
             VStack(spacing: 0) {
                 Picker("Mode", selection: $mode) {
                     Text("Walk around").tag(0)
@@ -299,7 +300,7 @@ struct ObjectScanView: View {
                             .buttonStyle(.bordered).tint(.red).font(.caption)
                     }
                 }
-                if idle {
+                if idle && !walkOnly {
                     Picker("Mode", selection: $mode) {
                         Text("Walk around").tag(0)
                         Text("LiDAR turntable").tag(1)
