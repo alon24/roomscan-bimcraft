@@ -47,7 +47,9 @@ struct ModelsView: View {
         List {
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red) }
             ForEach(model.scans) { s in
-                NavigationLink(value: s) {
+                NavigationLink {
+                    ModelDetailView(scan: s)
+                } label: {
                     VStack(alignment: .leading) {
                         Text(s.name)
                         Text("\(s.kind) · \(s.status)").font(.caption).foregroundStyle(.secondary)
@@ -55,7 +57,6 @@ struct ModelsView: View {
                 }
             }
         }
-        .navigationDestination(for: ScanSummary.self) { ModelDetailView(scan: $0) }
         .refreshable { await model.load(server: serverURL) }
         .task { await model.load(server: serverURL) }
     }
