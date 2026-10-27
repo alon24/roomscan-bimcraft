@@ -128,3 +128,54 @@ def test_corrected_mask_is_kept_and_used_to_rebuild(tmp_path, monkeypatch):
     assert meta["status"] == "ok" and "fused 1 frames" in meta["log"]
     rep = c.get(f"/api/scans/{sid}/report.json").json()
     assert rep["points"] > 200                          # the painted strip, one point per 5 mm cell
+
+
+def test_turntable_fusion_recovers_the_whole_part_from_one_side(tmp_path, monkeypatch):
+    """A lopsided part on a plate turning at 0.3 rad/s, seen by a phone that never moves: the fused model must be the whole part."""
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    rng = np.random.default_rng(3)
+
+    def box(lo, hi, n):  # points on the surface of an axis-aligned box
+        lo, hi = np.array(lo, float), np.array(hi, float)
+        p = rng.uniform(lo, hi, (n, 3))
+        face = rng.integers(0, 6, n)
+        for i in range(n):
+            ax, side = face[i] // 2, face[i] % 2
+            p[i, ax] = hi[ax] if side else lo[ax]
+        return p
+    part = np.vstack([box([-.06, 0, -.03], [.06, .06, .03], 6000), box([.02, .06, -.03], [.06, .14, .03], 3000)])  # an L, 12 x 14 x 6 cm
+    w, h, fx, fy, omega = 96, 72, 90.0, 90.0, 0.3
+    photos = []
+    (tmp_path / "scans").mkdir(parents=True, exist_ok=True)
+    files = []
+    for k in range(30):
+        t = k * 0.4
+        c, s = np.cos(omega * t), np.sin(omega * t)
+        p = np.c_[c * part[:, 0] + s * part[:, 2], part[:, 1], -s * part[:, 0] + c * part[:, 2]]   # the plate turns about Y
+        z = 0.6 - p[:, 2]                                                                           # camera at z=0.6 looking down -Z
+        u = (fx * p[:, 0] / z + w / 2).astype(int)
+        v = (h / 2 - fy * (p[:, 1] - 0.07) / z).astype(int)                                          # camera height 0.07
+        ok = (u >= 0) & (u < w) & (v >= 0) & (v < h) & (z > 0.1)
+        depth = np.full((h, w), np.inf)
+        np.minimum.at(depth, (v[ok], u[ok]), z[ok])
+        depth[np.isinf(depth)] = 0
+        name = f"p{k + 1:03d}"
+        depth.astype("<f4").tofile(tmp_path / f"{name}.depth")
+        Image.new("RGB", (w, h), (120, 120, 120)).save(tmp_path / f"{name}.jpg")
+        photos.append({"file": f"{name}.jpg", "timestamp": t, "width": w, "height": h, "depth_file": f"{name}.depth",
+                       "depth_width": w, "depth_height": h,
+                       "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0.07, 0.6, 1]],
+                       "intrinsics": [[fx, 0, 0], [0, fy, 0], [w / 2, h / 2, 1]]})
+        files += [("photos", (f"{name}.jpg", open(tmp_path / f"{name}.jpg", "rb"), "image/jpeg")),
+                  ("photos", (f"{name}.depth", open(tmp_path / f"{name}.depth", "rb"), "application/octet-stream"))]
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+    (tmp_path / "fp.json").write_text(json.dumps({"polygon": [[-.12, -.12], [.12, -.12], [.12, .12], [-.12, .12]], "base_y": -0.01, "height": 0.2}))
+    r = TestClient(main.app).post("/api/scans", data={"kind": "mesh", "turntable_scan": "true"},
+                                  files=files + [("footprint", ("footprint.json", open(tmp_path / "fp.json", "rb"))),
+                                                 ("photos_meta", ("photos.json", open(tmp_path / "photos.json", "rb")))])
+    assert r.json()["status"] == "ok", r.text
+    meta = TestClient(main.app).get(f"/api/scans/{r.json()['id']}").json()
+    assert "turntable:" in meta["log"]
+    rep = TestClient(main.app).get(f"/api/scans/{r.json()['id']}/report.json").json()
+    ext = sorted(rep["size_mm"])
+    assert 45 < ext[0] < 95 and 105 < ext[1] < 150 and 125 < ext[2] < 170, (rep["size_mm"], meta["log"])   # the 60 x 120 x 140 mm part

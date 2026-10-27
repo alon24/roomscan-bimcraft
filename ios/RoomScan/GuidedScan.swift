@@ -15,7 +15,11 @@ final class CoverageTracker: ObservableObject {
     static let bandElev: [Double] = [8, 38, 72]   // degrees, band centres
     static let cellCount = 48
 
-    @Published var enabled = false             // chosen with the picker
+    @Published var mode = 0                    // chosen with the picker: 0 free scan, 1 guided object, 2 turntable (phone fixed, plate turns)
+    var enabled: Bool { mode != 0 }
+    var turntable: Bool { mode == 2 }
+    @Published var framesTaken = 0
+    private var turntableTicks = 0
     @Published var phase: Phase = .off
     @Published var radius: Float = 0.15 { didSet { if phase == .ready { refresh() } } }
     @Published var cells = [Bool](repeating: false, count: CoverageTracker.cellCount)
@@ -57,6 +61,7 @@ final class CoverageTracker: ObservableObject {
         hint = ""
         announced = false
         tracePoints = []; polygon = []
+        framesTaken = 0; turntableTicks = 0
         clearNodes()
         if enabled, motion.isDeviceMotionAvailable {
             motion.deviceMotionUpdateInterval = 1.0 / 30
@@ -202,6 +207,7 @@ final class CoverageTracker: ObservableObject {
         case .tracing: return tracePoints.count < 3 ? "Tap the screen at the corners of the part's base on the table, going around it. \(tracePoints.count) points so far." : "\(tracePoints.count) points. Keep tapping, or tap Close outline."
         case .ready: return hasOutline ? "The white frame is the space the part is in. Slide to match its height, then tap Start capturing. Only what is inside is kept, and the server fills in the underside." : "The white ball should just wrap the part. Slide to resize it, then tap Start capturing."
         case .capturing:
+            if turntable { return "Keep the phone still, aimed at the part. Let the plate turn one or two full turns, slowly and steadily, then tap Stop. The server joins all the views into one model." }
             if complete { return "Coverage complete. Tap Stop to finish, or keep going to fill the last gaps." }
             return hint.isEmpty ? "Walk slowly around the part and keep it in the middle of the screen. Orange dots are views you still need, green are captured." : hint
         }
@@ -216,6 +222,13 @@ final class CoverageTracker: ObservableObject {
         let v = cam - centre
         let dist = simd_length(v)
         guard dist > 0.01 else { return }
+        if turntable {
+            // The part turns, the phone stays: just keep every frame (photo + LiDAR depth) about 2.5 times a second.
+            turntableTicks += 1
+            if turntableTicks % 2 == 0 { recorder?.consider(frame, force: true); framesTaken = recorder?.count ?? 0 }
+            hint = ""
+            return
+        }
         let az = Double(atan2(v.x, v.z)), elev = Double(asin(max(-1, min(1, v.y / dist))))
         camAz = az; camElev = elev * 180 / .pi
 
@@ -397,7 +410,11 @@ struct GuidedPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             Text(tracker.message).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-            if tracker.phase == .capturing {
+            if tracker.phase == .capturing && tracker.turntable {
+                Text("\(tracker.framesTaken) frames").font(.system(size: 34, weight: .bold, design: .rounded))
+                    .padding(10).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            }
+            if tracker.phase == .capturing && !tracker.turntable {
                 HStack(alignment: .center, spacing: 12) {
                     CoverageRadar(tracker: tracker).frame(width: 130, height: 130)
                     VStack(alignment: .leading, spacing: 2) {

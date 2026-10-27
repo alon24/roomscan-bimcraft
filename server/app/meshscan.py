@@ -139,13 +139,14 @@ def printable(mesh: trimesh.Trimesh, d: Path) -> dict:
     return objects.report(m)
 
 
-def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float) -> tuple[bool, str]:
+def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: dict | None = None) -> tuple[bool, str]:
     """A depth point cloud from the phone: keep it for the viewer, and mesh it if Open3D is available."""
     pts = np.asarray(cloud.vertices, dtype=float) * scale
     cols = np.asarray(cloud.colors) if cloud.colors is not None and len(cloud.colors) == len(pts) else np.tile([150, 150, 150, 255], (len(pts), 1))
     fp_note = ""
-    if (d / "footprint.json").exists():
-        fp = json.loads((d / "footprint.json").read_text())
+    has_fp = footprint is not None or (d / "footprint.json").exists()
+    if has_fp:
+        fp = footprint or json.loads((d / "footprint.json").read_text())
         pts, cols = apply_footprint(pts, cols, fp)
         fp_note = " (cropped to the traced outline, flat base added)"
     (d / "points.bin").write_bytes(pack_points(pts, cols))
@@ -158,7 +159,7 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float) -> tuple[boo
         mesh.export(d / "colored.ply")
         rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=1.0)
         log += f", surface of {rep['faces']} triangles"
-        if (d / "footprint.json").exists():  # a traced part is a printable solid
+        if has_fp:  # a traced part is a printable solid
             try:
                 pr = printable(mesh, d)
                 rep.update(stl=True, watertight=pr["watertight"], volume_mm3=pr["volume_mm3"], size_mm=pr["size_mm"])

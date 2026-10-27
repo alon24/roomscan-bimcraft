@@ -16,6 +16,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var photoURLs: [URL] = []
     @Published var photosMetaURL: URL?
     private var footprintURL: URL?
+    private var wasTurntable = false
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
     private var timer: Timer?
@@ -179,7 +180,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
         sceneView.session.pause()
         scanning = false
-        guard !anchors.isEmpty || !cloud.isEmpty else {
+        wasTurntable = guided.turntable
+        guard !anchors.isEmpty || !cloud.isEmpty || (guided.turntable && (recorder?.count ?? 0) > 0) else {
             let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
             status = "No surfaces were captured (\(ticks / 2) s). \(why) A report was sent."
             Reporter.report(tab: "mesh", message: "No surfaces captured after \(ticks / 2) s", detail: why)
@@ -212,7 +214,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         status = "Uploading…"
         do {
             let id = try await Uploader.upload(json: nil, usdz: nil, name: "Mesh \(Date().formatted())", server: server, kind: "mesh",
-                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL)
+                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
@@ -223,6 +225,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     // MARK: depth point cloud
     private func addPoints() {
+        // A turning part would smear in a cloud built in room coordinates: show only the current view.
+        if guided.turntable && guided.phase == .capturing { cloud = []; cloudColours = []; occupied = [] }
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
               guided.acceptsPoints, let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
         let vox = guided.phase == .capturing ? max(0.004, min(voxel, (guided.hasOutline ? guided.fitRadius : guided.radius) / 50)) : voxel
@@ -551,13 +555,18 @@ struct ScanTypePicker: View {
     @ObservedObject var tracker: CoverageTracker
     var body: some View {
         VStack(spacing: 4) {
-            Picker("Scan type", selection: $tracker.enabled) {
-                Text("Free scan").tag(false)
-                Text("Guided object").tag(true)
+            Picker("Scan type", selection: $tracker.mode) {
+                Text("Free scan").tag(0)
+                Text("Guided object").tag(1)
+                Text("Turntable").tag(2)
             }
             .pickerStyle(.segmented)
-            if tracker.enabled {
+            if tracker.mode == 1 {
                 Text("For a part on a table: you mark where it is, and the app shows which views are still missing.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            if tracker.mode == 2 {
+                Text("Phone on a stand, part on a turning plate. You trace the plate; the LiDAR frames are joined on the server, so plain white parts work.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
