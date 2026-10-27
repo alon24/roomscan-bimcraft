@@ -89,6 +89,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""
         recorder = PhotoRecorder()
+        recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
         guidedActive = guided.isActive
         overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
@@ -129,7 +130,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         case .limited(.insufficientFeatures): parts.append("Not enough detail or light")
         case .limited: parts.append("Tracking limited")
         }
-        if !dark && !guided.isActive { recorder?.consider(frame) }
+        // "Keep every frame": a photo, the LiDAR depth and the pose twice a second, so each frame can be reviewed on the server.
+        let every = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true
+        if !dark && (every || !guided.isActive) { recorder?.consider(frame, force: every && (!guided.isActive || guided.phase == .capturing)) }
         lock.lock()
         for a in frame.anchors { if let m = a as? ARMeshAnchor { meshAnchors[m.identifier] = m } }
         let all = Array(meshAnchors.values)

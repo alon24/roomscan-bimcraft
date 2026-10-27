@@ -9,7 +9,7 @@ final class PhotoRecorder {
     private(set) var urls: [URL] = []
     private var lastPose: simd_float4x4?
     private let ciContext = CIContext()
-    private let maxPhotos = 120
+    var maxPhotos = 120
 
     var count: Int { metas.count }
 

@@ -10,13 +10,13 @@ from pathlib import Path, PurePosixPath
 
 import anyio.to_thread
 from anyio import from_thread
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import convert, meshscan, objects, photos as photo_index
+from . import convert, frames as frame_tools, meshscan, objects, photos as photo_index
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -24,6 +24,7 @@ ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "p
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json"}
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
+MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
 
 app = FastAPI(title="roomscan-bimcraft")
 
@@ -68,6 +69,12 @@ def _convert(d: Path) -> dict:
     log: list[str] = []
     if meta.get("kind") == "mesh":
         ok, out = meshscan.convert_mesh(d, meta.get("scale", 1.0))
+        try:  # automatic "this is the part" mask for every frame that has LiDAR depth
+            n = frame_tools.detect_all(d)
+            if n:
+                out += f"\nauto-detected the part in {n} frames"
+        except Exception as e:
+            out += f"\nframe detection failed: {type(e).__name__}: {e}"
         meta["status"] = "ok" if ok else "error"
         meta["log"] = out
         meta["converted_at"] = time.time()
@@ -153,6 +160,80 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
     await hub.broadcast({"type": "live_end"})
     return {"id": scan_id, "status": meta["status"]}
+
+
+@app.get("/api/scans/{scan_id}/frames")
+def list_frames(scan_id: str):
+    d = _dir(scan_id)
+    edited = set(json.loads((d / "masks" / "edited.json").read_text())) if (d / "masks" / "edited.json").exists() else set()
+    return [{"file": p["file"], "width": p["width"], "height": p["height"], "has_depth": bool(p.get("depth_file")),
+             "has_mask": frame_tools.mask_path(d, p).exists(), "edited": p["file"] in edited} for p in frame_tools.manifest(d)]
+
+
+@app.get("/api/scans/{scan_id}/masks/{name}")
+def get_mask(scan_id: str, name: str, overlay: bool = False, solid: bool = False):
+    """The mask PNG. With ?overlay=1 a red, half-transparent version to lay over the photo."""
+    p = _dir(scan_id) / "masks" / name
+    if not MASK_NAME.match(name) or not p.exists():
+        raise HTTPException(404, "no mask")
+    if not overlay:
+        return FileResponse(p)
+    from io import BytesIO
+
+    import numpy as np
+    from PIL import Image
+    m = np.asarray(Image.open(p).convert("L")) > 127
+    rgba = np.zeros(m.shape + (4,), dtype=np.uint8)
+    rgba[m] = (255, 40, 40, 255 if solid else 130)
+    buf = BytesIO()
+    Image.fromarray(rgba).save(buf, "PNG")
+    from fastapi.responses import Response
+    return Response(buf.getvalue(), media_type="image/png")
+
+
+@app.put("/api/scans/{scan_id}/masks/{name}")
+async def put_mask(scan_id: str, name: str, request: Request):
+    """Save a hand-corrected mask: a PNG whose alpha (or brightness, if opaque) marks the part."""
+    d = _dir(scan_id)
+    if not MASK_NAME.match(name) or not name.endswith(".png"):
+        raise HTTPException(422, "bad mask name")
+    from io import BytesIO
+
+    import numpy as np
+    from PIL import Image
+    try:
+        img = Image.open(BytesIO(await request.body()))
+        arr = np.asarray(img.convert("RGBA"))
+    except Exception:
+        raise HTTPException(422, "not a PNG")
+    m = arr[..., 3] > 127 if (arr[..., 3] < 255).any() else arr[..., :3].max(axis=-1) > 127
+    (d / "masks").mkdir(exist_ok=True)
+    Image.fromarray((m * 255).astype(np.uint8)).save(d / "masks" / name)
+    frame_tools.mark_edited(d, name.replace(".png", ".jpg"))
+    return {"ok": True}
+
+
+@app.post("/api/scans/{scan_id}/frames/{file}/detect")
+def detect_frame(scan_id: str, file: str):
+    d = _dir(scan_id)
+    n = frame_tools.detect_all(d, only=file)
+    if not n:
+        raise HTTPException(404, "no depth for that frame")
+    return {"ok": True}
+
+
+@app.post("/api/scans/{scan_id}/rebuild")
+def rebuild(scan_id: str):
+    """Fuse every frame (its depth, colour and mask) into a new point cloud and surface."""
+    d = _dir(scan_id)
+    meta = _meta(d)
+    ok, out = frame_tools.fuse(d, meta.get("scale", 1.0))
+    meta["status"] = "ok" if ok else "error"
+    meta["log"] = out
+    meta["converted_at"] = time.time()
+    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    from_thread.run(hub.broadcast, {"type": "scan", "id": scan_id, "status": meta["status"]})
+    return meta
 
 
 @app.get("/api/scans")
@@ -276,7 +357,8 @@ async def import_zip(file: UploadFile = File(...), project: str | None = Form(No
             if info.is_dir() or len(parts) < 2:
                 continue
             rel = "/".join(parts[1:])
-            known = rel in ARTIFACTS or (len(parts) == 3 and parts[1] == "photos" and PHOTO_NAME.match(parts[2]))
+            known = rel in ARTIFACTS or (len(parts) == 3 and parts[1] == "photos" and PHOTO_NAME.match(parts[2])) \
+                or (len(parts) == 3 and parts[1] == "masks" and MASK_NAME.match(parts[2]))
             if known:
                 total += info.file_size
                 groups.setdefault(parts[0], []).append((info, rel))

@@ -74,6 +74,12 @@
       <div><img id="plan" alt="Plan"></div>
     </div>
     <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs"></div></div>
+    <div id="framesBox" hidden>
+      <h3>Frames</h3>
+      <p class="hint">Every frame has its photo, LiDAR depth and position. The red area is what the app detected as the part (from the LiDAR and your traced outline). Click a frame to correct it, then rebuild.</p>
+      <div id="frameGrid" class="thumbs"></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="detectAll">Auto-detect all frames</button><button class="btn" id="rebuildBtn">Rebuild from frames</button></div>
+    </div>
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
@@ -82,6 +88,21 @@
 <dialog id="issues" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(900px,96vw);max-height:90vh;overflow:auto">
   <div style="padding:16px"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Problems reported by the app</h3>
   <button class="btn" type="button" id="issuesClose">Close</button></div><div id="issuesList"></div></div></dialog>
+<dialog id="frameEd" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(980px,98vw);max-height:96vh;overflow:auto">
+  <div style="padding:12px">
+    <div class="row" style="justify-content:space-between"><strong id="edTitle"></strong><button class="btn" type="button" id="edClose">Close</button></div>
+    <div id="edStage" style="position:relative;margin:8px 0;line-height:0;touch-action:none"><img id="edImg" alt="" style="max-width:100%;max-height:66vh"><canvas id="edMask" style="position:absolute;left:0;top:0;width:100%;height:100%;opacity:.55;cursor:crosshair"></canvas></div>
+    <div class="row">
+      <label><input type="radio" name="edTool" value="add" checked> Add (paint the part)</label>
+      <label><input type="radio" name="edTool" value="erase"> Erase</label>
+      <label>Brush <input type="range" id="edSize" min="4" max="160" value="40"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="edPrev">◀ Prev</button><button class="btn" id="edNext">Next ▶</button>
+      <button class="btn" id="edAuto">Auto-detect this frame</button><button class="btn" id="edClear">Clear</button>
+      <button class="btn" id="edSave">Save</button><button class="btn" id="edSaveNext">Save &amp; next</button>
+    </div>
+  </div></dialog>
 <dialog id="form"><form method="dialog">
   <h3 id="formTitle" style="margin:0 0 8px"></h3><div id="formFields"></div>
   <div class="row" style="justify-content:flex-end"><button class="btn" type="button" onclick="document.getElementById('form').close('cancel')">Cancel</button><button class="btn" id="formOk" type="submit" value="ok"></button></div>
@@ -189,7 +210,7 @@ async function show(id) {
   current = id;
   const meta = await (await fetch(`/api/scans/${id}`)).json();
   $("hint").hidden = true; $("detail").hidden = false;
-  $("modes").hidden = true; ctx = null;
+  $("modes").hidden = true; ctx = null; $("framesBox").hidden = true;
   $("title").textContent = meta.name;
   $("status").textContent = meta.status; $("status").className = meta.status;
   $("log").textContent = meta.log || "";
@@ -243,8 +264,11 @@ async function show(id) {
       try {
         // Points are the same picture as on the phone; the surface is the solid the server fitted through them.
         const views = {};
-        if (r.points) views.points = drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r);
-        if (r.faces) views.surface = drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r);
+        const box3 = await outlineBox(id);
+        const withBox = o => { if (!box3) return o; const g = new THREE.Group(); g.add(o, box3.clone()); return g; };
+        loadFrames(id);
+        if (r.points) views.points = withBox(drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r));
+        if (r.faces) views.surface = withBox(drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r));
         const first = views.points ? "points" : "surface";
         const box = $("modes");
         const pick = k => {
@@ -287,6 +311,110 @@ async function show(id) {
     show3d(roomGroup(ctx), false);
   }
   catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
+}
+
+// ---- per-frame review: see what was detected as the part, paint over mistakes, rebuild
+let FR = { id: null, frames: [], i: 0, drawing: false };
+
+async function loadFrames(id) {
+  const box = $("framesBox"), grid = $("frameGrid");
+  grid.replaceChildren();
+  let frames = [];
+  try { frames = await (await fetch(`/api/scans/${id}/frames`)).json(); } catch {}
+  box.hidden = !frames.some(f => f.has_depth);
+  if (box.hidden) return;
+  FR.id = id; FR.frames = frames;
+  const t = Date.now();
+  frames.forEach((f, i) => {
+    const w = document.createElement("div");
+    w.style.cssText = `position:relative;display:inline-block;cursor:pointer;border:2px solid ${f.edited ? "#2a9d3f" : "transparent"};border-radius:4px;line-height:0`;
+    const a = document.createElement("img"); a.src = `/api/scans/${id}/photos/${f.file}`; a.loading = "lazy";
+    w.append(a);
+    if (f.has_mask) {
+      const m = document.createElement("img"); m.src = `/api/scans/${id}/masks/${f.file.replace(".jpg", ".png")}?overlay=1&t=${t}`; m.loading = "lazy";
+      m.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%";
+      w.append(m);
+    }
+    w.onclick = () => openEditor(i);
+    grid.append(w);
+  });
+}
+
+async function openEditor(i) {
+  FR.i = (i + FR.frames.length) % FR.frames.length;
+  const f = FR.frames[FR.i], img = $("edImg"), cv = $("edMask");
+  $("edTitle").textContent = `Frame ${FR.i + 1} of ${FR.frames.length}${f.edited ? " (edited by hand)" : ""}`;
+  if (!$("frameEd").open) $("frameEd").showModal();
+  await new Promise(res => { img.onload = res; img.src = `/api/scans/${FR.id}/photos/${f.file}`; });
+  cv.width = f.width; cv.height = f.height;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (f.has_mask) {
+    const m = new Image();
+    await new Promise(res => { m.onload = res; m.onerror = res; m.src = `/api/scans/${FR.id}/masks/${f.file.replace(".jpg", ".png")}?overlay=1&solid=1&t=${Date.now()}`; });
+    ctx.drawImage(m, 0, 0, cv.width, cv.height);
+  }
+}
+
+function edPoint(e) {
+  const cv = $("edMask"), r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+}
+function edStroke(from, to) {
+  const ctx = $("edMask").getContext("2d");
+  const erase = document.querySelector('input[name="edTool"]:checked').value === "erase";
+  ctx.globalCompositeOperation = erase ? "destination-out" : "source-over";
+  ctx.strokeStyle = "rgb(255,40,40)"; ctx.fillStyle = "rgb(255,40,40)";
+  ctx.lineWidth = +$("edSize").value; ctx.lineCap = ctx.lineJoin = "round";
+  ctx.beginPath(); ctx.moveTo(...from); ctx.lineTo(...to); ctx.stroke();
+}
+let edLast = null;
+$("edMask").addEventListener("pointerdown", e => { $("edMask").setPointerCapture(e.pointerId); edLast = edPoint(e); edStroke(edLast, edLast); });
+$("edMask").addEventListener("pointermove", e => { if (!edLast) return; const p = edPoint(e); edStroke(edLast, p); edLast = p; });
+for (const ev of ["pointerup", "pointercancel"]) $("edMask").addEventListener(ev, () => { edLast = null; });
+
+async function edSave() {
+  const f = FR.frames[FR.i], cv = $("edMask");
+  const blob = await new Promise(res => cv.toBlob(res, "image/png"));
+  await fetch(`/api/scans/${FR.id}/masks/${f.file.replace(".jpg", ".png")}`, { method: "PUT", body: blob });
+  f.edited = true; f.has_mask = true;
+}
+$("edSave").onclick = async () => { await edSave(); await loadFrames(FR.id); openEditor(FR.i); };
+$("edSaveNext").onclick = async () => { await edSave(); openEditor(FR.i + 1); };
+$("edPrev").onclick = () => openEditor(FR.i - 1);
+$("edNext").onclick = () => openEditor(FR.i + 1);
+$("edClear").onclick = () => $("edMask").getContext("2d").clearRect(0, 0, $("edMask").width, $("edMask").height);
+$("edAuto").onclick = async () => {
+  const f = FR.frames[FR.i];
+  const r = await fetch(`/api/scans/${FR.id}/frames/${f.file}/detect`, { method: "POST" });
+  if (r.ok) { f.edited = false; f.has_mask = true; openEditor(FR.i); loadFrames(FR.id); }
+};
+$("edClose").onclick = () => { $("frameEd").close(); loadFrames(FR.id); };
+$("detectAll").onclick = async () => {
+  for (const f of FR.frames) if (f.has_depth) await fetch(`/api/scans/${FR.id}/frames/${f.file}/detect`, { method: "POST" });
+  loadFrames(FR.id);
+};
+$("rebuildBtn").onclick = async () => {
+  const b = $("rebuildBtn"); b.disabled = true; b.textContent = "Rebuilding…";
+  await fetch(`/api/scans/${FR.id}/rebuild`, { method: "POST" });
+  b.disabled = false; b.textContent = "Rebuild from frames";
+  await show(FR.id); loadList();
+};
+
+// The traced outline as a white frame in the 3D view: what the app treats as "the part".
+async function outlineBox(id) {
+  try {
+    const r = await fetch(`/api/scans/${id}/footprint.json`);
+    if (!r.ok) return null;
+    const fp = await r.json(), pts = [], n = fp.polygon.length;
+    for (let i = 0; i < n; i++) {
+      const [x0, z0] = fp.polygon[i], [x1, z1] = fp.polygon[(i + 1) % n], y0 = fp.base_y, y1 = fp.base_y + fp.height;
+      pts.push(x0, y0, z0, x1, y0, z1, x0, y1, z0, x1, y1, z1, x0, y0, z0, x0, y1, z0);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xffffff }));
+  } catch { return null; }
 }
 
 function openPhoto(id, name) {

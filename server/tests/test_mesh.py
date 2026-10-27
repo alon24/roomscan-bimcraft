@@ -86,3 +86,45 @@ def test_traced_outline_crops_and_closes_the_base(tmp_path, monkeypatch):
     assert rep["stl"] is True and rep["faces"] > 100
     assert max(rep["size_mm"][:2]) < 130 and 70 < rep["size_mm"][2] < 95           # the 100 x 80 mm part, not the junk 1 m away
     assert c.get(f"/api/scans/{res.json()['id']}/model.stl").status_code == 200
+
+
+def _frame_scan(tmp_path, monkeypatch):
+    """A flat wall 2 m away seen by one frame with depth, plus a traced outline around the middle of it."""
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    plane_ply(tmp_path / "m.ply")
+    Image.new("RGB", (100, 100), (30, 160, 30)).save(tmp_path / "p001.jpg")
+    np.full((100, 100), 2.0, dtype="<f4").tofile(tmp_path / "p001.depth")
+    photo = {**PHOTO, "intrinsics": [[50, 0, 0], [0, 50, 0], [50, 50, 1]], "depth_file": "p001.depth", "depth_width": 100, "depth_height": 100}
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": [photo]}))
+    (tmp_path / "fp.json").write_text(json.dumps({"polygon": [[-.3, -.3], [.3, -.3], [.3, .3], [-.3, .3]], "base_y": -0.3, "height": 0.6}))
+    c = TestClient(main.app)
+    r = c.post("/api/scans", data={"kind": "mesh"}, files=[
+        ("mesh", ("scan.ply", open(tmp_path / "m.ply", "rb"))), ("footprint", ("footprint.json", open(tmp_path / "fp.json", "rb"))),
+        ("photos", ("p001.jpg", open(tmp_path / "p001.jpg", "rb"), "image/jpeg")),
+        ("photos", ("p001.depth", open(tmp_path / "p001.depth", "rb"), "application/octet-stream")),
+        ("photos_meta", ("photos.json", open(tmp_path / "photos.json", "rb")))])
+    assert r.json()["status"] == "ok", r.text
+    return c, r.json()["id"]
+
+
+def test_frames_get_an_automatic_mask_from_depth_and_outline(tmp_path, monkeypatch):
+    c, sid = _frame_scan(tmp_path, monkeypatch)
+    frames = c.get(f"/api/scans/{sid}/frames").json()
+    assert frames[0]["has_depth"] and frames[0]["has_mask"] and not frames[0]["edited"]
+    m = np.asarray(Image.open(__import__("io").BytesIO(c.get(f"/api/scans/{sid}/masks/p001.png").content)).convert("L")) > 127
+    assert m[50, 50] and not m[5, 5] and not m[95, 95]
+    assert 150 < m.sum() < 400            # about the 16 x 16 pixels the outline covers, not the whole picture
+
+
+def test_corrected_mask_is_kept_and_used_to_rebuild(tmp_path, monkeypatch):
+    c, sid = _frame_scan(tmp_path, monkeypatch)
+    rgba = np.zeros((100, 100, 4), dtype=np.uint8)
+    rgba[40:60, 20:80] = (255, 0, 0, 200)             # the user paints a wider strip
+    buf = __import__("io").BytesIO()
+    Image.fromarray(rgba).save(buf, "PNG")
+    assert c.put(f"/api/scans/{sid}/masks/p001.png", content=buf.getvalue()).status_code == 200
+    assert c.get(f"/api/scans/{sid}/frames").json()[0]["edited"] is True
+    meta = c.post(f"/api/scans/{sid}/rebuild").json()
+    assert meta["status"] == "ok" and "fused 1 frames" in meta["log"]
+    rep = c.get(f"/api/scans/{sid}/report.json").json()
+    assert rep["points"] > 200                          # the painted strip, one point per 5 mm cell
