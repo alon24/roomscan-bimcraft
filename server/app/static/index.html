@@ -8,6 +8,7 @@
   :root { --bg:#fff; --fg:#1b1f24; --mute:#6b7380; --line:#d8dce2; --acc:#2563eb; --err:#c62828; --ok:#2e7d32; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --fg:#e6e9ee; --mute:#8b94a1; --line:#2a2f37; --acc:#6ea0ff; --err:#ef7b7b; --ok:#6fcf7a; } }
   * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; font:15px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--fg); display:grid; grid-template-columns:260px 1fr; min-height:100vh; }
   @media (max-width:700px) { body { grid-template-columns:1fr; } }
   aside { border-right:1px solid var(--line); padding:16px; }
@@ -65,17 +66,17 @@
 <aside>
   <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
   <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button></div>
-  <div class="row" id="selectBar" hidden>
-    <b id="selLabel" style="align-self:center"></b>
-    <button class="btn" id="selectAll">Tick all</button><button class="btn" id="selectFailed">Tick the failed ones</button><button class="btn" id="selectNone">Clear</button>
-    <button class="btn" id="moveSelected">Move to home…</button><button class="btn" id="zipSelected">Download as zip</button>
-    <button class="btn" id="reconvertSelected">Re-convert</button><button class="btn danger" id="deleteSelected">Delete selected</button>
-  </div>
   <div class="row" hidden>
     <input type="file" id="importFile" accept=".zip,application/zip" hidden></div>
   <input id="search" placeholder="Search rooms and objects" type="search">
   <div id="list"></div>
   <datalist id="projList"></datalist>
+  <div class="row" id="selectBar" hidden style="position:sticky;bottom:0;margin:8px -8px 0;padding:8px;background:var(--bg);border-top:1px solid var(--acc);box-shadow:0 -6px 12px rgba(0,0,0,.15)">
+    <b id="selLabel" style="align-self:center"></b>
+    <button class="btn" id="selectAll">Tick all</button><button class="btn" id="selectFailed">Tick the failed ones</button><button class="btn" id="selectNone">Clear</button>
+    <button class="btn" id="moveSelected">Move to home…</button><button class="btn" id="zipSelected">Download as zip</button>
+    <button class="btn" id="reconvertSelected">Re-convert</button><button class="btn danger" id="deleteSelected">Delete selected</button>
+  </div>
   <p class="mute" id="empty" hidden>No scans yet. Upload from the app.</p>
   <button class="btn" id="issuesBtn" style="margin-top:8px">Issues</button>
   <p class="hint" id="ver"></p>
