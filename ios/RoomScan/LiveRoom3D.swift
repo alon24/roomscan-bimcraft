@@ -157,16 +157,30 @@ struct LiveRoom3DView: UIViewRepresentable {
 }
 
 /// A finished USDZ model (the Object Capture result) you can turn around and zoom.
+/// It has its own camera: a model a few centimetres big is cut by the default camera's near plane, which looks squashed.
 struct ModelPreview: UIViewRepresentable {
     let url: URL
 
     func makeUIView(context: Context) -> SCNView {
         let v = SCNView()
-        v.scene = try? SCNScene(url: url, options: nil)
+        let scene = (try? SCNScene(url: url, options: nil)) ?? SCNScene()
+        v.scene = scene
         v.allowsCameraControl = true
         v.autoenablesDefaultLighting = true
         v.antialiasingMode = .multisampling4X
         v.backgroundColor = UIColor(white: 0.12, alpha: 1)
+        v.defaultCameraController.interactionMode = .orbitTurntable
+        let (c, r) = scene.rootNode.boundingSphere
+        let radius = max(r, 0.01)
+        let cam = SCNNode()
+        cam.camera = SCNCamera()
+        cam.camera?.fieldOfView = 45
+        cam.camera?.zNear = Double(radius) * 0.02
+        cam.camera?.zFar = Double(radius) * 40
+        cam.position = SCNVector3(c.x, c.y + radius * 0.4, c.z + radius * 3.2)
+        scene.rootNode.addChildNode(cam)
+        cam.look(at: c)
+        v.pointOfView = cam
         return v
     }
 
