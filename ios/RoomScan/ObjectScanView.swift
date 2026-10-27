@@ -111,14 +111,28 @@ final class ObjectScanModel: ObservableObject {
         if let data = try? JSONSerialization.data(withJSONObject: manifest) , (try? data.write(to: url)) != nil { photosMetaURL = url }
     }
 
-    private func reconstruct() async {
+    /// Build the model from the turntable photos.
+    func buildFromTurntable(_ turntable: TurntableCapture) {
+        guard let dir = turntable.imagesDir else { return }
+        turntable.shutdown()
+        imagesDir = dir
+        usdzURL = nil; status = ""; progress = 0
+        Task {
+            await reconstruct(sequential: true)
+            turntable.reset()
+        }
+    }
+
+    private func reconstruct(sequential: Bool = false) async {
         guard let imagesDir else { return }
         photoURLs = samplePhotos(from: imagesDir)
         reconstructing = true
         status = "Building model…"
         let out = imagesDir.deletingLastPathComponent().appendingPathComponent("scan.usdz")
         do {
-            let ps = try PhotogrammetrySession(input: imagesDir, configuration: PhotogrammetrySession.Configuration())
+            var config = PhotogrammetrySession.Configuration()
+            if sequential { config.sampleOrdering = .sequential }   // turntable photos follow each other around the part
+            let ps = try PhotogrammetrySession(input: imagesDir, configuration: config)
             try ps.process(requests: [.modelFile(url: out, detail: .reduced), .poses])
             for try await o in ps.outputs {
                 switch o {
@@ -157,9 +171,18 @@ final class ObjectScanModel: ObservableObject {
 
 struct ObjectScanView: View {
     @StateObject private var model = ObjectScanModel()
+    @StateObject private var turntable = TurntableCapture()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @State private var mode = 0   // 0 walk around the part, 1 turntable (phone fixed, part turns)
+
+    private var idle: Bool { model.session == nil && !model.reconstructing && model.usdzURL == nil }
 
     private var guide: String {
+        if idle && mode == 1 {
+            if turntable.running { return "Capturing every \(String(format: "%.1f", turntable.interval)) s. Let the part turn once or twice, slowly, then tap Stop." }
+            if turntable.count > 0 { return "\(turntable.count) photos taken. Tap Build model, or lay the part on another side and tap Add pass to cover the underside." }
+            return "Put the phone on a stand 20 to 40 cm from the plate, with a plain, empty background behind the part and steady light. Start the plate turning slowly, then tap Start."
+        }
         if !model.supported { return "Object Capture needs an iPhone with LiDAR." }
         if model.reconstructing { return "Building the 3D model on the phone. Keep the app open; this takes a few minutes." }
         if model.usdzURL != nil { return "Done. Turn the model to check it, then tap Upload." }
@@ -186,12 +209,31 @@ struct ObjectScanView: View {
                 ObjectCaptureView(session: session).ignoresSafeArea()
             } else if let url = model.usdzURL {
                 ModelPreview(url: url).ignoresSafeArea()
+            } else if idle && mode == 1 {
+                CameraPreview(session: turntable.session).ignoresSafeArea()
             } else {
                 Color(.systemBackground).ignoresSafeArea()
             }
             VStack(spacing: 8) {
+                if idle {
+                    Picker("Mode", selection: $mode) {
+                        Text("Walk around").tag(0)
+                        Text("Turntable").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(turntable.running)
+                }
                 if !guide.isEmpty { Text(guide).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10)) }
                 Spacer()
+                if idle && mode == 1 {
+                    HStack {
+                        Text("\(turntable.count) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
+                        if !turntable.running {
+                            Stepper("Every \(String(format: "%.1f", turntable.interval)) s", value: $turntable.interval, in: 0.5...5, step: 0.5)
+                                .font(.caption).padding(6).background(.thinMaterial, in: Capsule())
+                        }
+                    }
+                }
                 if let s = model.session, s.state == .capturing {
                     Text("\(s.numberOfShotsTaken) photos").font(.caption).padding(6).background(.thinMaterial, in: Capsule())
                 }
@@ -201,8 +243,18 @@ struct ObjectScanView: View {
                 HStack {
                     if !model.supported {
                         EmptyView()
+                    } else if idle && mode == 1 {
+                        if turntable.running {
+                            Button("Stop") { turntable.stop() }
+                        } else {
+                            Button(turntable.count > 0 ? "Add pass" : "Start") { turntable.start() }
+                            if turntable.count > 0 {
+                                Button("Build model") { model.buildFromTurntable(turntable) }
+                                Button("Discard") { turntable.reset() }
+                            }
+                        }
                     } else if model.session == nil {
-                        Button("New object") { model.begin() }
+                        Button("New object") { mode = 0; model.begin() }
                     } else if !model.reconstructing {
                         switch model.session?.state ?? .initializing {
                         case .ready: Button("Detect object") { _ = model.session?.startDetecting() }
@@ -226,5 +278,9 @@ struct ObjectScanView: View {
             }
             .padding()
         }
+        .onAppear { if mode == 1 { turntable.prepare() } }
+        .onChange(of: mode) { _, m in if m == 1 { turntable.prepare() } else { turntable.shutdown() } }
+        .onChange(of: idle) { _, nowIdle in if !nowIdle { turntable.shutdown() } else if mode == 1 { turntable.prepare() } }
+        .onDisappear { turntable.shutdown() }
     }
 }
