@@ -234,7 +234,12 @@ async function show(id) {
     await loadPhotos(meta);
     if (meta.status === "ok") {
       const r = await (await fetch(`/api/scans/${id}/report.json`)).json();
-      $("log").textContent = `Size: ${r.size_m.join(" × ")} m\n${r.points ? `Points: ${r.points}\n` : ""}Triangles: ${r.faces}${r.coloured != null ? `\nColoured from photos: ${Math.round(r.coloured * 100)}%` : ""}\n\n` + (meta.log || "");
+      $("log").textContent = `Size: ${r.size_m.join(" × ")} m\n${r.points ? `Points: ${r.points}\n` : ""}${r.size_mm ? `Printable size: ${r.size_mm.join(" × ")} mm   Watertight: ${r.watertight ? "yes" : "NO"}\n` : ""}Triangles: ${r.faces}${r.coloured != null ? `\nColoured from photos: ${Math.round(r.coloured * 100)}%` : ""}\n\n` + (meta.log || "");
+      if (r.stl) for (const f of ["model.stl", "model.3mf"]) {
+        const a = document.createElement("a");
+        a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}`; a.download = f;
+        actions.append(a);
+      }
       try {
         if (r.faces) drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r);
         else drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r);

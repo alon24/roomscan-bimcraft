@@ -20,7 +20,7 @@ from . import convert, meshscan, objects, photos as photo_index
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
-ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
+ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "footprint.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json"}
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
@@ -102,7 +102,7 @@ def _convert(d: Path) -> dict:
 
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
-                 usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), name: str = Form("Scan"),
+                 usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
                  kind: str = Form("room"), scale: float = Form(1.0), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     if kind not in ("room", "object", "mesh"):
@@ -125,6 +125,8 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     if mesh is not None:
         with open(d / "scan.ply", "wb") as f:
             shutil.copyfileobj(mesh.file, f)
+    if footprint is not None:
+        (d / "footprint.json").write_bytes(await footprint.read())
     photo_count = 0
     if photos:
         (d / "photos").mkdir()

@@ -63,3 +63,26 @@ def test_point_cloud_scan_is_kept_and_meshed(tmp_path, monkeypatch):
     rep = c.get(f"/api/scans/{r.json()['id']}/report.json").json()
     assert rep["points"] == 4000
     assert len(c.get(f"/api/scans/{r.json()['id']}/points.bin").content) == 4000 * 15
+
+
+def test_traced_outline_crops_and_closes_the_base(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    rng = np.random.default_rng(2)
+    r, h, n = 0.05, 0.08, 6000
+    th = rng.uniform(0, 2 * np.pi, n)
+    side = np.c_[r * np.cos(th), rng.uniform(0, h, n), r * np.sin(th)]            # side of a cylinder on the table (y = 0)
+    top = rng.uniform(-1, 1, (n // 3, 2)); top = top[np.linalg.norm(top, axis=1) < 1] * r
+    top = np.c_[top[:, 0], np.full(len(top), h), top[:, 1]]
+    junk = rng.uniform(-0.5, 0.5, (500, 3)) + [1.0, 0.1, 0]                       # the rest of the room, outside the outline
+    pts = np.vstack([side, top, junk])
+    trimesh.PointCloud(pts, colors=np.tile([200, 100, 50, 255], (len(pts), 1)).astype(np.uint8)).export(tmp_path / "c.ply")
+    poly = [[r * 1.1 * np.cos(a), r * 1.1 * np.sin(a)] for a in np.linspace(0, 2 * np.pi, 16, endpoint=False)]
+    (tmp_path / "fp.json").write_text(json.dumps({"polygon": poly, "base_y": 0.0, "height": h}))
+    c = TestClient(main.app)
+    res = c.post("/api/scans", data={"kind": "mesh"}, files=[("mesh", ("scan.ply", open(tmp_path / "c.ply", "rb"))),
+                                                               ("footprint", ("footprint.json", open(tmp_path / "fp.json", "rb")))])
+    assert res.json()["status"] == "ok", res.text
+    rep = c.get(f"/api/scans/{res.json()['id']}/report.json").json()
+    assert rep["stl"] is True and rep["faces"] > 100
+    assert max(rep["size_mm"][:2]) < 130 and 70 < rep["size_mm"][2] < 95           # the 100 x 80 mm part, not the junk 1 m away
+    assert c.get(f"/api/scans/{res.json()['id']}/model.stl").status_code == 200

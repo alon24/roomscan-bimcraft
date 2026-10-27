@@ -15,6 +15,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var plyURL: URL?
     @Published var photoURLs: [URL] = []
     @Published var photosMetaURL: URL?
+    private var footprintURL: URL?
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
     private var timer: Timer?
@@ -101,6 +102,24 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         hud = parts.joined(separator: " · ")
     }
 
+    /// Throw everything away and go back to the start, whatever state the scan is in.
+    func discard() {
+        timer?.invalidate(); timer = nil
+        cloudTimer?.invalidate(); cloudTimer = nil
+        coverageTimer?.invalidate(); coverageTimer = nil
+        sceneView.session.pause()
+        guided.end()
+        guidedActive = false
+        cloud = []; cloudColours = []; occupied = []; shownPoints = 0
+        cloudNode.geometry = nil
+        lock.lock(); meshAnchors = [:]; lock.unlock()
+        recorder = nil
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil
+        scanning = false
+        hud = ""; status = ""
+        Reporter.log("mesh: reset by user")
+    }
+
     func stop() {
         timer?.invalidate(); timer = nil
         cloudTimer?.invalidate(); cloudTimer = nil
@@ -128,6 +147,10 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 self.plyURL = ok ? url : nil
                 self.photoURLs = rec?.urls ?? []
                 self.photosMetaURL = rec?.writeManifest()
+                if let fp = self.guided.footprintJSON() {
+                    let u = FileManager.default.temporaryDirectory.appendingPathComponent("footprint.json")
+                    self.footprintURL = (try? fp.write(to: u)) != nil ? u : nil
+                } else { self.footprintURL = nil }
                 self.modelScene = scene
                 self.status = ok ? "Scan ready" : "Could not save the mesh"
             }
@@ -139,7 +162,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         status = "Uploading…"
         do {
             let id = try await Uploader.upload(json: nil, usdz: nil, name: "Mesh \(Date().formatted())", server: server, kind: "mesh",
-                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL)
+                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {
@@ -152,7 +175,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private func addPoints() {
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
               guided.acceptsPoints, let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
-        let vox = guided.phase == .capturing ? max(0.004, min(voxel, guided.radius / 50)) : voxel
+        let vox = guided.phase == .capturing ? max(0.004, min(voxel, (guided.hasOutline ? guided.fitRadius : guided.radius) / 50)) : voxel
         let dm = depth.depthMap
         let dw = CVPixelBufferGetWidth(dm), dh = CVPixelBufferGetHeight(dm)
         // camera colours at the depth map's size
@@ -212,10 +235,12 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                                    componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: stride)
         let cs = SCNGeometrySource(data: col, semantic: .color, vectorCount: n, usesFloatComponents: true,
                                    componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: stride)
-        let el = SCNGeometryElement(data: nil, primitiveType: .point, primitiveCount: n, bytesPerIndex: 0)
-        el.pointSize = 4
+        let indices = (0..<Int32(n)).map { $0 }
+        let el = SCNGeometryElement(data: indices.withUnsafeBufferPointer { Data(buffer: $0) }, primitiveType: .point,
+                                    primitiveCount: n, bytesPerIndex: MemoryLayout<Int32>.size)
+        el.pointSize = 0.01                                  // world size in metres, so dots shrink with distance
         el.minimumPointScreenSpaceRadius = 2
-        el.maximumPointScreenSpaceRadius = 5
+        el.maximumPointScreenSpaceRadius = 6
         let g = SCNGeometry(sources: [vs, cs], elements: [el])
         let m = SCNMaterial()
         m.lightingModel = .constant
@@ -401,12 +426,12 @@ struct MeshScanView: View {
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
         if model.scanning {
-            return "Move slowly and point at everything you want in the model. Coloured dots appear on every surface the LiDAR has seen. Gaps with no dots are not captured yet. Tap Stop when it covers what you need."
+            return "The LiDAR is measuring the surfaces in front of the camera. Each coloured dot is a point it measured. Move slowly: dots appear on everything you have seen, and gaps with no dots are not captured yet. Tap Stop when it covers what you need, or Reset to start over."
         }
         if model.plyURL != nil {
-            return "Scan done. Switch to 3D model to turn it around. Upload sends it to the server, which colours it from the photos."
+            return "Scan done. Switch to 3D model to turn it around. Upload sends it to the server, which makes a solid surface and colours it. New scan throws it away."
         }
-        return "1. Tap Start scan.  2. Walk slowly around the object or room, keeping surfaces 0.5 to 3 m away.  3. Watch the dots fill in.  4. Tap Stop, then Upload."
+        return "What this does: it measures a room or an object with the LiDAR and shows the result as coloured dots over the camera picture while you scan, so you can see what is captured. Tap Start scan, then walk slowly around what you want, 0.5 to 3 m away. For one small part on a table, pick Guided object."
     }
 
     var body: some View {
@@ -416,6 +441,7 @@ struct MeshScanView: View {
             } else {
                 ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
             }
+            TraceTapLayer(tracker: model.guided, view: model.sceneView)
             VStack(spacing: 8) {
                 if !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
                 if model.modelScene != nil {
@@ -437,12 +463,14 @@ struct MeshScanView: View {
                 HStack {
                     if model.scanning {
                         Button("Stop") { model.stop() }
-                    } else if MeshScanModel.supported {
+                        Button("Reset", role: .destructive) { model.discard() }
+                    } else if MeshScanModel.supported && model.plyURL == nil {
                         Button("Start scan") { mode = 0; model.start() }
                     }
                     if let url = model.plyURL, !model.scanning {
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
                         ShareLink(item: url) { Text("Share") }
+                        Button("New scan", role: .destructive) { mode = 0; model.discard() }
                     }
                 }
                 .buttonStyle(.borderedProminent)

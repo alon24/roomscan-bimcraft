@@ -3,7 +3,7 @@ import Foundation
 enum Uploader {
     @discardableResult
     static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room",
-                       photos: [URL] = [], photosMeta: URL? = nil, mesh: URL? = nil) async throws -> String? {
+                       photos: [URL] = [], photosMeta: URL? = nil, mesh: URL? = nil, footprint: URL? = nil) async throws -> String? {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else {
             throw URLError(.badURL)
         }
@@ -25,6 +25,7 @@ enum Uploader {
         if let json { try file("json", json, "scan.json", "application/json") }
         if let usdz { try file("usdz", usdz, "scan.usdz", "model/vnd.usdz+zip") }
         if let mesh { try file("mesh", mesh, "scan.ply", "application/octet-stream") }
+        if let footprint { try file("footprint", footprint, "footprint.json", "application/json") }
         for p in photos { try file("photos", p, p.lastPathComponent, p.pathExtension == "depth" ? "application/octet-stream" : "image/jpeg") }
         if let photosMeta { try file("photos_meta", photosMeta, "photos.json", "application/json") }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)

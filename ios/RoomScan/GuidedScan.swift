@@ -7,7 +7,7 @@ import CoreMotion
 /// into one world frame) and tracks from which directions it has been seen. A dotted dome around the part in AR and a
 /// radar on screen show what is captured (green) and what is missing (orange), so nothing is left out.
 final class CoverageTracker: ObservableObject {
-    enum Phase { case off, placing, ready, capturing }
+    enum Phase { case off, placing, tracing, ready, capturing }
 
     // Viewing directions around the part: three bands of elevation, each split into sectors of azimuth.
     static let sectors = [24, 16, 8]          // side, diagonal, top
@@ -22,6 +22,13 @@ final class CoverageTracker: ObservableObject {
     @Published var camAz = 0.0
     @Published var camElev = 0.0
     @Published var hint = ""
+    @Published var tracePoints: [SIMD3<Float>] = []   // outline of the part's base, tapped on the screen
+    @Published var height: Float = 0.10 { didSet { if phase == .ready { refresh() } } }
+    private(set) var polygon: [SIMD2<Float>] = []      // closed outline in the world's X/Z plane
+    private(set) var baseY: Float = 0
+    private(set) var fitRadius: Float = 0.15
+    private let traceNode = SCNNode()
+    var hasOutline: Bool { polygon.count >= 3 }
 
     private(set) var centre = SIMD3<Float>(0, 0, 0)
     private var hitPoint = SIMD3<Float>(0, 0, 0)
@@ -41,6 +48,7 @@ final class CoverageTracker: ObservableObject {
     func attach(to scene: SCNScene) {
         scene.rootNode.addChildNode(objectNode)
         scene.rootNode.addChildNode(domeNode)
+        scene.rootNode.addChildNode(traceNode)
     }
 
     func begin() {
@@ -48,6 +56,7 @@ final class CoverageTracker: ObservableObject {
         cells = [Bool](repeating: false, count: Self.cellCount)
         hint = ""
         announced = false
+        tracePoints = []; polygon = []
         clearNodes()
         if enabled, motion.isDeviceMotionAvailable {
             motion.deviceMotionUpdateInterval = 1.0 / 30
@@ -63,7 +72,93 @@ final class CoverageTracker: ObservableObject {
 
     /// Is this world point on the part (inside the capture ball)?
     func contains(_ p: SIMD3<Float>) -> Bool {
-        phase != .capturing || simd_distance(p, centre) <= radius * 1.5
+        guard phase == .capturing else { return true }
+        guard hasOutline else { return simd_distance(p, centre) <= radius * 1.5 }
+        guard p.y >= baseY - 0.02, p.y <= baseY + height + 0.02 else { return false }
+        return Self.inside(SIMD2(p.x, p.z), polygon, grow: 1.1)
+    }
+
+    /// Point in polygon (ray casting), with the polygon scaled about its centre by `grow` to leave a margin.
+    static func inside(_ p: SIMD2<Float>, _ poly: [SIMD2<Float>], grow: Float) -> Bool {
+        let c = poly.reduce(SIMD2<Float>(0, 0), +) / Float(poly.count)
+        let q = poly.map { c + ($0 - c) * grow }
+        var inside = false
+        var j = q.count - 1
+        for i in 0..<q.count {
+            if (q[i].y > p.y) != (q[j].y > p.y), p.x < (q[j].x - q[i].x) * (p.y - q[i].y) / (q[j].y - q[i].y) + q[i].x { inside.toggle() }
+            j = i
+        }
+        return inside
+    }
+
+    // MARK: tracing the outline of the part's base
+    func startTracing() {
+        tracePoints = []; polygon = []
+        phase = .tracing
+        drawTrace()
+    }
+
+    func addTracePoint(_ view: ARSCNView, at location: CGPoint) {
+        guard phase == .tracing,
+              let q = view.raycastQuery(from: location, allowing: .estimatedPlane, alignment: .any),
+              let r = view.session.raycast(q).first else { return }
+        let c = r.worldTransform.columns.3
+        tracePoints.append(SIMD3(c.x, c.y, c.z))
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        drawTrace()
+    }
+
+    func undoTrace() {
+        guard !tracePoints.isEmpty else { return }
+        tracePoints.removeLast()
+        drawTrace()
+    }
+
+    /// Close the outline: it becomes the footprint of a prism the part stands in.
+    func closeTrace() {
+        guard tracePoints.count >= 3 else { return }
+        let ys = tracePoints.map { $0.y }.sorted()
+        baseY = ys[ys.count / 2]                                      // the table height
+        polygon = tracePoints.map { SIMD2($0.x, $0.z) }
+        let c = polygon.reduce(SIMD2<Float>(0, 0), +) / Float(polygon.count)
+        fitRadius = max(0.03, polygon.map { simd_distance($0, c) }.max() ?? 0.1)
+        phase = .ready
+        refresh()
+        Reporter.log("guided: outline closed, \(polygon.count) points, radius \(fitRadius)")
+    }
+
+    private func drawTrace() {
+        traceNode.childNodes.forEach { $0.removeFromParentNode() }
+        for (i, p) in tracePoints.enumerated() {
+            traceNode.addChildNode(Self.dot(p, .systemYellow))
+            if i > 0 { traceNode.addChildNode(Self.segment(tracePoints[i - 1], p, .systemYellow)) }
+        }
+    }
+
+    private static func dot(_ p: SIMD3<Float>, _ color: UIColor) -> SCNNode {
+        let n = SCNNode(geometry: SCNSphere(radius: 0.006))
+        let m = SCNMaterial(); m.diffuse.contents = color; m.lightingModel = .constant
+        n.geometry?.firstMaterial = m
+        n.position = SCNVector3(p.x, p.y, p.z)
+        return n
+    }
+
+    private static func segment(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ color: UIColor) -> SCNNode {
+        let len = simd_distance(a, b)
+        let cyl = SCNCylinder(radius: 0.0025, height: CGFloat(len))
+        let m = SCNMaterial(); m.diffuse.contents = color; m.lightingModel = .constant
+        cyl.firstMaterial = m
+        let n = SCNNode(geometry: cyl)
+        n.position = SCNVector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+        n.look(at: SCNVector3(b.x, b.y, b.z), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 1, 0))
+        return n
+    }
+
+    /// The outline and height for the server, which uses them to crop and to close the underside.
+    func footprintJSON() -> Data? {
+        guard hasOutline else { return nil }
+        let obj: [String: Any] = ["polygon": polygon.map { [$0.x, $0.y] }, "base_y": baseY, "height": height, "frame": "ARKit world, metres, polygon is [x, z]"]
+        return try? JSONSerialization.data(withJSONObject: obj)
     }
 
     /// Put the part where the middle of the screen is pointing.
@@ -88,6 +183,7 @@ final class CoverageTracker: ObservableObject {
 
     func reaim() {
         phase = .placing
+        tracePoints = []; polygon = []
         clearNodes()
     }
 
@@ -102,8 +198,9 @@ final class CoverageTracker: ObservableObject {
     var message: String {
         switch phase {
         case .off: return ""
-        case .placing: return "Aim the middle of the screen at the part, about 30 cm away, then tap Set object here."
-        case .ready: return "The white ball should just wrap the part. Slide to resize it, then tap Start capturing."
+        case .placing: return "Mark the part. Best: tap Trace outline, then tap around its base on the table. Quick: aim the middle of the screen at it and tap Set object here."
+        case .tracing: return tracePoints.count < 3 ? "Tap the screen at the corners of the part's base on the table, going around it. \(tracePoints.count) points so far." : "\(tracePoints.count) points. Keep tapping, or tap Close outline."
+        case .ready: return hasOutline ? "The white frame is the space the part is in. Slide to match its height, then tap Start capturing. Only what is inside is kept, and the server fills in the underside." : "The white ball should just wrap the part. Slide to resize it, then tap Start capturing."
         case .capturing:
             if complete { return "Coverage complete. Tap Stop to finish, or keep going to fill the last gaps." }
             return hint.isEmpty ? "Walk slowly around the part and keep it in the middle of the screen. Orange dots are views you still need, green are captured." : hint
@@ -183,10 +280,12 @@ final class CoverageTracker: ObservableObject {
     private func clearNodes() {
         objectNode.childNodes.forEach { $0.removeFromParentNode() }
         domeNode.childNodes.forEach { $0.removeFromParentNode() }
+        traceNode.childNodes.forEach { $0.removeFromParentNode() }
         dots = []
     }
 
     private func refresh() {
+        if hasOutline { refreshPrism(); return }
         centre = hitPoint + hitDir * radius * 0.6
         objectNode.childNodes.forEach { $0.removeFromParentNode() }
         let sphere = SCNSphere(radius: CGFloat(radius))
@@ -201,10 +300,27 @@ final class CoverageTracker: ObservableObject {
         domeNode.position = objectNode.position
     }
 
+    /// Wire frame of the traced outline extruded up by the part's height.
+    private func refreshPrism() {
+        let c2 = polygon.reduce(SIMD2<Float>(0, 0), +) / Float(polygon.count)
+        centre = SIMD3(c2.x, baseY + height / 2, c2.y)
+        objectNode.childNodes.forEach { $0.removeFromParentNode() }
+        objectNode.position = SCNVector3(0, 0, 0)
+        domeNode.position = SCNVector3(centre.x, centre.y, centre.z)
+        let n = polygon.count
+        for i in 0..<n {
+            let a = polygon[i], b = polygon[(i + 1) % n]
+            let a0 = SIMD3(a.x, baseY, a.y), b0 = SIMD3(b.x, baseY, b.y)
+            let a1 = SIMD3(a.x, baseY + height, a.y), b1 = SIMD3(b.x, baseY + height, b.y)
+            for (p, q) in [(a0, b0), (a1, b1), (a0, a1)] { objectNode.addChildNode(Self.segment(p, q, .white)) }
+        }
+        traceNode.childNodes.forEach { $0.removeFromParentNode() }
+    }
+
     private func buildDome() {
         domeNode.childNodes.forEach { $0.removeFromParentNode() }
         dots = []
-        let rv = max(0.28, radius * 2.2)
+        let rv = max(0.28, (hasOutline ? fitRadius : radius) * 2.2)
         for i in 0..<Self.cellCount {
             let c = Self.cellCentre(i)
             let el = c.elev * .pi / 180
@@ -293,19 +409,45 @@ struct GuidedPanel: View {
             }
             if tracker.phase == .ready {
                 VStack(spacing: 4) {
-                    Text("Part size: about \(Int(tracker.radius * 200)) cm across").font(.caption)
-                    Slider(value: $tracker.radius, in: 0.03...0.6)
+                    if tracker.hasOutline {
+                        Text("Part height: \(Int(tracker.height * 100)) cm").font(.caption)
+                        Slider(value: $tracker.height, in: 0.01...0.5)
+                    } else {
+                        Text("Part size: about \(Int(tracker.radius * 200)) cm across").font(.caption)
+                        Slider(value: $tracker.radius, in: 0.03...0.6)
+                    }
                 }
                 .padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
             HStack {
-                if tracker.phase == .placing { Button("Set object here", action: setObject) }
+                if tracker.phase == .placing {
+                    Button("Trace outline") { tracker.startTracing() }
+                    Button("Set object here", action: setObject)
+                }
+                if tracker.phase == .tracing {
+                    Button("Undo") { tracker.undoTrace() }
+                    Button("Close outline") { tracker.closeTrace() }.disabled(tracker.tracePoints.count < 3)
+                    Button("Cancel") { tracker.reaim() }
+                }
                 if tracker.phase == .ready {
                     Button("Start capturing") { tracker.beginCapture() }
                     Button("Re-aim") { tracker.reaim() }
                 }
             }
             .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+/// Catches taps while tracing the outline; passes nothing through otherwise.
+struct TraceTapLayer: View {
+    @ObservedObject var tracker: CoverageTracker
+    let view: ARSCNView
+
+    var body: some View {
+        if tracker.phase == .tracing {
+            Color.clear.contentShape(Rectangle()).ignoresSafeArea()
+                .gesture(SpatialTapGesture().onEnded { tracker.addTracePoint(view, at: $0.location) })
         }
     }
 }
