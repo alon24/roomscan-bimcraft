@@ -573,11 +573,11 @@ struct ScanTypePicker: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if tracker.mode == 3 {
-                Text("With the printed marker ring: the markers place every frame, so the phone and the spool can both move.")
+                Text("Uses the LiDAR and the printed marker ring: the markers place every frame, so the phone and the spool can both move, and the size is real.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if tracker.mode == 2 {
-                Text("Phone on a stand, part on a turning plate. You trace the plate; the LiDAR frames are joined on the server, so plain white parts work.")
+                Text("Uses the LiDAR. Phone on a stand, part on a turning plate. You trace the plate; the frames are joined on the server, so plain white parts work.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

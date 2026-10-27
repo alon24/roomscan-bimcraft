@@ -241,7 +241,7 @@ struct ObjectScanView: View {
         if idle && mode == 1 {
             if turntable.running { return "Capturing every \(String(format: "%.1f", turntable.interval)) s. Let the part turn once or twice, slowly, then tap Stop." }
             if turntable.count > 0 { return "\(turntable.count) photos taken. Tap Build model, or lay the part on another side and tap Add pass to cover the underside." }
-            return "Phone on a stand, 20 to 40 cm from the plate. Hang a plain sheet behind the part so nothing else is in the picture, keep hands out of view, and use steady light. A plain white part has nothing to match: stick on some tape or paper marks. Start the plate turning slowly, then tap Start."
+            return "PHOTOS ONLY: this mode does not use the LiDAR, so the size is not real and plain white parts reconstruct badly. For real size, LiDAR and the printed ring, use the Mesh tab, Ring. Phone on a stand, 20 to 40 cm from the plate. Hang a plain sheet behind the part so nothing else is in the picture, keep hands out of view, and use steady light. A plain white part has nothing to match: stick on some tape or paper marks. Start the plate turning slowly, then tap Start."
         }
         if !model.supported { return "Object Capture needs an iPhone with LiDAR." }
         if model.reconstructing { return "Building the 3D model on the phone. Keep the app open; this takes a few minutes." }
@@ -285,7 +285,7 @@ struct ObjectScanView: View {
                 if idle {
                     Picker("Mode", selection: $mode) {
                         Text("Walk around").tag(0)
-                        Text("Turntable").tag(1)
+                        Text("Turntable (photos)").tag(1)
                     }
                     .pickerStyle(.segmented)
                     .disabled(turntable.running)
