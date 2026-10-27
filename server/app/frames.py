@@ -197,6 +197,9 @@ def tsdf_room(d: Path, scale: float = 1.0, voxel: float = 0.02) -> tuple[bool, s
         om = om.simplify_quadric_decimation(target_number_of_triangles=400_000)
     mesh = trimesh.Trimesh(np.asarray(om.vertices) * scale, np.asarray(om.triangles), process=False)
     rgb = (np.asarray(om.vertex_colors) * 255).astype(np.uint8)
+    mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[rgb, np.full(len(rgb), 255, dtype=np.uint8)])
+    mesh, _ = meshscan.polish(mesh, smooth=4, max_faces=400_000)       # rooms: light smoothing, flat walls stay flat
+    rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]
     log = f"surface from {used} frames (merged depth), {len(mesh.faces)} triangles"
     seen = 0.0
     if scale == 1.0:

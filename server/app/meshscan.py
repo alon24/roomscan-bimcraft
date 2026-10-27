@@ -90,6 +90,44 @@ def poisson(points: np.ndarray, colours: np.ndarray, depth: int = 8) -> trimesh.
     return out
 
 
+def polish(mesh: trimesh.Trimesh, smooth: int = 15, max_faces: int = 200_000) -> tuple[trimesh.Trimesh, str]:
+    """Make a scanned surface nicer to print and look at: keep the biggest piece, close small holes, smooth away the
+    staircase and noise without shrinking it (Taubin), make all triangles face out, and thin it out if it is very dense.
+    Vertex colours are kept."""
+    notes = []
+    m = mesh.copy()
+    colours = np.asarray(m.visual.vertex_colors)[:, :3].copy() if m.visual.kind == "vertex" else None
+    m.merge_vertices()
+    m.update_faces(m.nondegenerate_faces())
+    m.remove_unreferenced_vertices()
+    parts = m.split(only_watertight=False)
+    if len(parts) > 1:
+        m = max(parts, key=lambda p: len(p.faces))
+        notes.append(f"kept the biggest of {len(parts)} pieces")
+    if not m.is_watertight:
+        trimesh.repair.fill_holes(m)
+        notes.append("holes filled" + ("" if m.is_watertight else " (some left)"))
+    if len(m.faces) > max_faces:
+        try:
+            import open3d as o3d
+            om = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(m.vertices), o3d.utility.Vector3iVector(m.faces))
+            if m.visual.kind == "vertex":
+                om.vertex_colors = o3d.utility.Vector3dVector(np.asarray(m.visual.vertex_colors)[:, :3] / 255.0)
+            om = om.simplify_quadric_decimation(max_faces)
+            c = (np.asarray(om.vertex_colors) * 255).astype(np.uint8) if om.has_vertex_colors() else None
+            m = trimesh.Trimesh(np.asarray(om.vertices), np.asarray(om.triangles), process=False)
+            if c is not None:
+                m.visual = trimesh.visual.ColorVisuals(m, vertex_colors=np.c_[c, np.full(len(c), 255, np.uint8)])
+            notes.append(f"thinned to {len(m.faces)} triangles")
+        except Exception as e:
+            notes.append(f"not thinned ({type(e).__name__})")
+    if smooth and len(m.faces) >= 5000:              # smoothing a coarse model would round its real corners off
+        trimesh.smoothing.filter_taubin(m, lamb=0.5, nu=0.53, iterations=smooth)
+        notes.append(f"smoothed ({smooth} rounds, size kept)")
+    trimesh.repair.fix_normals(m)
+    return m, ", ".join(notes)
+
+
 def write_settings(d: Path, **kw) -> None:
     """Remember what this model was made with (shown on the web page next to the model)."""
     p = d / "settings.json"
@@ -235,6 +273,8 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: d
                    traced_outline=bool(has_fp), surface_method="Poisson" if surface else "none")
     mesh = poisson(pts, cols, depth=9 if len(pts) < 300_000 else 8) if surface and len(pts) >= 500 else None
     if mesh is not None:
+        mesh, pnote = polish(mesh, smooth=8)
+        log += f", {pnote}"
         rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]
         if recolour and scale == 1.0:       # the cloud is in the phone's world frame, the same one the photos' poses use
             try:

@@ -71,6 +71,18 @@ enum OnPhoneRing {
         return px
     }
 
+    /// An 8-bit grey PNG's own bytes, scaled to w x h by nearest neighbour (labels must not be blended or colour-converted).
+    private static func rawLabels(_ cg: CGImage, width: Int, height: Int) -> [UInt8]? {
+        guard cg.bitsPerPixel == 8, let data = cg.dataProvider?.data, let base = CFDataGetBytePtr(data) else { return nil }
+        let sw = cg.width, sh = cg.height, bpr = cg.bytesPerRow
+        var out = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            let sy = min(sh - 1, y * sh / height)
+            for x in 0..<width { out[y * width + x] = base[sy * bpr + min(sw - 1, x * sw / width)] }
+        }
+        return out
+    }
+
     /// The same pixels with the rows in the opposite order.
     private static func flipRows(_ px: [UInt8], _ w: Int, _ h: Int, _ bpp: Int) -> [UInt8] {
         var out = [UInt8](repeating: 0, count: px.count)
@@ -397,6 +409,7 @@ enum OnPhoneRing {
         var views: [View] = []
         var tried = 0, rectsTotal = 0, decodedTotal = 0, posesBad = 0
         var upsideDown: Bool?
+        var labelledViews = 0
         for (n, url) in candidates.enumerated() {
             if n % 5 == 0 { progress("Finding the ring: photo \(n + 1) of \(candidates.count)…") }
             guard let meta = metaFor[url.lastPathComponent], let cg = cgImage(url),
@@ -426,19 +439,27 @@ enum OnPhoneRing {
             var mask = pixels(mcg, width: mw, height: mh, gray: true)
             // the separate things Vision found: leave out the one that is the ring and plate (as the server does)
             if let lURL = maskFor[url.deletingPathExtension().lastPathComponent + "-labels"], let lcg = cgImage(lURL) {
-                var labels = pixels(lcg, width: mw, height: mh, gray: true, nearest: true)
-                if upsideDown == true { labels = flipRows(labels, mw, mh, 1) }
-                if let chosen = chooseInstances(labels, mw, mh, R: R, t: t, fx: fx * Double(mw) / Double(w), fy: fy * Double(mh) / Double(h),
+                // the label image's own rows are in image order (it was written from Vision's buffer, not drawn)
+                if let labels = rawLabels(lcg, width: mw, height: mh),
+                   let chosen = chooseInstances(labels, mw, mh, R: R, t: t, fx: fx * Double(mw) / Double(w), fy: fy * Double(mh) / Double(h),
                                                 cx: cx * Double(mw) / Double(w), cy: cy * Double(mh) / Double(h), ring: ring) {
-                    mask = chosen.map { $0 ? 255 : 0 }
-                    if upsideDown == true { mask = flipRows(mask, mw, mh, 1) }   // flipped back below with the rest
+                    // use it only if it is a part of the full outline (a wrong pick, e.g. the background, is ignored)
+                    let full = upsideDown == true ? flipRows(mask, mw, mh, 1) : mask
+                    var inChosen = 0, inBoth = 0
+                    for i in 0..<chosen.count where chosen[i] { inChosen += 1; if full[i] >= 128 { inBoth += 1 } }
+                    if inChosen > 50 && Double(inBoth) >= 0.9 * Double(inChosen) {
+                        var picked = chosen.map { $0 ? UInt8(255) : UInt8(0) }
+                        if upsideDown == true { picked = flipRows(picked, mw, mh, 1) }   // flipped back below with the rest
+                        mask = picked
+                        labelledViews += 1
+                    }
                 }
             }
             var rgb = pixels(cg, width: mw, height: mh, gray: false)
             if upsideDown == true { mask = flipRows(mask, mw, mh, 1); rgb = flipRows(rgb, mw, mh, 4) }
             views.append(View(R: R, t: t, fx: fx, fy: fy, cx: cx, cy: cy, w: w, h: h, mask: mask, mw: mw, mh: mh, rgb: rgb, cw: mw, ch: mh))
         }
-        let summary = "phone build: \(tried) photos, \(rectsTotal / max(tried, 1)) squares and \(decodedTotal / max(tried, 1)) markers read per photo, \(posesBad) camera fits rejected, \(views.count) photos usable"
+        let summary = "phone build: \(labelledViews) with the plate left out, \(tried) photos, \(rectsTotal / max(tried, 1)) squares and \(decodedTotal / max(tried, 1)) markers read per photo, \(posesBad) camera fits rejected, \(views.count) photos usable"
         Reporter.log(summary)
         lastSummary = summary
         guard views.count >= 6 else { return nil }
@@ -587,6 +608,22 @@ enum OnPhoneRing {
             vol += simd_dot(positions[Int(tris[t])], simd_cross(positions[Int(tris[t + 1])], positions[Int(tris[t + 2])]))
         }
         if vol < 0 { for t in stride(from: 0, to: tris.count, by: 3) { tris.swapAt(t + 1, t + 2) } }
+        // smooth away the staircase of the cubes without shrinking the part (Taubin: a step in, a slightly bigger step out)
+        var neighbours = [[Int]](repeating: [], count: positions.count)
+        for t in stride(from: 0, to: tris.count, by: 3) {
+            let a = Int(tris[t]), b = Int(tris[t + 1]), c = Int(tris[t + 2])
+            neighbours[a] += [b, c]; neighbours[b] += [a, c]; neighbours[c] += [a, b]
+        }
+        neighbours = neighbours.map { Array(Set($0)) }
+        for round in 0..<20 {
+            let f = round % 2 == 0 ? 0.5 : -0.53
+            var moved = positions
+            for i in positions.indices where !neighbours[i].isEmpty {
+                let avg = neighbours[i].reduce(SIMD3<Double>(0, 0, 0)) { $0 + positions[$1] } / Double(neighbours[i].count)
+                moved[i] = positions[i] + f * (avg - positions[i])
+            }
+            positions = moved
+        }
         // normals and colours
         var normals = [SIMD3<Double>](repeating: .zero, count: positions.count)
         for t in stride(from: 0, to: tris.count, by: 3) {

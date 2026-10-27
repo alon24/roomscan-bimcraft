@@ -159,6 +159,10 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         surface_note = ""
     if carved:
         mesh, col, surface, nviews = carved
+        mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[col, np.full(len(col), 255, dtype=np.uint8)])
+        mesh, pnote = meshscan.polish(mesh, smooth=15)
+        col = np.asarray(mesh.visual.vertex_colors)[:, :3]
+        surface += f", {pnote}"
         ok, log = meshscan.convert_cloud(d, cloud, scale, recolour=False, surface=False)   # keep the LiDAR points for the Points view
         (d / "mesh.bin").write_bytes(meshscan.pack_preview(mesh, col))
         mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[col, np.full(len(col), 255, dtype=np.uint8)])
@@ -173,7 +177,8 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         except Exception as e:
             surface += f" (no STL: {type(e).__name__}: {e})"
         rp.write_text(json.dumps(rep))
-        meshscan.write_settings(d, surface_method="outline carving (visual hull) from the photos", outlined_photos=nviews)
+        meshscan.write_settings(d, surface_method="outline carving (visual hull) from the photos", outlined_photos=nviews,
+                                finishing="biggest piece, holes filled, Taubin smoothing 15 rounds (keeps the size), triangles facing out")
     else:
         ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp, recolour=False)
         surface = surface_note + "surface fitted through the LiDAR points (no part outlines from the phone)"
