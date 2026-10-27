@@ -20,7 +20,7 @@ from . import convert, frames as frame_tools, meshscan, ring as ring_scan_mod, t
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
-ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
+ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json"}
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
@@ -95,6 +95,7 @@ def _convert(d: Path) -> dict:
         meta["status"] = "ok" if ok else "error"
         meta["log"] = out
         meta["converted_at"] = time.time()
+        meta["settings"] = _settings(d, meta)
         (d / "meta.json").write_text(json.dumps(meta, indent=1))
         return meta
     if meta.get("kind") == "object":
@@ -110,6 +111,7 @@ def _convert(d: Path) -> dict:
         meta["printable"] = ok
         meta["log"] = out
         meta["converted_at"] = time.time()
+        meta["settings"] = _settings(d, meta)
         (d / "meta.json").write_text(json.dumps(meta, indent=1))
         return meta
     try:
@@ -131,10 +133,31 @@ def _convert(d: Path) -> dict:
     return meta
 
 
+def _json_or_empty(text: str) -> dict:
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _settings(d: Path, meta: dict) -> dict:
+    """What this model was made with: the converter's own notes plus the scan's basics."""
+    p = d / "settings.json"
+    out = json.loads(p.read_text()) if p.exists() else {}
+    if meta.get("kind") == "object" and "mode" not in out:
+        out.update(mode="Object capture (photos, built on the phone)", cleanup="largest piece, holes filled, normals fixed, centred on the bed")
+    out.setdefault("scale", meta.get("scale", 1.0))
+    if meta.get("real_height_mm"):
+        out["real_height_mm"] = meta["real_height_mm"]
+    out["photos"] = meta.get("photo_count", 0)
+    return out
+
+
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
-                 kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), project: str = Form(""),
+                 kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), info: str = Form(""), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     if kind not in ("room", "object", "mesh"):
         raise HTTPException(422, "kind must be room, object or mesh")
@@ -173,7 +196,8 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
                                              "photo_count": photo_count, "project": project.strip(), "created_at": time.time(),
                                              **({"real_height_mm": real_height_mm} if real_height_mm > 0 else {}),
                                              **({"turntable": True} if turntable_scan else {}),
-                                             **({"ring": True} if ring_scan else {})}))
+                                             **({"ring": True} if ring_scan else {}),
+                                             **({"phone": _json_or_empty(info)} if info else {})}))
     meta = await anyio.to_thread.run_sync(_convert, d)
     hub.live = None
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})

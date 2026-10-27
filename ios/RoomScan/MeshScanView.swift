@@ -18,6 +18,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var footprintURL: URL?
     private var wasTurntable = false
     private var wasRing = false
+    private var lastMode = 0
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
     private var timer: Timer?
@@ -184,6 +185,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         scanning = false
         wasTurntable = guided.turntable
         wasRing = guided.ring
+        lastMode = guided.mode
         guard !anchors.isEmpty || !cloud.isEmpty || ((guided.turntable || guided.ring) && (recorder?.count ?? 0) > 0) else {
             let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
             status = "No surfaces were captured (\(ticks / 2) s). \(why) A report was sent."
@@ -212,12 +214,24 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
     }
 
+    /// The phone's settings for this scan, stored with the model on the server and shown next to it.
+    private var scanInfo: [String: Any] {
+        let names = ["Free scan", "Guided object", "LiDAR turntable (no ring)", "LiDAR + ring"]
+        let mode = lastMode
+        return ["scan type": names[min(max(mode, 0), 3)], "app": AppVersion.text,
+                "device": Reporter.deviceModel(), "ios": UIDevice.current.systemVersion,
+                "keep every frame": UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true,
+                "photo longest side px": mode == 3 ? 1920 : 1280, "frames sent": photoURLs.filter { $0.pathExtension == "jpg" }.count,
+                "lidar depth": photoURLs.contains { $0.pathExtension == "depth" },
+                "traced outline": footprintURL != nil, "display zoom is not stored": true]
+    }
+
     @MainActor func upload(server: String) async {
         guard let plyURL else { return }
         status = "Uploading…"
         do {
             let id = try await Uploader.upload(json: nil, usdz: nil, name: "Mesh \(Date().formatted())", server: server, kind: "mesh",
-                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable, ringScan: wasRing)
+                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable, ringScan: wasRing, info: scanInfo)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {

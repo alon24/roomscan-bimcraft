@@ -90,6 +90,14 @@ def poisson(points: np.ndarray, colours: np.ndarray, depth: int = 8) -> trimesh.
     return out
 
 
+def write_settings(d: Path, **kw) -> None:
+    """Remember what this model was made with (shown on the web page next to the model)."""
+    p = d / "settings.json"
+    cur = json.loads(p.read_text()) if p.exists() else {}
+    cur.update(kw)
+    p.write_text(json.dumps(cur, indent=1))
+
+
 def pack_points(points: np.ndarray, rgb: np.ndarray) -> bytes:
     colours = rgb[:, :3].astype(np.uint8).tobytes()
     return points.astype("<f4").tobytes() + colours
@@ -223,6 +231,8 @@ def convert_cloud(d: Path, cloud: trimesh.PointCloud, scale: float, footprint: d
     (d / "points.bin").write_bytes(pack_points(pts, cols))
     rep = {"points": int(len(pts)), "size_m": [round(float(x), 2) for x in np.ptp(pts, axis=0)], "vertices": 0, "faces": 0}
     log = f"{len(pts)} points" + fp_note
+    write_settings(d, mode="LiDAR scan, surface fitted through the points" if surface else "LiDAR points", points=int(len(pts)),
+                   traced_outline=bool(has_fp), surface_method="Poisson" if surface else "none")
     mesh = poisson(pts, cols, depth=9 if len(pts) < 300_000 else 8) if surface and len(pts) >= 500 else None
     if mesh is not None:
         rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]

@@ -106,5 +106,7 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     cloud = trimesh.PointCloud(pts, colors=np.c_[cols, np.full(len(cols), 255, dtype=np.uint8)])
     ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp2, recolour=False)
     turns = abs(omega) * (got[-1][0] - t0) / (2 * np.pi)
+    meshscan.write_settings(d, mode="LiDAR turntable (no ring)", frames_used=len(got), plate_speed_rpm=round(abs(omega) * 60 / (2 * np.pi), 2),
+                            fit_error_mm=round(bs * 1000, 1), surface_method="Poisson with the part's own footprint as base")
     return ok, (f"turntable: {len(got)} frames, plate speed {abs(omega) * 60 / (2 * np.pi):.1f} rpm "
                 f"({turns:.1f} turns), fit error {bs * 1000:.1f} mm; {log}")

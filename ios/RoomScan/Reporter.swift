@@ -55,6 +55,8 @@ enum Reporter {
         }
     }
 
+    static func deviceModel() -> String { machine() }
+
     private static func machine() -> String {
         var sys = utsname()
         uname(&sys)

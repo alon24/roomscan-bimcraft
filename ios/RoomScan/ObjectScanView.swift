@@ -217,7 +217,8 @@ final class ObjectScanModel: ObservableObject {
         guard let usdzURL else { return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL, realHeightMM: realHeightMM)
+            let id = try await Uploader.upload(json: nil, usdz: usdzURL, name: "Part \(Date().formatted())", server: server, kind: "object", photos: photoURLs, photosMeta: photosMetaURL, realHeightMM: realHeightMM,
+                                               info: ["scan type": "Object capture (walk around)", "app": AppVersion.text, "device": Reporter.deviceModel(), "ios": UIDevice.current.systemVersion, "photos sent": photoURLs.count, "detail": "reduced"])
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {

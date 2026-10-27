@@ -92,6 +92,7 @@
       <div id="frameGrid" class="thumbs"></div>
       <div class="row" style="margin-top:8px"><button class="btn" id="detectAll">Auto-detect all frames</button><button class="btn" id="rebuildBtn">Rebuild from frames</button></div>
     </div>
+    <details id="settingsBox" hidden open style="margin:8px 0"><summary><b>Settings used for this model</b></summary><pre id="settingsPre" style="margin:6px 0"></pre></details>
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
@@ -226,6 +227,13 @@ async function show(id) {
   $("title").textContent = meta.name;
   $("status").textContent = meta.status; $("status").className = meta.status;
   $("log").textContent = meta.log || "";
+  { // what this model was made with: the phone's settings and the server's
+    const lines = [], add = (title, o) => { if (o && Object.keys(o).length) { lines.push(title); for (const [k, v] of Object.entries(o)) lines.push(`  ${k.replaceAll("_", " ")}: ${typeof v === "object" ? JSON.stringify(v) : v}`); } };
+    add("Server", { "server version": $("verTop").textContent || undefined, scanned: new Date(meta.created_at * 1000).toLocaleString(), type: meta.kind, ...(meta.settings || {}) });
+    add("Phone", meta.phone);
+    $("settingsPre").textContent = lines.join("\n");
+    $("settingsBox").hidden = lines.length === 0;
+  }
   const isObj = meta.kind === "object", isMesh = meta.kind === "mesh";
   $("plan").hidden = isObj || isMesh;
   $("plan").src = !isObj && !isMesh && meta.status === "ok" ? `/api/scans/${id}/plan.png?t=${Date.now()}` : "";

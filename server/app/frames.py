@@ -213,6 +213,8 @@ def tsdf_room(d: Path, scale: float = 1.0, voxel: float = 0.02) -> tuple[bool, s
                 log += f", photo texture from {plan['count']} photos covers {round(plan['covered'] * 100)}% of the triangles"
         except Exception as e:
             log += f", photo texture skipped ({type(e).__name__}: {e})"
+    meshscan.write_settings(d, mode="free scan (merged depth)", frames_used=used, voxel_mm=round(voxel * 1000, 1),
+                            depth_range="0.1 to 4.5 m", surface="signed-distance volume, small floating pieces removed, coloured from the photos")
     rp = d / "report.json"
     rep = json.loads(rp.read_text()) if rp.exists() else {}
     rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=round(float(seen), 3),
