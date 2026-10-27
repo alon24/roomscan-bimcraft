@@ -23,7 +23,7 @@ The ring and the stage are glued or taped to the spool flange (double-sided tape
 while it turns. Concentricity with the spool axis does **not** matter: the software measures the ring, not the spool.
 
 If the printer bed is smaller than 200 mm, split the ring into two 180° halves with a 0.2 mm clearance dovetail, cut where
-there is no marker (angles 80° and 260°, between markers 4 and 5, and 13 and 14).
+there is no marker (at angles 90° and 270°, between markers 4 and 5, and between 13 and 14).
 
 ## 2. Colours (3 bodies, one slicer filament each)
 
