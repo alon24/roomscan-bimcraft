@@ -71,6 +71,36 @@ enum OnPhoneRing {
         return px
     }
 
+    /// The same pixels with the rows in the opposite order.
+    private static func flipRows(_ px: [UInt8], _ w: Int, _ h: Int, _ bpp: Int) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: px.count)
+        let row = w * bpp
+        for y in 0..<h { out[(h - 1 - y) * row ..< (h - y) * row] = px[y * row ..< (y + 1) * row] }
+        return out
+    }
+
+    /// Markers read in one photo: (corners in ring mm, corners in pixels, which marker) and how many squares were tried.
+    private static func readMarkers(_ gray: [UInt8], _ w: Int, _ h: Int, _ ring: Ring) -> ([SIMD2<Double>], [SIMD2<Double>], [Int], Int) {
+        let squares = findQuads(gray, w, h)
+        var obj: [SIMD2<Double>] = [], pix: [SIMD2<Double>] = [], owner: [Int] = []
+        var seen = Set<Int>()
+        for q0 in squares {
+            // the found square may sit a little inside or outside the black border: try it as found, then slightly bigger and smaller
+            let mid = (q0[0] + q0[1] + q0[2] + q0[3]) / 4
+            var found: (Int, Int)?
+            var q = q0
+            for f in [1.0, 1.06, 0.95, 1.12] {
+                q = q0.map { mid + ($0 - mid) * f }
+                if let r = decode(gray, w, h, q) { found = r; break }
+            }
+            guard let (id, k) = found, !seen.contains(id) else { continue }
+            seen.insert(id)
+            let cs = ring.corners(id)
+            for i in 0..<4 { obj.append(cs[i]); pix.append(q[(i - k + 4) % 4]); owner.append(id) }
+        }
+        return (obj, pix, owner, squares.count)
+    }
+
     private static func cgImage(_ url: URL) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(src, 0, nil)
@@ -344,31 +374,26 @@ enum OnPhoneRing {
         if candidates.count > 60 { let step = Double(candidates.count) / 60; candidates = (0..<60).map { candidates[Int(Double($0) * step)] } }
         var views: [View] = []
         var tried = 0, rectsTotal = 0, decodedTotal = 0, posesBad = 0
+        var upsideDown: Bool?
         for (n, url) in candidates.enumerated() {
             if n % 5 == 0 { progress("Finding the ring: photo \(n + 1) of \(candidates.count)…") }
             guard let meta = metaFor[url.lastPathComponent], let cg = cgImage(url),
                   let mURL = maskFor[url.deletingPathExtension().lastPathComponent], let mcg = cgImage(mURL) else { continue }
             let w = cg.width, h = cg.height
-            let gray = pixels(cg, width: w, height: h, gray: true)
-            let squares = findQuads(gray, w, h)
-            var obj: [SIMD2<Double>] = [], pix: [SIMD2<Double>] = [], owner: [Int] = []
-            var seen = Set<Int>()
-            tried += 1
-            rectsTotal += squares.count
-            for q0 in squares {
-                // the found square may sit a little inside or outside the black border: try it as found, then slightly bigger and smaller
-                let mid = (q0[0] + q0[1] + q0[2] + q0[3]) / 4
-                var found: (Int, Int)?
-                var q = q0
-                for f in [1.0, 1.06, 0.95, 1.12] {
-                    q = q0.map { mid + ($0 - mid) * f }
-                    if let r = decode(gray, w, h, q) { found = r; break }
-                }
-                guard let (id, k) = found, !seen.contains(id) else { continue }
-                seen.insert(id)
-                let cs = ring.corners(id)
-                for i in 0..<4 { obj.append(cs[i]); pix.append(q[(i - k + 4) % 4]); owner.append(id) }
+            var gray = pixels(cg, width: w, height: h, gray: true)
+            if upsideDown == true { gray = flipRows(gray, w, h, 1) }
+            var (obj, pix, owner, nSquares) = readMarkers(gray, w, h, ring)
+            if upsideDown == nil {
+                // find out once whether the pixel rows came out bottom first: then the patterns only read when turned over
+                let flipped = flipRows(gray, w, h, 1)
+                let (o2, p2, w2, _) = readMarkers(flipped, w, h, ring)
+                if Set(w2).count > Set(owner).count { upsideDown = true; gray = flipped; obj = o2; pix = p2; owner = w2 }
+                else if !owner.isEmpty { upsideDown = false }
+                Reporter.log("phone build: pixel rows \(upsideDown == true ? "were upside down" : "the right way up"), \(Set(owner).count) markers in the first photo")
             }
+            tried += 1
+            rectsTotal += nSquares
+            let seen = Set(owner)
             decodedTotal += seen.count
             guard seen.count >= 4 else { continue }
             let K = meta.intrinsics                     // columns: [fx,0,0],[0,fy,0],[cx,cy,1] for the photo size
@@ -376,8 +401,9 @@ enum OnPhoneRing {
             let fx = Double(K[0][0]) * sx, fy = Double(K[1][1]) * sy, cx = Double(K[2][0]) * sx, cy = Double(K[2][1]) * sy
             guard let (R, t, _, err) = pose(obj, pix, owner, fx: fx, fy: fy, cx: cx, cy: cy), err <= 4 else { posesBad += 1; continue }
             let mw = 480, mh = Int(Double(480) * Double(h) / Double(w))
-            let mask = pixels(mcg, width: mw, height: mh, gray: true)
-            let rgb = pixels(cg, width: mw, height: mh, gray: false)
+            var mask = pixels(mcg, width: mw, height: mh, gray: true)
+            var rgb = pixels(cg, width: mw, height: mh, gray: false)
+            if upsideDown == true { mask = flipRows(mask, mw, mh, 1); rgb = flipRows(rgb, mw, mh, 4) }
             views.append(View(R: R, t: t, fx: fx, fy: fy, cx: cx, cy: cy, w: w, h: h, mask: mask, mw: mw, mh: mh, rgb: rgb, cw: mw, ch: mh))
         }
         let summary = "phone build: \(tried) photos, \(rectsTotal / max(tried, 1)) squares and \(decodedTotal / max(tried, 1)) markers read per photo, \(posesBad) camera fits rejected, \(views.count) photos usable"
