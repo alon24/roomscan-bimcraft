@@ -8,3 +8,4 @@ usd-core
 trimesh[easy]
 open3d-cpu
 opencv-contrib-python-headless
+scikit-image

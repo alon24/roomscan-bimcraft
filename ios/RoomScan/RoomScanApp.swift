@@ -9,6 +9,7 @@ struct RoomScanApp: App {
                     ScanView().tabItem { Label("Room", systemImage: "square.split.bottomrightquarter") }
                     MeshScanView().tabItem { Label("Mesh", systemImage: "cube.transparent") }
                     ObjectScanView().tabItem { Label("Object", systemImage: "cube") }
+                    ModelsView().tabItem { Label("Models", systemImage: "cube.box") }
                     ViewerView().tabItem { Label("Viewer", systemImage: "view.3d") }
                 }
                 .task { Reporter.log("app launched"); await Reporter.flush() }

@@ -79,6 +79,8 @@ def detect_all(d: Path, only: str | None = None, keep_edited: bool = True) -> in
     """Automatic masks for every frame that has depth. Frames the user edited by hand are left alone."""
     fp = _footprint(d)
     edited = set(json.loads((d / "masks" / "edited.json").read_text())) if (d / "masks" / "edited.json").exists() else set()
+    if (d / "masks" / "phone.json").exists():                 # the phone's outlines are better than these: keep them
+        edited |= set(json.loads((d / "masks" / "phone.json").read_text()))
     n = 0
     for ph in manifest(d):
         if only and ph["file"] != only:

@@ -154,3 +154,62 @@ def test_ring_readings_from_calipers_are_saved(tmp_path, monkeypatch):
     info = c.get("/api/ring").json()
     assert info["calibrated"] and info["marker_size_mm"] == 22.2
     assert c.post("/api/ring/measured", data={"marker_mm": "5", "across_mm": "183"}).status_code == 422
+
+
+def test_ring_scan_with_outlines_carves_the_true_shape(tmp_path, monkeypatch):
+    """Same moving phone and 50 x 50 x 60 mm cylinder, now with the part's outline in each photo: the carved shape is exact."""
+    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
+    px_mm = 4.0
+    tex = make_ring.render_png(px_mm)
+    S, c = tex.shape[0], tex.shape[0] / 2
+    fx = fy = 1000.0
+    W, H, cx, cy = 1280, 960, 640.0, 480.0
+    rng = np.random.default_rng(5)
+    th = rng.uniform(0, 2 * np.pi, 60000); z = rng.uniform(0, 60, 60000)
+    r = 25 * np.sqrt(rng.uniform(0, 1, 12000)); a = rng.uniform(0, 2 * np.pi, 12000)
+    part = np.vstack([np.c_[25 * np.cos(th), 25 * np.sin(th), z], np.c_[r * np.cos(a), r * np.sin(a), np.full(12000, 60.0)]])
+    to_world = lambda q: np.c_[q[:, 0], q[:, 2], -q[:, 1]] / 1000.0
+
+    def project(M, pts):
+        cam = (np.linalg.inv(M) @ np.c_[pts, np.ones(len(pts))].T).T[:, :3]
+        depth = -cam[:, 2]
+        return np.c_[fx * cam[:, 0] / depth + cx, cy - fy * cam[:, 1] / depth], depth
+    photos, files = [], []
+    (tmp_path / "scans").mkdir(parents=True, exist_ok=True)
+    for k in range(12):
+        az = np.radians(k * 30)
+        low = k % 2 == 1                                      # two passes: one looking down, one nearly level with the part's top
+        pos = np.array([0.38 * np.cos(az), 0.10 if low else 0.26, 0.38 * np.sin(az)])
+        f = -pos / np.linalg.norm(pos)
+        right = np.cross(f, [0, 1, 0]); right /= np.linalg.norm(right)
+        M = np.eye(4); M[:3, 0], M[:3, 1], M[:3, 2], M[:3, 3] = right, np.cross(right, f), -f, pos
+        ring_c = np.array([[(0 - c) / px_mm, c / px_mm, 0], [(S - c) / px_mm, c / px_mm, 0], [(S - c) / px_mm, (c - S) / px_mm, 0], [(0 - c) / px_mm, (c - S) / px_mm, 0]])
+        dst, _ = project(M, to_world(ring_c))
+        img = cv2.warpPerspective(tex, cv2.getPerspectiveTransform(np.float32([[0, 0], [S, 0], [S, S], [0, S]]), np.float32(dst)), (W, H), flags=cv2.INTER_AREA, borderValue=170)
+        name = f"p{k + 1:03d}"
+        Image.fromarray(img).convert("RGB").save(tmp_path / f"{name}.jpg", quality=95)
+        uv, depth = project(M, to_world(part))
+        dm = np.full((480, 640), np.inf)
+        u2, v2 = (uv[:, 0] / 2).astype(int), (uv[:, 1] / 2).astype(int)
+        ok = (u2 >= 0) & (u2 < 640) & (v2 >= 0) & (v2 < 480)
+        np.minimum.at(dm, (v2[ok], u2[ok]), depth[ok]); dm[np.isinf(dm)] = 0
+        dm.astype("<f4").tofile(tmp_path / f"{name}.depth")
+        mask = np.zeros((H, W), np.uint8)                       # the outline: every pixel the part covers
+        ok = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
+        mask[uv[ok, 1].astype(int), uv[ok, 0].astype(int)] = 255
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        Image.fromarray(mask).save(tmp_path / f"{name}.png")
+        photos.append({"file": f"{name}.jpg", "timestamp": k, "width": W, "height": H, "depth_file": f"{name}.depth", "depth_width": 640, "depth_height": 480,
+                       "transform": [M[:3, 0].tolist() + [0], M[:3, 1].tolist() + [0], M[:3, 2].tolist() + [0], pos.tolist() + [1]],
+                       "intrinsics": [[fx, 0, 0], [0, fy, 0], [cx, cy, 1]]})
+        files += [("photos", (f"{name}.jpg", open(tmp_path / f"{name}.jpg", "rb"), "image/jpeg")),
+                  ("photos", (f"{name}.depth", open(tmp_path / f"{name}.depth", "rb"), "application/octet-stream")),
+                  ("masks", (f"{name}.png", open(tmp_path / f"{name}.png", "rb"), "image/png"))]
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+    client = TestClient(main.app)
+    r = client.post("/api/scans", data={"kind": "mesh", "ring_scan": "true"},
+                    files=files + [("photos_meta", ("photos.json", open(tmp_path / "photos.json", "rb")))])
+    meta = client.get(f"/api/scans/{r.json()['id']}").json()
+    assert meta["status"] == "ok" and "outline carving from 12 photos" in meta["log"], meta["log"]
+    size = sorted(client.get(f"/api/scans/{r.json()['id']}/report.json").json()["size_mm"])
+    assert 46 < size[0] < 56 and 46 < size[1] < 56 and 55 < size[2] < 66, (size, meta["log"])   # 50 x 50 x 60 mm, within a few mm

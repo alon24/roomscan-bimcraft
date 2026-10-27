@@ -148,13 +148,40 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     from scipy.spatial import ConvexHull
     hull = yup[:, [0, 2]][ConvexHull(yup[:, [0, 2]]).vertices]
     fp = {"polygon": hull.tolist(), "base_y": 0.0, "height": float(yup[:, 1].max()) + 0.005}
-    ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp, recolour=False)
-    surface = "surface fitted through the points"
+    carved = None
+    try:                                   # the part's outline in the photos, if the phone sent one: much sharper than the LiDAR
+        from . import hull as hull_mod
+        carved = hull_mod.carve(d, scale)
+    except Exception as e:
+        carved = None
+        surface_note = f"outline carving failed ({type(e).__name__}: {e}); "
+    else:
+        surface_note = ""
+    if carved:
+        mesh, col, surface, nviews = carved
+        ok, log = meshscan.convert_cloud(d, cloud, scale, recolour=False, surface=False)   # keep the LiDAR points for the Points view
+        (d / "mesh.bin").write_bytes(meshscan.pack_preview(mesh, col))
+        mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[col, np.full(len(col), 255, dtype=np.uint8)])
+        mesh.export(d / "colored.ply")
+        rp = d / "report.json"
+        rep = json.loads(rp.read_text()) if rp.exists() else {}
+        rep.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), coloured=1.0)
+        try:
+            pr = meshscan.printable(mesh, d)
+            rep.update(stl=True, watertight=pr["watertight"], volume_mm3=pr["volume_mm3"], size_mm=pr["size_mm"])
+            surface += f", {'watertight' if pr['watertight'] else 'NOT watertight'}, {pr['size_mm']} mm"
+        except Exception as e:
+            surface += f" (no STL: {type(e).__name__}: {e})"
+        rp.write_text(json.dumps(rep))
+        meshscan.write_settings(d, surface_method="outline carving (visual hull) from the photos", outlined_photos=nviews)
+    else:
+        ok, log = meshscan.convert_cloud(d, cloud, scale, footprint=fp, recolour=False)
+        surface = surface_note + "surface fitted through the LiDAR points (no part outlines from the phone)"
     meshscan.write_settings(d, mode="LiDAR + ring", ring_marker_mm=cfg["marker_size_mm"], ring_centre_radius_mm=round(cfg["centre_radius_mm"], 3),
                             ring_calibrated=calibration_file(d.parent).exists(), frames_used=used, frames_skipped=skipped,
                             markers_per_frame=round(markers / used, 1), mean_pose_error_px=round(float(np.mean(errs)), 2),
                             crop="inside the stage (radius %.1f mm), above 8 mm, up to 350 mm" % inner_r,
-                            fusion="points every 2 mm, offset of each frame taken from the flat ring, surface fitted (Poisson), base = footprint of the part", scale=scale)
+                            lidar_points="every 2 mm, offset of each frame taken from the flat ring", scale=scale)
     return ok, (f"ring: {used} frames used, {skipped} skipped, about {markers / used:.1f} markers per frame, "
                 f"mean pose error {np.mean(errs):.2f} px; {log}; {surface}")
 

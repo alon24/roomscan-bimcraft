@@ -16,6 +16,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var photoURLs: [URL] = []
     @Published var photosMetaURL: URL?
     private var footprintURL: URL?
+    private var maskURLs: [URL] = []
+    private var outlining = false
     private var wasTurntable = false
     private var wasRing = false
     private var lastMode = 0
@@ -90,7 +92,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     func start() {
-        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
@@ -210,6 +212,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 } else { self.footprintURL = nil }
                 self.modelScene = scene
                 self.status = ok ? "Scan ready" : "Could not save the mesh"
+                if ok && self.wasRing { self.outlineParts() }
             }
         }
     }
@@ -223,15 +226,45 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 "keep every frame": UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true,
                 "photo longest side px": mode == 3 ? 1920 : 1280, "frames sent": photoURLs.filter { $0.pathExtension == "jpg" }.count,
                 "lidar depth": photoURLs.contains { $0.pathExtension == "depth" },
-                "traced outline": footprintURL != nil, "display zoom is not stored": true]
+                "traced outline": footprintURL != nil, "part outlines": maskURLs.count]
+    }
+
+    /// Ring scans: the part's outline in every photo (Vision, on the phone). The server carves the shape from these, which is far
+    /// sharper than the LiDAR depth for small parts.
+    private func outlineParts() {
+        let photos = photoURLs.filter { $0.pathExtension == "jpg" }
+        maskURLs = []
+        guard !photos.isEmpty else { return }
+        outlining = true
+        status = "Outlining the part in \(photos.count) photos…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ctx = CIContext()
+            var out: [URL] = []
+            for (i, url) in photos.enumerated() {
+                autoreleasepool {
+                    if let png = SubjectMasker.outlinePNG(url, ctx: ctx) {
+                        let dest = url.deletingPathExtension().appendingPathExtension("png")
+                        if (try? png.write(to: dest)) != nil { out.append(dest) }
+                    }
+                }
+                if i % 10 == 0 { DispatchQueue.main.async { self?.status = "Outlining the part: \(i + 1) of \(photos.count) photos…" } }
+            }
+            DispatchQueue.main.async {
+                self?.maskURLs = out
+                self?.outlining = false
+                self?.status = "Scan ready (\(out.count) outlines)"
+                Reporter.log("ring: \(out.count) outlines of \(photos.count) photos")
+            }
+        }
     }
 
     @MainActor func upload(server: String) async {
         guard let plyURL else { return }
+        if outlining { status = "Still outlining the part in the photos, upload again in a moment"; return }
         status = "Uploading…"
         do {
             let id = try await Uploader.upload(json: nil, usdz: nil, name: "Mesh \(Date().formatted())", server: server, kind: "mesh",
-                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable, ringScan: wasRing, info: scanInfo)
+                                               photos: photoURLs, photosMeta: photosMetaURL, mesh: plyURL, footprint: footprintURL, turntableScan: wasTurntable, ringScan: wasRing, info: scanInfo, masks: maskURLs)
             if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
             status = "Uploaded"
         } catch {

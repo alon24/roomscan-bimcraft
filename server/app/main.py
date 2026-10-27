@@ -158,7 +158,8 @@ def _settings(d: Path, meta: dict) -> dict:
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
                  kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), info: str = Form(""), project: str = Form(""),
-                 photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
+                 photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None),
+                 masks: list[UploadFile] = File(default=[])):
     if kind not in ("room", "object", "mesh"):
         raise HTTPException(422, "kind must be room, object or mesh")
     if kind == "mesh" and mesh is None and not turntable_scan and not ring_scan:
@@ -181,6 +182,15 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
             shutil.copyfileobj(mesh.file, f)
     if footprint is not None:
         (d / "footprint.json").write_bytes(await footprint.read())
+    if masks:  # the part's outline in each photo, made on the phone
+        (d / "masks").mkdir(exist_ok=True)
+        names = []
+        for m in masks:
+            fname = Path(m.filename or "").name
+            if MASK_NAME.match(fname) and fname.endswith(".png"):
+                (d / "masks" / fname).write_bytes(await m.read())
+                names.append(fname.replace(".png", ".jpg"))
+        (d / "masks" / "phone.json").write_text(json.dumps(names))
     photo_count = 0
     if photos:
         (d / "photos").mkdir()
@@ -270,7 +280,11 @@ def rebuild(scan_id: str):
     """Fuse every frame (its depth, colour and mask) into a new point cloud and surface."""
     d = _dir(scan_id)
     meta = _meta(d)
-    ok, out = frame_tools.fuse(d, meta.get("scale", 1.0))
+    if meta.get("ring"):        # ring scans: the outlines (phone or corrected by hand) carve the shape
+        ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
+        meta["settings"] = _settings(d, meta)
+    else:
+        ok, out = frame_tools.fuse(d, meta.get("scale", 1.0))
     meta["status"] = "ok" if ok else "error"
     meta["log"] = out
     meta["converted_at"] = time.time()
