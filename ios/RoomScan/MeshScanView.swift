@@ -137,8 +137,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     // MARK: depth point cloud
     private func addPoints() {
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
-              let depth = frame.sceneDepth, cloud.count < maxPoints else { return }
-        let dm = depth.depthMap, conf = depth.confidenceMap
+              let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
+        let dm = depth.depthMap
         let dw = CVPixelBufferGetWidth(dm), dh = CVPixelBufferGetHeight(dm)
         // camera colours at the depth map's size
         var rgba = [UInt8](repeating: 0, count: dw * dh * 4)
