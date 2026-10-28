@@ -27,9 +27,12 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    (**red = near, blue = far**, up to about 4 m).
 2. Aim the crosshair at a wall. The big number is the distance in m, cm and mm.
    - Green dot: steady, trust it. Orange: hold still. Red: too close (under 25 cm) or too far (over 5 m).
-3. **Tap anywhere** on the picture to pin that spot. The pin is drawn exactly under your finger and **stays fixed on that
-   spot in the room** while you move the phone. Pins are numbered and **independent**: nothing is joined unless you say so.
-   A pin out of view gets an **arrow at the screen edge** pointing the way to turn.
+3. **The bullseye in the middle makes the pin.** Aim it at the spot (the picture can be zoomed to place it exactly), then
+   **tap the bullseye** (or the viewfinder-plus button). The pin stays **fixed on that spot in the room** while you move.
+   Tapping anywhere else on the picture does nothing, so you can't pin by accident. Pins are numbered and **independent**:
+   nothing is joined unless you say so. A pin out of view gets an **arrow at the screen edge** pointing the way to turn.
+   **Tap a pin's bullseye** to open its menu: select, measure from it to the crosshair, keep a line to the selected pin,
+   name it, **move it to the crosshair**, or delete it.
 4. **Choose what to measure by selecting pins.** Tap a pin to select it (it turns amber), tap it again to unselect.
    - 1 selected: live distance from that pin to the crosshair.
    - 2 selected: the distance between them, plus how much of it is along the floor and how much is height.
@@ -37,9 +40,6 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    - 3 or more: area, perimeter and the angle at each pin, in the order you picked them.
    - Placing a new pin while one pin is selected adds it to the pick, so pin, pin gives a distance at once.
      **Clear selection** unpicks everything but keeps the pins.
-   **Tap a bullseye** (a pin) to open its menu: select, measure from it to the crosshair, keep a line to the selected pin,
-   name it, **move it to the crosshair**, or delete it. The bullseye's centre is exactly the pinned point.
-   The **+ viewfinder button** pins at the crosshair itself: aim first, then press, with no finger in the way.
 5. **Manage pins** (the pin button, bottom row): tick pins to select, swipe a pin to **name** it ("left wall") or delete it,
    link or unlink the two ticked pins, see all kept lines, untick all, delete all pins.
 6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links when you leave the Measure
@@ -235,6 +235,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.42.1 | Measure: only the bullseye in the middle creates a pin (tap it), taps elsewhere do nothing; tap a pin to open its menu. |
 | 0.42.0 | **Android app** (APK built in CI, thin shell for Photo Measure) and a **Get the app** page on the server (`/apps.html`) that hands out the APK and IPA. |
 | 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |
 | 0.40.0 | **Cut tool like Orca Slicer's**: big panel, move and tilt the cut plane with the mouse, two-colour preview with pull-apart, keep/discard/flip, connector shapes (circle, square, triangle, hexagon), click to add, move or remove connectors on the cut face, any-angle cuts. Server: `/cut/preview`, `/cut/plane`. |

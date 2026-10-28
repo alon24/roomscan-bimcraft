@@ -71,7 +71,7 @@ struct PinsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Pins (\(model.pins.count))") {
-                    if model.pins.isEmpty { Text("Tap the camera picture to pin a spot.").foregroundStyle(.secondary) }
+                    if model.pins.isEmpty { Text("Aim the bullseye at a spot on the camera picture and tap it to pin.").foregroundStyle(.secondary) }
                     ForEach(model.pins) { p in
                         Button { model.toggleSelect(p.name) } label: {
                             HStack {

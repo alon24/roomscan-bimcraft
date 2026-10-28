@@ -251,9 +251,13 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         let p = g.location(in: sceneView)
-        // The readout card and buttons sit at the bottom; a tap there is not a point on the wall.
+        // The readout card and buttons sit at the bottom; a tap there is not on the picture.
         guard p.y < sceneView.bounds.height - 300 else { return }
-        // A tap near an existing pin selects it (or unselects it); anywhere else pins a new spot.
+        // Only the bullseye in the middle creates a pin: aim it at the spot, then tap it. (The screen is magnified about
+        // its centre, so a distance on screen is `zoom` times the distance in the camera view's own coordinates.)
+        let centre = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
+        if hypot(p.x - centre.x, p.y - centre.y) < 48 / zoom { pinAtCrosshair(); return }
+        // A tap on an existing pin opens its menu. A tap anywhere else does nothing.
         let reach = 34 / zoom
         let hit = pins.compactMap { pin -> (Pin, CGFloat)? in
             let s = sceneView.projectPoint(SCNVector3(pin.pos.x, pin.pos.y, pin.pos.z))
@@ -261,36 +265,12 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             let d = hypot(CGFloat(s.x) - p.x, CGFloat(s.y) - p.y)
             return d < reach ? (pin, d) : nil
         }.min { $0.1 < $1.1 }
-        if let hit { actionPin = hit.0.name; UISelectionFeedbackGenerator().selectionChanged() } else { addPin(at: p) }
+        if let hit { actionPin = hit.0.name; UISelectionFeedbackGenerator().selectionChanged() }
     }
 
     func toggleSelect(_ name: String) {
         if let i = selected.firstIndex(of: name) { selected.remove(at: i) } else { selected.append(name) }
         UISelectionFeedbackGenerator().selectionChanged()
-    }
-
-    /// Pin the spot under a tap. ARKit gives the ray through that screen point (so the pin is drawn exactly where it was
-    /// touched); the LiDAR depth there says how far along the ray the surface is.
-    private func addPin(at p: CGPoint) {
-        guard let frame = sceneView.session.currentFrame,
-              let q = sceneView.raycastQuery(from: p, allowing: .estimatedPlane, alignment: .any) else { fail(); return }
-        let dir = simd_normalize(q.direction)
-        let fwd = -SIMD3(frame.camera.transform.columns.2.x, frame.camera.transform.columns.2.y, frame.camera.transform.columns.2.z)
-        var world: SIMD3<Float>?
-
-        let size = sceneView.bounds.size
-        let orientation = sceneView.window?.windowScene?.interfaceOrientation ?? .portrait
-        let img = CGPoint(x: p.x / size.width, y: p.y / size.height)
-            .applying(frame.displayTransform(for: orientation, viewportSize: size).inverted())
-        if let d = depth(frame, nx: Double(img.x), ny: Double(img.y)), d >= Self.minRange, d <= Self.maxRange {
-            let along = Float(d) / max(simd_dot(dir, fwd), 0.2)
-            world = q.origin + dir * along
-        } else if let hit = sceneView.session.raycast(q).first {
-            let c = hit.worldTransform.columns.3
-            world = SIMD3(c.x, c.y, c.z)
-        }
-        guard let w = world else { fail(); return }
-        place(w)
     }
 
     private func anchor(_ name: String, at w: SIMD3<Float>) -> ARAnchor {
@@ -481,6 +461,9 @@ struct MeasureView: View {
                         ZStack {
                             PinLayer(model: model, size: geo.size, zoom: zoom)
                             Crosshair(colour: status.1).position(x: geo.size.width / 2, y: geo.size.height / 2)
+                            Text("tap to pin").font(.caption2.bold()).padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(.black.opacity(0.55), in: Capsule()).foregroundStyle(.white)
+                                .position(x: geo.size.width / 2, y: geo.size.height / 2 + 50)
                         }
                     }
                     .allowsHitTesting(false)
@@ -561,7 +544,7 @@ struct MeasureView: View {
                 let t = Self.text(d, .wall)
                 Text(t.big).font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
-                Text("Tap the picture to pin a spot. Tap two pins to measure between them.").font(.caption2).foregroundStyle(.secondary)
+                Text("Aim the bullseye at a spot and tap it to pin. Tap two pins to measure between them.").font(.caption2).foregroundStyle(.secondary)
             } else {
                 Text("—").font(.system(size: 44, weight: .bold, design: .rounded))
             }
@@ -726,7 +709,7 @@ struct MeasurementList: View {
                 }
                 .onDelete { model.remove($0.map { model.saved[$0].id }) }
             }
-            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nTap a spot to pin it, tap two pins, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
+            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nAim the bullseye and tap it to pin a spot, tap two pins, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
             .navigationTitle("Measurements")
             .toolbar { Button("Done") { dismiss() } }
         }
