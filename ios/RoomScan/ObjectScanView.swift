@@ -29,7 +29,7 @@ final class ObjectScanModel: ObservableObject {
 
     /// Stop listening to the old session so it can be released; a second session cannot start while the first lives.
     private func releaseSession() {
-        UIApplication.shared.isIdleTimerDisabled = false
+        Screen.awake(false)
         watcher?.cancel(); watcher = nil
         feedbackWatcher?.cancel(); feedbackWatcher = nil
         session = nil
@@ -48,7 +48,7 @@ final class ObjectScanModel: ObservableObject {
         var config = ObjectCaptureSession.Configuration()
         config.checkpointDirectory = base.appendingPathComponent("Snapshots")
         s.start(imagesDirectory: images, configuration: config)
-        UIApplication.shared.isIdleTimerDisabled = true   // keep the screen on while capturing and building
+        Screen.awake(true)   // keep the screen on while capturing and building
         session = s
         feedbackWatcher = Task { [weak self] in
             for await set in s.feedbackUpdates {

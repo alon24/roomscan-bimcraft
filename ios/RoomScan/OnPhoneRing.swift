@@ -118,6 +118,22 @@ enum OnPhoneRing {
         return CGImageSourceCreateImageAtIndex(src, 0, nil)
     }
 
+    /// Where the camera is relative to the ring in one live frame (grey pixels, top row first): its position in ring millimetres,
+    /// the markers used and the fit error in pixels. Nil when fewer than 4 markers can be read or the fit is poor.
+    static func livePose(gray: [UInt8], w: Int, h: Int, fx: Double, fy: Double, cx: Double, cy: Double, ring: Ring, flipped: inout Bool?)
+        -> (SIMD3<Double>, Int, Double)? {
+        func read(_ g: [UInt8]) -> ([SIMD2<Double>], [SIMD2<Double>], [Int]) { let r = readMarkers(g, w, h, ring); return (r.0, r.1, r.2) }
+        var (obj, pix, owner) = read(flipped == true ? flipRows(gray, w, h, 1) : gray)
+        if flipped == nil {
+            // as in the build: once, find out whether the patterns only read with the rows the other way round
+            let (o2, p2, w2) = read(flipRows(gray, w, h, 1))
+            if Set(w2).count > Set(owner).count { flipped = true; (obj, pix, owner) = (o2, p2, w2) }
+            else if !owner.isEmpty { flipped = false }
+        }
+        guard Set(owner).count >= 4, let (R, t, n, err) = pose(obj, pix, owner, fx: fx, fy: fy, cx: cx, cy: cy), err <= 4 else { return nil }
+        return (-(R.transpose * t), n, err)
+    }
+
     // MARK: small linear algebra
 
     /// Solve A x = b (n x n) by Gaussian elimination with pivoting.

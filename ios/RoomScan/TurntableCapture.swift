@@ -60,7 +60,7 @@ final class TurntableCapture: NSObject, ObservableObject, AVCapturePhotoCaptureD
         }
         lockCamera(true)   // focus, exposure and white balance must not drift while the part turns
         running = true
-        UIApplication.shared.isIdleTimerDisabled = true
+        Screen.awake(true)
         status = ""
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.shoot() }
         shoot()
@@ -70,7 +70,7 @@ final class TurntableCapture: NSObject, ObservableObject, AVCapturePhotoCaptureD
         timer?.invalidate(); timer = nil
         if running { lockCamera(false) }
         running = false
-        UIApplication.shared.isIdleTimerDisabled = false
+        Screen.awake(false)
     }
 
     /// Forget the photos, ready for the next part.

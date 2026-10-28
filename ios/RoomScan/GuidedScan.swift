@@ -20,6 +20,8 @@ final class CoverageTracker: ObservableObject {
     var turntable: Bool { mode == 2 }
     var ring: Bool { mode == 3 }               // printed marker ring: every frame is placed by the markers, the phone may move freely
     @Published var framesTaken = 0
+    @Published var speed: RingSpeedMonitor.Reading?       // ring scans: how fast the tray is turning, read from the markers
+    private let speedMonitor = RingSpeedMonitor()
     private var turntableTicks = 0
     @Published var phase: Phase = .off
     @Published var radius: Float = 0.15 { didSet { if phase == .ready { refresh() } } }
@@ -57,12 +59,15 @@ final class CoverageTracker: ObservableObject {
     }
 
     func begin() {
+        speedMonitor.onReading = { [weak self] r in self?.speed = r }
+        speed = nil
         phase = enabled ? (ring ? .capturing : .placing) : .off
         cells = [Bool](repeating: false, count: Self.cellCount)
         hint = ""
         announced = false
         tracePoints = []; polygon = []
         framesTaken = 0; turntableTicks = 0
+        if ring { speedMonitor.reset() }
         clearNodes()
         if enabled, motion.isDeviceMotionAvailable {
             motion.deviceMotionUpdateInterval = 1.0 / 30
@@ -72,6 +77,7 @@ final class CoverageTracker: ObservableObject {
 
     func end() {
         motion.stopDeviceMotionUpdates()
+        speed = nil
         phase = .off
         clearNodes()
     }
@@ -194,6 +200,7 @@ final class CoverageTracker: ObservableObject {
     }
 
     func beginCapture() {
+        if ring { speedMonitor.reset() }
         cells = [Bool](repeating: false, count: Self.cellCount)
         announced = false
         phase = .capturing
@@ -221,6 +228,7 @@ final class CoverageTracker: ObservableObject {
         if ring {
             // Nothing to track here: the markers in each photo place the frame. Just keep every frame, about 2.5 a second.
             turntableTicks += 1
+            speedMonitor.feed(frame)
             if turntableTicks % 2 == 0 { recorder?.consider(frame, force: true); framesTaken = recorder?.count ?? 0 }
             return
         }
@@ -418,6 +426,10 @@ struct GuidedPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             Text(tracker.message).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            if tracker.phase == .capturing && tracker.ring, let s = tracker.speed {
+                Text(s.text).font(.callout.weight(.semibold)).foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(s.level >= 3 ? Color.red : (s.level == 2 ? Color.orange : (s.level == 1 ? Color.green : Color.gray)), in: Capsule())
+            }
             if tracker.phase == .capturing && (tracker.turntable || tracker.ring) {
                 Text("\(tracker.framesTaken) frames").font(.system(size: 34, weight: .bold, design: .rounded))
                     .padding(10).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
