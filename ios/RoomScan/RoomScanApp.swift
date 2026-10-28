@@ -27,6 +27,7 @@ struct RoomScanApp: App {
                 TabView {
                     RoomTab().tabItem { Label("Room", systemImage: "square.split.bottomrightquarter") }
                     ObjectTab().tabItem { Label("Object", systemImage: "cube") }
+                    MeasureView().tabItem { Label("Measure", systemImage: "ruler") }
                     ModelsView().tabItem { Label("Models", systemImage: "cube.box") }
                 }
                 .toolbarBackground(.visible, for: .tabBar)
