@@ -191,7 +191,7 @@ def tsdf_room(d: Path, scale: float = 1.0, voxel: float = 0.02) -> tuple[bool, s
         return False, "the depth frames produced no surface"
     cluster, n_tri, _ = om.cluster_connected_triangles()
     cluster, n_tri = np.asarray(cluster), np.asarray(n_tri)
-    om.remove_triangles_by_mask(n_tri[cluster] < 400)          # drop little floating pieces
+    om.remove_triangles_by_mask(n_tri[cluster] < max(400, int(0.004 * len(om.triangles))))   # drop floating specks: pieces under 0.4% of the surface
     om.remove_unreferenced_vertices()
     if len(om.triangles) > 400_000:
         om = om.simplify_quadric_decimation(target_number_of_triangles=400_000)
@@ -204,8 +204,8 @@ def tsdf_room(d: Path, scale: float = 1.0, voxel: float = 0.02) -> tuple[bool, s
     seen = 0.0
     if scale == 1.0:
         try:
-            rgb, seen = meshscan.recolour_from_photos(mesh, d, rgb)
-            log += f", {round(seen * 100)}% coloured from the photos"
+            rgb, seen = meshscan.recolour_from_photos(mesh, d, rgb, blend=True)
+            log += f", {round(seen * 100)}% coloured from the photos (blended, brightness-matched)"
         except Exception as e:
             log += f", photo colours skipped ({type(e).__name__}: {e})"
     mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[rgb, np.full(len(rgb), 255, dtype=np.uint8)])

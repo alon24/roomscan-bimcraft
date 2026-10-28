@@ -223,7 +223,8 @@ def test_room_scan_becomes_a_clean_closed_surface_the_size_of_the_room(tmp_path,
     rng = np.random.default_rng(1)
     trimesh.PointCloud(rng.uniform(lo, hi, (800, 3))).export(tmp_path / "c.ply")
     c = TestClient(main.app)
-    r = c.post("/api/scans", data={"kind": "mesh"}, files=files + [("mesh", ("scan.ply", open(tmp_path / "c.ply", "rb"))),
+    # "sweep": false = an ordinary room scan (merged-depth volume), not the one-spot depth panorama these near-central cameras would get
+    r = c.post("/api/scans", data={"kind": "mesh", "info": json.dumps({"sweep": False})}, files=files + [("mesh", ("scan.ply", open(tmp_path / "c.ply", "rb"))),
                                                                      ("photos_meta", ("photos.json", open(tmp_path / "photos.json", "rb")))])
     meta = c.get(f"/api/scans/{r.json()['id']}").json()
     assert meta["status"] == "ok" and "surface from" in meta["log"], meta["log"]

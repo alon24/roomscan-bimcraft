@@ -21,13 +21,13 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import formlimits, apps, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import formlimits, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
-             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json"}
+             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json"}
 PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json|model\.usdz|features\.json)$")  # derived from model.stl: stale once it changes
 
 
@@ -78,6 +78,22 @@ def _meta(d: Path) -> dict:
     return json.loads((d / "meta.json").read_text())
 
 
+_sweep_log: dict[str, str] = {}
+
+
+def _sweep_ok(d: Path, meta: dict) -> bool:
+    """Try the one-spot depth-panorama room; if it cannot be made, the ordinary room conversion runs instead."""
+    try:
+        ok, log = sweep_mod.convert_sweep(d, meta.get("scale", 1.0))
+    except Exception as e:
+        ok, log = False, f"{type(e).__name__}: {e}"
+    if ok:
+        _sweep_log[str(d)] = log
+    else:
+        print(f"sweep conversion failed for {d.name}: {log}", flush=True)
+    return ok
+
+
 def _convert(d: Path) -> dict:
     _clear_print_prep(d)
     meta = _meta(d)
@@ -87,6 +103,8 @@ def _convert(d: Path) -> dict:
             ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
         elif meta.get("turntable"):  # fixed phone, spinning plate: fuse the LiDAR frames in the part's own frame
             ok, out = turntable.fuse(d, meta.get("scale", 1.0))
+        elif not (d / "footprint.json").exists() and sweep_mod.is_sweep(d, meta) and _sweep_ok(d, meta):
+            ok, out = True, _sweep_log[str(d)]
         else:
             # a free scan with depth frames (a room, a corner): merge the depth into a clean surface; else fit one through the points
             room = not (d / "footprint.json").exists() and frame_tools.depth_frames(d) >= 5
@@ -805,6 +823,31 @@ def tolerance_3mf(size: float = 6.0, depth: float = 8.0):
         raise HTTPException(400, str(e))
     return Response(scene.export(file_type="3mf"), media_type="model/3mf",
                     headers={"Content-Disposition": f'attachment; filename="tolerance-test-{size:g}mm.3mf"'})
+
+
+def _panorama(scan_id: str, width: int) -> dict:
+    d = _dir(scan_id)
+    if not 512 <= width <= 8192:
+        raise HTTPException(400, "width must be 512 to 8192 pixels")
+    try:
+        return panorama_mod.ensure(d, width)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/scans/{scan_id}/panorama.json")
+def panorama_info(scan_id: str, width: int = 3072):
+    """Coverage, centre and size of the 360 panorama (built from the scan's photos the first time, then kept)."""
+    return {k: v for k, v in _panorama(scan_id, width).items() if not k.startswith("_")}
+
+
+@app.get("/api/scans/{scan_id}/panorama.jpg")
+def panorama_jpg(scan_id: str, width: int = 3072, download: bool = False):
+    """The room as one 360 degree picture (equirectangular JPEG), stitched from the scan's photos with their poses."""
+    _panorama(scan_id, width)
+    d = _dir(scan_id)
+    name = f"{_meta(d).get('name', scan_id)} panorama.jpg".replace("/", "-")
+    return FileResponse(d / "panorama.jpg", media_type="image/jpeg", filename=name if download else None)
 
 
 @app.get("/api/scans/{scan_id}/model.usdz")

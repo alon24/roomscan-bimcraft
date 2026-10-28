@@ -242,11 +242,18 @@
       <div class="row" style="margin-top:8px"><button class="btn" id="detectAll">Auto-detect all frames</button><button class="btn" id="rebuildBtn">Rebuild from frames</button></div>
     </div>
     <details id="settingsBox" hidden open style="margin:8px 0"><summary><b>Settings used for this model</b></summary><pre id="settingsPre" style="margin:6px 0"></pre></details>
+    <div id="roomBox" hidden style="margin:10px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px"></div>
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
 </main>
 <dialog id="dlg"><img id="big" alt=""></dialog>
+<dialog id="panoDlg" style="background:var(--bg);color:var(--fg);border:0;border-radius:10px;width:min(1400px,96vw);padding:12px">
+  <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px"><b id="panoTitle">360° panorama</b>
+    <span><a class="btn" id="panoDl" href="#">Download JPG</a> <button class="btn" type="button" id="panoClose">Close</button></span></div>
+  <div id="panoView" style="width:100%;height:min(74vh,760px);background:#222;border-radius:8px;position:relative;overflow:hidden;touch-action:none"></div>
+  <p class="hint" id="panoHint">Drag to look around · scroll or pinch to zoom · grey = not seen by any photo</p>
+</dialog>
 <dialog id="issues" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(900px,96vw);max-height:90vh;overflow:auto">
   <div style="padding:16px"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Problems reported by the app</h3>
   <span><button class="btn" type="button" id="issuesClear">Delete all</button> <button class="btn" type="button" id="issuesClose">Close</button></span></div><div id="issuesList"></div></div></dialog>
@@ -496,6 +503,7 @@ async function show(id) {
     const v = await ask("Move to home", [{ key: "project", label: "Home (empty = none)", value: meta.project ?? "", list: true }], "Move");
     if (v) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
   });
+  if (isMesh && (meta.photo_count || 0) >= 2) mk("Panorama", () => openPano(id));
   mk("Save as zip", () => { location.href = `/api/scans/${id}/bundle.zip`; });
   if (meta.kind !== "room") {
     mk(meta.share ? "Stop sharing" : "Share link…", async () => {
@@ -534,9 +542,15 @@ async function show(id) {
         const box3 = await outlineBox(id);
         // camera positions (tap one to open its photo), only where they share the scan's frame
         const ext = Math.max(...(r.size_m || (r.size_mm || [3000]).map(x => x / 1000)));
-        const cams = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform).map(p => {
+        const room = r.points || r.faces ? await loadRoom(id) : null;
+        const camList = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform);
+        const camPos = camList.map(p => new THREE.Vector3(p.transform[3][0], p.transform[3][1], p.transform[3][2]));
+        const camMid = camPos.length ? camPos.reduce((a, b) => a.add(b), new THREE.Vector3()).multiplyScalar(1 / camPos.length) : null;
+        const onSpot = camMid && camPos.every(v => v.distanceTo(camMid) < 0.35);   // turned on the spot: the arrows would pile up into a red star
+        const cams = onSpot ? [youHere(camMid, ext)] : camList.map(p => {
           const m = photoMarker(id, p); m.scale.setScalar(Math.max(0.05, ext / 8) / 0.25); return m;
         });
+        if (room) { for (const o of roomLabels(room, ext)) cams.push(o); showRoomBox(room); } else showRoomBox(null);
         const withBox = o => { const g = new THREE.Group(); g.add(o); if (box3) { const b = box3.clone(); b.userData.nofit = true; g.add(b); } for (const m of cams) { const c = m.clone(); c.userData.nofit = true; g.add(c); } return g; };
         if (meta.ring || box3) loadFrames(id);
         if (r.points) views.points = withBox(drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r));
@@ -544,7 +558,7 @@ async function show(id) {
         // Photo texture: every triangle drawn with the photo that sees it best, projected per pixel (built when first asked for)
         let texturable = false;
         if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`)).ok; } catch {} }
-        const first = texturable ? "textured" : views.surface ? "surface" : "points";
+        const first = views.surface && !meta.ring ? "surface" : texturable ? "textured" : views.surface ? "surface" : "points";
         const box = $("modes");
         const pick = async k => {
           if (k === "textured" && !views.textured) {
@@ -553,17 +567,20 @@ async function show(id) {
             catch (e) { views.textured = null; texturable = false; $("log").textContent += "\nPhoto texture failed: " + e; k = first; }
             $("log").textContent = $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
           }
+          const middle = !room ? [] : [Object.assign(document.createElement("button"), { className: "btn", textContent: "From the middle", title: "Stand where you swept the phone and look round",
+            onclick: () => V.inside(room.centre, room.heading_deg || 0) }), Object.assign(document.createElement("button"), { className: "btn", textContent: "From outside", onclick: () => { V.fit(); } })];
           box.replaceChildren(...[["points", "Points (as on the phone)"], ["surface", "Solid surface"], ["textured", "Photo texture"]]
               .filter(([x]) => x === "textured" ? texturable : views[x]).map(([x, label]) => {
             const b = document.createElement("button");
             b.className = "btn" + (x === k ? " on" : ""); b.textContent = label;
             b.onclick = () => pick(x);
             return b;
-          }));
+          }).concat(middle));
           show3d(views[k], V && k !== first);
         };
-        box.hidden = !((views.points ? 1 : 0) + (views.surface ? 1 : 0) + (texturable ? 1 : 0) > 1);
+        box.hidden = !((views.points ? 1 : 0) + (views.surface ? 1 : 0) + (texturable ? 1 : 0) > 1 || room);
         pick(first);
+        if (room && room.depth_coverage > 0.05) V.inside(room.centre, room.heading_deg || 0);   // a swept room opens as seen from where you stood
       }
       catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
     }
@@ -725,6 +742,103 @@ function addThumb(id, file) {
   const img = document.createElement("img");
   img.loading = "lazy"; img.src = `/api/scans/${id}/photos/${file}?up=1`; img.onclick = () => openPhoto(id, file);
   $("photos").append(img);
+}
+
+async function loadRoom(id) {
+  try { const r = await fetch(`/api/scans/${id}/room.json`); return r.ok ? await r.json() : null; } catch { return null; }
+}
+
+function textSprite(text, size) {   // a label that always faces the viewer
+  const c = document.createElement("canvas"); c.width = 512; c.height = 128;
+  const x = c.getContext("2d");
+  x.fillStyle = "rgba(20,24,30,.82)"; x.beginPath(); x.roundRect(4, 4, 504, 120, 28); x.fill();
+  x.fillStyle = "#fff"; x.font = "bold 62px system-ui,sans-serif"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(text, 256, 68);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
+  sp.scale.set(size * 4, size, 1); sp.renderOrder = 20; sp.userData.nofit = true;
+  return sp;
+}
+
+function youHere(p, ext) {   // where you stood while sweeping: one marker instead of a pile of camera arrows
+  const g = new THREE.Group();
+  const s = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.03, ext * 0.012), 16, 12), new THREE.MeshBasicMaterial({ color: 0x2a7de1, depthTest: false }));
+  s.renderOrder = 19; g.add(s);
+  const t = textSprite("you stood here", Math.max(0.08, ext * 0.03)); t.position.set(0, Math.max(0.12, ext * 0.05), 0); g.add(t);
+  g.position.copy(p); g.userData.nofit = true;
+  return g;
+}
+
+// Distances from the middle to each wall / floor / ceiling, drawn as lines with labels in the 3D view
+function roomLabels(room, ext) {
+  const out = [], c = new THREE.Vector3(...room.centre), unit = Math.max(0.05, ext * 0.016);
+  const mk = (name, dir, m) => {
+    if (!m) return;
+    const end = c.clone().addScaledVector(dir, m);
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c, end]), new THREE.LineBasicMaterial({ color: 0x2a7de1, depthTest: false }));
+    line.renderOrder = 18; line.userData.nofit = true; out.push(line);
+    const t = textSprite(`${name} ${m.toFixed(2)} m`, unit); t.position.copy(c.clone().addScaledVector(dir, m * 0.55)); out.push(t);
+  };
+  for (const [name, w] of Object.entries(room.walls || {})) mk(name, new THREE.Vector3(...w.axis), w.wall_m);
+  mk("floor", new THREE.Vector3(0, -1, 0), room.floor?.wall_m);
+  mk("ceiling", new THREE.Vector3(0, 1, 0), room.ceiling?.wall_m);
+  return out;
+}
+
+function showRoomBox(room) {
+  const b = $("roomBox");
+  if (!room) { b.hidden = true; return; }
+  const f = v => v == null ? "not seen" : `${v.toFixed(2)} m`;
+  const rows = ["front", "right", "back", "left"].map(n => `<td>${n}</td><td><b>${f(room.walls?.[n]?.wall_m)}</b></td><td class="hint">nearest ${f(room.walls?.[n]?.nearest_m)}</td>`);
+  b.innerHTML = `<b>Room measured from where you stood</b> <span class="hint">(${Math.round((room.depth_coverage ?? 0) * 100)}% of the directions around you were seen; front = where you first pointed the phone)</span>` +
+    `<div style="margin:6px 0;font-size:1.05rem">${room.width_m ? `width <b>${room.width_m.toFixed(2)} m</b>` : "width not seen"} · ${room.length_m ? `length <b>${room.length_m.toFixed(2)} m</b>` : "length not seen"} · ${room.height_m ? `height <b>${room.height_m.toFixed(2)} m</b>` : "height not seen"}</div>` +
+    `<table style="border-collapse:collapse;font-size:13px"><tr>${rows.slice(0, 2).join("<td style='padding-left:18px'></td>")}</tr><tr>${rows.slice(2).join("<td style='padding-left:18px'></td>")}</tr>` +
+    `<tr><td>floor</td><td><b>${f(room.floor?.wall_m)}</b></td><td class="hint">below the phone</td><td style='padding-left:18px'>ceiling</td><td><b>${f(room.ceiling?.wall_m)}</b></td><td class="hint">above the phone</td></tr></table>` +
+    (room.depth_coverage < 0.6 ? `<div class="hint" style="margin-top:6px">Walls marked "not seen" were not in the sweep. Turn the whole way round (and tip the phone up and down) from one spot to measure them.</div>` : "");
+  b.hidden = false;
+}
+
+// A 360 panorama viewer: drag to look around, wheel to zoom. Directions follow the server's: azimuth 0 = the first heading, +90 = to the right.
+async function openPano(id) {
+  const dlg = $("panoDlg"), box = $("panoView");
+  box.replaceChildren(); $("panoHint").textContent = "Stitching the photos (the first time takes a little while)…";
+  dlg.showModal();
+  let info;
+  try {
+    const r = await fetch(`/api/scans/${id}/panorama.json`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+    info = await r.json();
+  } catch (e) { $("panoHint").textContent = "No panorama: " + e; return; }
+  $("panoHint").textContent = `Drag to look around · scroll or pinch to zoom · ${Math.round(info.coverage * 100)}% of the sphere is covered, grey = not seen by any photo` + (info.from_one_spot ? "" : " · the phone moved, so near objects may be slightly doubled");
+  $("panoDl").href = `/api/scans/${id}/panorama.jpg?download=1`;
+  const W = box.clientWidth, H = box.clientHeight;
+  const rend = new THREE.WebGLRenderer({ antialias: true }); rend.setSize(W, H); box.append(rend.domElement);
+  const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(70, W / H, 0.1, 100);
+  const tex = await new Promise((ok, no) => new THREE.TextureLoader().load(`/api/scans/${id}/panorama.jpg`, ok, undefined, no));
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = rend.capabilities.getMaxAnisotropy();
+  const NU = 96, NV = 48, pos = [], uv = [], idx = [];
+  for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) {
+    const az = (i / NU - 0.5) * 2 * Math.PI, el = (0.5 - j / NV) * Math.PI;
+    pos.push(10 * Math.cos(el) * Math.sin(az), 10 * Math.sin(el), -10 * Math.cos(el) * Math.cos(az));
+    uv.push(i / NU, 1 - j / NV);
+  }
+  for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) { const a = j * (NU + 1) + i, b = a + 1, c = a + NU + 1, d = c + 1; idx.push(a, c, b, b, c, d); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })));
+  let az = 0, el = 0, fov = 70, drag = null, alive = true;
+  const draw = () => {
+    if (!alive) return;
+    cam.fov = fov; cam.updateProjectionMatrix();
+    cam.lookAt(Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az));
+    rend.render(scene, cam);
+  };
+  const dom = rend.domElement;
+  dom.onpointerdown = e => { drag = [e.clientX, e.clientY]; dom.setPointerCapture(e.pointerId); };
+  dom.onpointermove = e => { if (!drag) return; const k = fov / 70 * 0.0055; az -= (e.clientX - drag[0]) * k; el = Math.max(-1.5, Math.min(1.5, el + (e.clientY - drag[1]) * k)); drag = [e.clientX, e.clientY]; draw(); };
+  dom.onpointerup = () => { drag = null; };
+  dom.onwheel = e => { e.preventDefault(); fov = Math.max(20, Math.min(100, fov * (1 + Math.sign(e.deltaY) * 0.08))); draw(); };
+  const close = () => { alive = false; rend.dispose(); tex.dispose(); box.replaceChildren(); dlg.close(); };
+  $("panoClose").onclick = close; dlg.onclose = () => { alive = false; };
+  draw();
 }
 
 function photoMarker(id, p) {  // a small arrow at each camera pose, pointing where the photo looks (ARKit camera looks down -Z)
@@ -1165,8 +1279,8 @@ async function setupQuality(id, meta) {
   $("qTips").replaceChildren(...q.tips.map(t => Object.assign(document.createElement("li"), { textContent: t })));
   // top view: angle round the ring, distance from the centre = how high the phone was (centre = straight above, rim = level)
   const svg = $("qPolar"), NS = "http://www.w3.org/2000/svg", mk = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
-  svg.replaceChildren(mk("circle", { r: 78, fill: "none", stroke: "#8888", "stroke-width": 1 }), mk("circle", { r: 78 * (1 - 25 / 90), fill: "none", stroke: "#8884", "stroke-dasharray": "3 3" }),
-                      mk("circle", { r: 78 * (1 - 55 / 90), fill: "none", stroke: "#8884", "stroke-dasharray": "3 3" }));
+  svg.replaceChildren(mk("circle", { r: 78, fill: "none", stroke: "#8888", "stroke-width": 1 }), mk("circle", { r: 78 * (1 - 32 / 90), fill: "none", stroke: "#8884", "stroke-dasharray": "3 3" }),
+                      mk("circle", { r: 78 * (1 - 50 / 90), fill: "none", stroke: "#8884", "stroke-dasharray": "3 3" }));
   for (const g of q.gaps) {   // empty sectors
     const a0 = g[0] * Math.PI / 180, a1 = g[1] * Math.PI / 180, p = a => `${78 * Math.cos(a)},${-78 * Math.sin(a)}`;
     svg.append(mk("path", { d: `M0,0 L${p(a0)} A78,78 0 ${g[1] - g[0] > 180 ? 1 : 0} 0 ${p(a1)} Z`, fill: "#d6454533" }));
@@ -1593,12 +1707,17 @@ function show3d(group, keepView = false) {
     const box = new THREE.Box3(); for (const o of V.group.children) if (!o.userData.nofit) box.expandByObject(o); if (box.isEmpty()) box.setFromObject(V.group);
     if (box.isEmpty()) return false;
     box.getCenter(c); r = box.getSize(new THREE.Vector3()).length() || 5; dist = r * 1.1;
-    q.copy(q0);
+    q.copy(q0); cam.fov = 50;
     cam.near = r / 1000; cam.far = r * 20; cam.updateProjectionMatrix();
     place();
     return true;
   };
-  V = { renderer, scene: sc, cam, group, fit: null };
+  // Stand at a point and look round from it (a room swept from one spot is meant to be seen from the middle), heading = azimuth in degrees
+  const inside = (p, headingDeg) => {
+    c.set(p[0], p[1], p[2]); dist = 0.02; q.setFromEuler(new THREE.Euler(0, -headingDeg * Math.PI / 180, 0, "YXZ"));
+    cam.fov = 75; cam.near = 0.02; cam.far = 200; cam.updateProjectionMatrix(); place();
+  };
+  V = { renderer, scene: sc, cam, group, fit: null, inside };
   if (!fit()) V.fit = fit;  // empty first live frame: frame on the first one that has geometry
   // Controls: drag = rotate (no limits, so it can be flipped); right-drag / shift-drag / two fingers = pan;
   // wheel / pinch = zoom; double-click or double-tap = reset. Tap a red arrow to open its photo.

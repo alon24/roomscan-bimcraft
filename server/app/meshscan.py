@@ -239,9 +239,62 @@ def plan_texture(mesh: trimesh.Trimesh, d: Path, layers: int = 24, probe: int = 
     return plan
 
 
-def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit: int = 60) -> tuple[np.ndarray, float]:
+def colour_blended(mesh: trimesh.Trimesh, d: Path, photos: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Per-vertex colour from SEVERAL photos, blended, instead of the single best one (which leaves visible patches where the neighbouring
+    vertices picked different photos taken at different exposures). Each photo gets a brightness/colour gain found from how it
+    disagrees with the others where they overlap, and the photos are mixed with weights that strongly favour the head-on, close,
+    central view, so detail stays sharp and seams fade. Returns (rgb uint8 per vertex, seen mask)."""
+    from .panorama import _gains
+    pts = np.asarray(mesh.vertices, dtype=float)
+    nrm = np.asarray(mesh.vertex_normals, dtype=float)
+    obs = []
+    for ph in photos:
+        path = d / "photos" / ph["file"]
+        if not path.exists():
+            continue
+        img = np.asarray(Image.open(path).convert("RGB"))
+        h, w = img.shape[:2]
+        uv, depth = project(ph, pts)
+        cam = np.array(ph["transform"], dtype=float)[3, :3]
+        to_cam = cam - pts
+        dist = np.linalg.norm(to_cam, axis=1)
+        facing = np.einsum("ij,ij->i", nrm, to_cam) / np.maximum(dist, 1e-6)
+        ok = (depth > 0.1) & (facing > 0.2) & (uv[:, 0] >= 1) & (uv[:, 0] < w - 2) & (uv[:, 1] >= 1) & (uv[:, 1] < h - 2)
+        dm = _depth_map(d, ph)
+        if dm is not None and ok.any():
+            dh, dw = dm.shape
+            seen = dm[np.clip((uv[:, 1] * dh / h).astype(int), 0, dh - 1), np.clip((uv[:, 0] * dw / w).astype(int), 0, dw - 1)]
+            ok &= ~((seen > 0) & (depth > seen + 0.15))
+        idx = np.nonzero(ok)[0]
+        if len(idx) == 0:
+            continue
+        fu = np.minimum(uv[idx, 0], w - 1 - uv[idx, 0]) / (0.25 * w)
+        fv = np.minimum(uv[idx, 1], h - 1 - uv[idx, 1]) / (0.25 * h)
+        feather = np.clip(np.minimum(fu, fv), 0, 1)
+        wgt = (facing[idx] ** 2) * feather / np.maximum(depth[idx], 0.5) ** 2
+        col = img[uv[idx, 1].astype(int), uv[idx, 0].astype(int)].astype(np.float32)
+        obs.append((idx, col, wgt.astype(np.float32)))
+    if not obs:
+        return np.zeros((len(pts), 3), np.uint8), np.zeros(len(pts), bool)
+    top = max(float(np.percentile(w, 95)) for _, _, w in obs) or 1.0
+    obs = [(i, c, np.clip(w / top, 0, 1)) for i, c, w in obs]            # weights in 0..1, as the gain solver expects
+    gains = _gains(obs, len(pts))
+    acc = np.zeros((len(pts), 3), np.float32)
+    wt = np.zeros(len(pts), np.float32)
+    for k, (idx, col, w) in enumerate(obs):
+        w4 = w ** 3                                                      # strongly favour the best view, but still fade between views
+        acc[idx] += np.clip(col * gains[k], 0, 255) * w4[:, None]
+        wt[idx] += w4
+    seen = wt > 1e-6
+    out = np.zeros((len(pts), 3), np.float32)
+    out[seen] = acc[seen] / wt[seen, None]
+    return np.clip(out, 0, 255).astype(np.uint8), seen
+
+
+def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit: int = 60, blend: bool = False) -> tuple[np.ndarray, float]:
     """Take the colour of each surface point from the full-size photos (the one that sees it head-on, not blocked by something
-    nearer) instead of the small image the phone sampled while scanning. Points no photo sees keep their old colour."""
+    nearer) instead of the small image the phone sampled while scanning. Points no photo sees keep their old colour.
+    `blend` mixes several brightness-matched photos instead of taking only the best one."""
     mf = d / "photos.json"
     if not mf.exists():
         return rgb, 0.0
@@ -250,7 +303,10 @@ def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit:
     if not photos:
         return rgb, 0.0
     step = max(1, len(photos) // limit)
-    new, _, seen = colour_vertices(mesh, d, photos[::step], with_mask=True)
+    if blend:
+        new, seen = colour_blended(mesh, d, photos[::step])
+    else:
+        new, _, seen = colour_vertices(mesh, d, photos[::step], with_mask=True)
     out = np.where(seen[:, None], new, rgb[:, :3])
     return out, float(seen.mean())
 
