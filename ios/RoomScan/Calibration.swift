@@ -110,7 +110,7 @@ struct CalibrationView: View {
                     if kind == .wall {
                         Text("Hold the tape's zero at the **back camera lens** (the round lenses on the back, not the phone edge) and point the crosshair at the wall straight on. Wait for the green dot, read the tape, type it below. Repeat at 0.5 m, 1 m, 2 m, 3 m.")
                     } else {
-                        Text("Pin the two ends of something you can measure with a tape (a door width, a tape laid flat). Type the tape length below. This also checks how well the phone tracked while you moved.")
+                        Text("Pin the two ends of something you can measure with a tape (a door width, a tape laid flat), then tap both pins so they are selected. Type the tape length below. This also checks how well the phone tracked while you moved.")
                     }
                 }.font(.footnote)
 
@@ -118,7 +118,7 @@ struct CalibrationView: View {
                     HStack {
                         Text("App reads")
                         Spacer()
-                        Text(raw.map { String(format: "%.3f m", $0) } ?? (kind == .wall ? "point at a wall" : "needs 2 pins")).monospacedDigit()
+                        Text(raw.map { String(format: "%.3f m", $0) } ?? (kind == .wall ? "point at a wall" : "select 2 pins")).monospacedDigit()
                     }
                     if kind == .wall, raw != nil {
                         Label(model.steady ? "Steady" : "Hold still…", systemImage: "circle.fill").foregroundStyle(model.steady ? .green : .orange).font(.caption)

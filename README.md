@@ -27,17 +27,24 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    (**red = near, blue = far**, up to about 4 m).
 2. Aim the crosshair at a wall. The big number is the distance in m, cm and mm.
    - Green dot: steady, trust it. Orange: hold still. Red: too close (under 25 cm) or too far (over 5 m).
-3. **Tap anywhere** on the picture to pin that spot. The pin is drawn exactly under your finger and
-   **stays fixed on that spot in the room** while you move the phone. Add as many as you like (numbered 1, 2, 3...).
-   - Each pin shows its distance from the camera right now; dashed lines show the length of each leg.
-   - A pin that is out of view gets an **arrow at the screen edge** pointing the way to turn.
-   - With one pin the big number is pin 1 to the crosshair, live. With two or more it is the last two pins.
-4. **Pins are remembered.** The phone saves a map of the room with the pins in it when you leave the Measure tab or
-   close the app. Come back to the same room and move slowly: "Looking for your saved place…" turns green and the
-   pins reappear. The undo button removes the last pin, the bin removes all pins and forgets the saved room.
-5. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
-6. The **eye** button hides or shows the depth colours.
-7. **Pinch to zoom** (or the +/- at the top, 1× to 4×) to magnify the picture and place a pin precisely on a corner.
+3. **Tap anywhere** on the picture to pin that spot. The pin is drawn exactly under your finger and **stays fixed on that
+   spot in the room** while you move the phone. Pins are numbered and **independent**: nothing is joined unless you say so.
+   A pin out of view gets an **arrow at the screen edge** pointing the way to turn.
+4. **Choose what to measure by selecting pins.** Tap a pin to select it (it turns amber), tap it again to unselect.
+   - 1 selected: live distance from that pin to the crosshair.
+   - 2 selected: the distance between them, plus how much of it is along the floor and how much is height.
+     **Keep a line between these two** leaves a measured line drawn there for good.
+   - 3 or more: area, perimeter and the angle at each pin, in the order you picked them.
+   - Placing a new pin while one pin is selected adds it to the pick, so pin, pin gives a distance at once.
+     **Clear selection** unpicks everything but keeps the pins.
+5. **Manage pins** (the pin button, bottom row): tick pins to select, swipe a pin to **name** it ("left wall") or delete it,
+   link or unlink the two ticked pins, see all kept lines, untick all, delete all pins.
+6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links when you leave the Measure
+   tab or close the app. Come back to the same room and move slowly: "Looking for your saved place…" turns green and
+   everything reappears.
+7. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
+8. The **eye** button hides or shows the depth colours.
+9. **Pinch to zoom** (or the +/- at the top, 1× to 4×) to magnify the picture and place a pin precisely on a corner.
    Zoom is display only: the reading at the crosshair and your pins do not change.
 
 #### Calibrate it against your tape (you stay in control)
@@ -171,6 +178,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.39.0 | **Pin management**: pins are independent, tap to select, measure between any selection (distance, floor and height parts, area, perimeter, angles), keep chosen links, name and delete pins, all remembered with the room map. |
 | 0.38.1 | Pinch to zoom on the Measure screen. |
 | 0.38.0 | **Calibration** against a tape (wall and pin-to-pin checks, error before and after, correction on/off), averaged Hold with spread, depth confidence filter, unreadable-surface warning. |
 | 0.37.1 | Measure pins are drawn where you tap, stay fixed in the room, are numbered, have edge arrows, and are saved with a room map. Mark A replaced by this. |

@@ -22,16 +22,24 @@ struct Held {
     var kind: CalKind
 }
 
+private struct PinMeta: Codable {
+    var labels: [String: String] = [:]
+    var links: [PinLink] = []
+}
+
 /// Point the camera, read the LiDAR distance at the crosshair. Tap to pin spots: pins are ARKit anchors, so they stay on
 /// their spot in the room while you move, and are written to a saved room map so they come back after you leave.
+/// Pins are independent: tap a pin to select it, select the ones you want to measure, link pairs you want to keep.
 final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     let sceneView = ARSCNView()
     static let minRange = 0.25, maxRange = 5.0
-    static let mapURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("measure.worldmap")
+    private static let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static let mapURL = support.appendingPathComponent("measure.worldmap")
+    static let metaURL = support.appendingPathComponent("measure.pins.json")
 
     @Published var distance: Double?     // smoothed camera-to-target, metres
     @Published var steady = false
-    @Published var span: Double?         // last pin to the crosshair, metres
+    @Published var span: Double?         // the one selected pin to the crosshair, metres
     @Published var frozen: Held?
     @Published var holding = false
     @Published var poor = false          // depth is there but the sensor does not trust it (glass, mirror, shiny black)
@@ -39,10 +47,14 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     @Published var hasLiDAR = true
     @Published var overlay: UIImage?     // live depth, colour coded, drawn over the camera picture
     @Published var showDepth = true
-    @Published var pins: [SIMD3<Float>] = []
+    @Published var pins: [Pin] = []
+    @Published var selected: [String] = []     // pin names, in the order they were picked
+    @Published var labels: [String: String] = [:]
+    @Published var links: [PinLink] = []
     @Published var relocalizing = false
 
     var camPos = SIMD3<Float>(0, 0, 0)
+    var zoom: CGFloat = 1                // display zoom, so a tap can be matched to a pin
     private var pinAnchors: [String: ARAnchor] = [:]
     private var recent: [Double] = []
     private var lastPoint: SIMD3<Float>?
@@ -82,10 +94,16 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         if let data = try? Data(contentsOf: Self.mapURL),
            let map = try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) {
             cfg.initialWorldMap = map   // brings the saved pins back once the phone recognises the place
+            loadMeta()
+        } else {
+            // No saved room: pin numbers start again at 1, so old names and links must not attach to new pins.
+            try? FileManager.default.removeItem(at: Self.metaURL)
+            labels = [:]; links = []
         }
         live = true
         pinAnchors = [:]
         pins = []
+        selected = []
         sceneView.session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
         Screen.awake(true)
     }
@@ -107,6 +125,16 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             }
             if thenPause, self?.live == false { session.pause() }
         }
+    }
+
+    func saveMeta() {
+        if let d = try? JSONEncoder().encode(PinMeta(labels: labels, links: links)) { try? d.write(to: Self.metaURL, options: .atomic) }
+    }
+
+    private func loadMeta() {
+        guard let d = try? Data(contentsOf: Self.metaURL), let m = try? JSONDecoder().decode(PinMeta.self, from: d) else { return }
+        labels = m.labels
+        links = m.links
     }
 
     // MARK: depth
@@ -172,11 +200,12 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         let fwd = -SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)
         let point = camPos + fwd * Float(med)
         lastPoint = point
-        if let last = pins.last { span = Double(simd_length(point - last)) } else { span = nil }
+        let one = selPins.count == 1 ? selPins[0].pos : nil
+        if let one { span = Double(simd_length(point - one)) } else { span = nil }
 
         if holding {
             // Average the raw reading over the hold second: one frame is noisy, thirty are not.
-            let rawNow = pins.last.map { Double(simd_length(camPos + fwd * Float(depth) - $0)) } ?? depth
+            let rawNow = one.map { Double(simd_length(camPos + fwd * Float(depth) - $0)) } ?? depth
             holdBuf.append(rawNow)
             if Date() >= holdUntil { finishHold() }
         }
@@ -188,7 +217,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         let n = Double(holdBuf.count)
         let mean = holdBuf.reduce(0, +) / n
         let sd = (holdBuf.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / n).squareRoot()
-        let kind: CalKind = pins.isEmpty ? .wall : .span
+        let kind: CalKind = selPins.count == 1 ? .span : .wall
         let value = kind == .wall ? CalibrationStore.shared.wall(mean) : CalibrationStore.shared.leg(mean)
         frozen = Held(value: value, raw: mean, sd: sd, n: holdBuf.count, kind: kind)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -196,10 +225,16 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     // MARK: pins
 
+    private func number(_ name: String) -> Int { Int(name.dropFirst(4)) ?? 0 }
+
     private func refreshPins() {
-        let ordered = pinAnchors.sorted { (Int($0.key.dropFirst(4)) ?? 0) < (Int($1.key.dropFirst(4)) ?? 0) }
-        pins = ordered.map { SIMD3($0.value.transform.columns.3.x, $0.value.transform.columns.3.y, $0.value.transform.columns.3.z) }
+        pins = pinAnchors.sorted { number($0.key) < number($1.key) }.map {
+            Pin(name: $0.key, pos: SIMD3($0.value.transform.columns.3.x, $0.value.transform.columns.3.y, $0.value.transform.columns.3.z))
+        }
     }
+
+    func pin(_ name: String) -> Pin? { pins.first { $0.name == name } }
+    var selPins: [Pin] { selected.compactMap(pin) }
 
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { track(anchors) }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { track(anchors) }
@@ -217,7 +252,20 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         let p = g.location(in: sceneView)
         // The readout card and buttons sit at the bottom; a tap there is not a point on the wall.
         guard p.y < sceneView.bounds.height - 300 else { return }
-        addPin(at: p)
+        // A tap near an existing pin selects it (or unselects it); anywhere else pins a new spot.
+        let reach = 34 / zoom
+        let hit = pins.compactMap { pin -> (Pin, CGFloat)? in
+            let s = sceneView.projectPoint(SCNVector3(pin.pos.x, pin.pos.y, pin.pos.z))
+            guard s.z > 0 && s.z < 1 else { return nil }
+            let d = hypot(CGFloat(s.x) - p.x, CGFloat(s.y) - p.y)
+            return d < reach ? (pin, d) : nil
+        }.min { $0.1 < $1.1 }
+        if let hit { toggleSelect(hit.0.name) } else { addPin(at: p) }
+    }
+
+    func toggleSelect(_ name: String) {
+        if let i = selected.firstIndex(of: name) { selected.remove(at: i) } else { selected.append(name) }
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     /// Pin the spot under a tap. ARKit gives the ray through that screen point (so the pin is drawn exactly where it was
@@ -244,28 +292,59 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
         var m = matrix_identity_float4x4
         m.columns.3 = SIMD4(w.x, w.y, w.z, 1)
-        let next = (pinAnchors.keys.compactMap { Int($0.dropFirst(4)) }.max() ?? 0) + 1
-        sceneView.session.add(anchor: ARAnchor(name: "pin-\(next)", transform: m))
+        let next = (pinAnchors.keys.map(number).max() ?? 0) + 1
+        let name = "pin-\(next)"
+        sceneView.session.add(anchor: ARAnchor(name: name, transform: m))
+        // With one pin selected, the new one joins it so the distance shows at once; otherwise it starts a new pick.
+        if selected.count == 1 { selected.append(name) } else { selected = [name] }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
     private func fail() { UINotificationFeedbackGenerator().notificationOccurred(.error) }
 
-    func undoPin() {
-        guard let last = pinAnchors.sorted(by: { (Int($0.key.dropFirst(4)) ?? 0) < (Int($1.key.dropFirst(4)) ?? 0) }).last else { return }
-        sceneView.session.remove(anchor: last.value)
+    func deletePin(_ name: String) {
+        if let a = pinAnchors[name] { sceneView.session.remove(anchor: a) }
+        pinAnchors[name] = nil
+        labels[name] = nil
+        links.removeAll { $0.a == name || $0.b == name }
+        selected.removeAll { $0 == name }
+        refreshPins()
+        saveMeta()
+    }
+
+    func rename(_ name: String, _ label: String) {
+        let t = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        labels[name] = t.isEmpty ? nil : String(t.prefix(30))
+        saveMeta()
+    }
+
+    func isLinked(_ a: String, _ b: String) -> Bool { links.contains { ($0.a == a && $0.b == b) || ($0.a == b && $0.b == a) } }
+
+    func toggleLink() {
+        guard selected.count == 2 else { return }
+        let a = selected[0], b = selected[1]
+        if isLinked(a, b) { links.removeAll { ($0.a == a && $0.b == b) || ($0.a == b && $0.b == a) } } else { links.append(PinLink(a: a, b: b)) }
+        saveMeta()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     func clearPins() {
         for a in pinAnchors.values { sceneView.session.remove(anchor: a) }
         pinAnchors = [:]
         pins = []
+        selected = []
+        labels = [:]
+        links = []
         span = nil
         try? FileManager.default.removeItem(at: Self.mapURL)
+        try? FileManager.default.removeItem(at: Self.metaURL)
     }
 
-    /// Distance between the last two pins.
-    var pinSpan: Double? { pins.count >= 2 ? Double(simd_length(pins[pins.count - 1] - pins[pins.count - 2])) : nil }
+    /// Raw distance between the two selected pins (nil unless exactly two are selected).
+    var pinSpan: Double? {
+        let s = selPins
+        return s.count == 2 ? Double(simd_length(s[0].pos - s[1].pos)) : nil
+    }
 
     // MARK: depth picture
 
@@ -296,8 +375,11 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     // MARK: readings
 
     func freeze() {
-        if let s = pinSpan {   // two pins are fixed points: nothing to average
-            frozen = Held(value: CalibrationStore.shared.leg(s), raw: s, sd: 0, n: 1, kind: .span)
+        let s = selPins
+        if s.count >= 2 {   // fixed points: nothing to average. Two pins: the distance; more: the closed perimeter.
+            let st = SelStats(s.map(\.pos))
+            let raw = st.distance ?? st.perimeter ?? st.path
+            frozen = Held(value: CalibrationStore.shared.leg(raw), raw: raw, sd: 0, n: 1, kind: .span)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             return
         }
@@ -309,7 +391,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     func save() {
         guard let f = frozen else { return }
-        saved.insert(Measurement(kind: pins.isEmpty ? "point" : "span", metres: f.value, raw: f.raw, sd: f.sd,
+        saved.insert(Measurement(kind: f.kind == .span ? "span" : "point", metres: f.value, raw: f.raw, sd: f.sd,
                                  calibrated: abs(f.value - f.raw) > 1e-9), at: 0)
         persist()
         frozen = nil
@@ -326,6 +408,7 @@ struct MeasureView: View {
     @StateObject private var model = MeasureModel()
     @State private var showList = false
     @State private var showCal = false
+    @State private var showPins = false
     @State private var zoom: CGFloat = 1
     @ObservedObject private var cal = CalibrationStore.shared
 
@@ -346,7 +429,6 @@ struct MeasureView: View {
 
     var body: some View {
         ZStack {
-            // Everything drawn on the picture is an overlay of the camera view itself, so it shares its exact frame.
             // Zoom magnifies the picture (camera + depth colours) about the centre; the lens and the measurement are unchanged.
             // Pins are projected, then moved by the same zoom, so they stay on their spot. The crosshair stays in the centre.
             ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
@@ -383,6 +465,7 @@ struct MeasureView: View {
             .padding(.horizontal, 16).padding(.bottom, 8)
         }
         .pinchZoom($zoom, enabled: true)
+        .onChange(of: zoom) { _, z in model.zoom = z }
         .onAppear {
             model.start()
             if UserDefaults.standard.string(forKey: "measureSheet") == "cal" { showCal = true }   // CI screenshots
@@ -390,32 +473,48 @@ struct MeasureView: View {
         .onDisappear { model.stop() }
         .sheet(isPresented: $showList) { MeasurementList(model: model) }
         .sheet(isPresented: $showCal) { CalibrationView(model: model) }
+        .sheet(isPresented: $showPins) { PinsView(model: model) }
     }
 
     private var readout: some View {
-        VStack(spacing: 4) {
-            if let s = model.pinSpan {
+        let sel = model.selPins
+        return VStack(spacing: 4) {
+            if sel.count >= 3 {
+                let st = SelStats(sel.map(\.pos))
+                let f = CalibrationStore.shared.leg(1)
+                Text("\(sel.count) pins, in the order picked").font(.caption).foregroundStyle(.secondary)
+                Text(String(format: "%.3f m²", (st.area ?? 0) * f * f)).font(.system(size: 36, weight: .bold, design: .rounded)).monospacedDigit()
+                Text("perimeter " + Self.text(st.perimeter ?? 0, .span).big + "  ·  path " + Self.text(st.path, .span).big).font(.footnote).foregroundStyle(.secondary)
+                Text("angles " + st.angles.map { String(format: "%.1f°", $0) }.joined(separator: "  ")).font(.caption2).foregroundStyle(.secondary)
+            } else if sel.count == 2, let s = model.pinSpan {
                 let t = Self.text(s, .span)
-                Text("pin \(model.pins.count - 1) → pin \(model.pins.count)").font(.caption).foregroundStyle(.secondary)
+                let st = SelStats(sel.map(\.pos))
+                Text("pin \(sel[0].number) → pin \(sel[1].number)").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
-                if let c = model.span { Text("crosshair from last pin " + Self.text(c, .span).big).font(.caption2).foregroundStyle(.secondary) }
-            } else if let s = model.span {
+                Text("along the floor " + Self.text(st.horizontal ?? 0, .span).big + "  ·  height " + Self.text(st.vertical ?? 0, .span).big)
+                    .font(.caption2).foregroundStyle(.secondary)
+                Button(model.isLinked(sel[0].name, sel[1].name) ? "Unlink these two" : "Keep a line between these two") { model.toggleLink() }
+                    .font(.caption.bold())
+            } else if sel.count == 1, let s = model.span {
                 let t = Self.text(s, .span)
-                Text("pin 1 → here").font(.caption).foregroundStyle(.secondary)
+                Text("pin \(sel[0].number) → here").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
             } else if let d = model.distance {
                 let t = Self.text(d, .wall)
                 Text(t.big).font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
-                Text("Tap the picture to pin a spot").font(.caption2).foregroundStyle(.secondary)
+                Text("Tap the picture to pin a spot. Tap two pins to measure between them.").font(.caption2).foregroundStyle(.secondary)
             } else {
                 Text("—").font(.system(size: 44, weight: .bold, design: .rounded))
             }
             Label(status.0, systemImage: "circle.fill").font(.caption).foregroundStyle(status.1)
             Button { showCal = true } label: {
                 Text(cal.summary).font(.caption2).foregroundStyle(.secondary).underline()
+            }
+            if !model.selected.isEmpty {
+                Button("Clear selection (keeps the pins)") { model.selected = [] }.font(.caption2)
             }
             if model.holding { Text("Averaging for 1 s, keep still…").font(.caption).foregroundStyle(.orange) }
             if let f = model.frozen {
@@ -435,10 +534,8 @@ struct MeasureView: View {
                 .buttonStyle(CaptureButtonStyle())
             Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised").lineLimit(1) }
                 .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil || model.holding)
-            Button { model.undoPin() } label: { Image(systemName: "arrow.uturn.backward") }
-                .buttonStyle(CaptureButtonStyle()).disabled(model.pins.isEmpty)
-            Button { model.clearPins() } label: { Image(systemName: "trash") }
-                .buttonStyle(CaptureButtonStyle()).disabled(model.pins.isEmpty)
+            Button { showPins = true } label: { Label("\(model.pins.count)", systemImage: "mappin.and.ellipse").lineLimit(1) }
+                .buttonStyle(CaptureButtonStyle())
             Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet").lineLimit(1) }
                 .buttonStyle(CaptureButtonStyle())
         }
@@ -446,8 +543,8 @@ struct MeasureView: View {
     }
 }
 
-/// Pins stay on their spot in the room. In view: a numbered dot with its distance from the camera and dashed lines with the
-/// length of each leg. Out of view: an arrow at the screen edge pointing the way to turn.
+/// Pins stay on their spot in the room. In view: a numbered dot (amber when selected) with its name and distance from the
+/// camera. Kept links are solid lines with their length; the selected pair is dashed. Out of view: an arrow at the edge.
 private struct PinLayer: View {
     @ObservedObject var model: MeasureModel
     let size: CGSize
@@ -475,36 +572,54 @@ private struct PinLayer: View {
         return (CGPoint(x: c.x + dx * s, y: c.y + dy * s), Double(atan2(dy, dx)) + .pi / 2)
     }
 
+    /// Lines to draw: every kept link, plus the selected pair when exactly two are selected.
+    private func segments() -> [(a: Pin, b: Pin, dashed: Bool)] {
+        var out: [(Pin, Pin, Bool)] = []
+        let sel = model.selPins
+        for l in model.links {
+            guard let a = model.pin(l.a), let b = model.pin(l.b) else { continue }
+            if sel.count == 2 && model.isLinked(sel[0].name, sel[1].name) && Set([a.name, b.name]) == Set(sel.map(\.name)) { continue }
+            out.append((a, b, false))
+        }
+        if sel.count == 2 { out.append((sel[0], sel[1], true)) }
+        return out.map { (a: $0.0, b: $0.1, dashed: $0.2) }
+    }
+
     var body: some View {
         let _ = model.distance   // redraw every frame so pins follow the camera
-        let pts = model.pins.map(project)
+        let segs = segments()
         ZStack {
-            ForEach(0..<max(pts.count - 1, 0), id: \.self) { i in
-                let a = model.pins[i], b = model.pins[i + 1]
-                if pts[i].front && pts[i + 1].front {
-                    Path { p in p.move(to: pts[i].pt); p.addLine(to: pts[i + 1].pt) }
-                        .stroke(.white, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+            ForEach(0..<segs.count, id: \.self) { i in
+                let a = project(segs[i].a.pos), b = project(segs[i].b.pos)
+                if a.front && b.front {
+                    Path { p in p.move(to: a.pt); p.addLine(to: b.pt) }
+                        .stroke(segs[i].dashed ? Color.white : Theme.accent, style: StrokeStyle(lineWidth: 2.5, dash: segs[i].dashed ? [6, 4] : []))
                 }
-                let m = project((a + b) / 2)
+                let m = project((segs[i].a.pos + segs[i].b.pos) / 2)
                 if onScreen(m) {
-                    Text(MeasureView.text(Double(simd_length(b - a)), .span).big).font(.caption.bold())
+                    Text(MeasureView.text(Double(simd_length(segs[i].a.pos - segs[i].b.pos)), .span).big).font(.caption.bold())
                         .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
                         .position(x: m.pt.x, y: m.pt.y - 16)
                 }
             }
-            ForEach(0..<pts.count, id: \.self) { i in
-                if onScreen(pts[i]) {
+            ForEach(model.pins) { pin in
+                let q = project(pin.pos)
+                let isSel = model.selected.contains(pin.name)
+                if onScreen(q) {
                     VStack(spacing: 2) {
-                        Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
-                            .background(Theme.accent, in: Circle()).overlay(Circle().stroke(.white, lineWidth: 2))
-                        Text(MeasureView.text(Double(simd_length(model.pins[i] - model.camPos)), .wall).big).font(.caption2.bold())
-                            .padding(3).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
-                    }.position(x: pts[i].pt.x, y: pts[i].pt.y + 14)
+                        Text("\(pin.number)").font(.caption2.bold()).foregroundStyle(.white).frame(width: isSel ? 26 : 20, height: isSel ? 26 : 20)
+                            .background(isSel ? Color.orange : Theme.accent, in: Circle()).overlay(Circle().stroke(.white, lineWidth: isSel ? 3 : 2))
+                        if let l = model.labels[pin.name], !l.isEmpty {
+                            Text(l).font(.caption2.bold()).padding(.horizontal, 4).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
+                        }
+                        Text(MeasureView.text(Double(simd_length(pin.pos - model.camPos)), .wall).big).font(.caption2)
+                            .padding(3).background(.black.opacity(0.6), in: Capsule()).foregroundStyle(.white)
+                    }.position(x: q.pt.x, y: q.pt.y + 16)
                 } else {
-                    let e = edge(pts[i])
+                    let e = edge(q)
                     VStack(spacing: 0) {
-                        Image(systemName: "location.north.fill").rotationEffect(.radians(e.1)).font(.title3).foregroundStyle(Theme.accent)
-                        Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white)
+                        Image(systemName: "location.north.fill").rotationEffect(.radians(e.1)).font(.title3).foregroundStyle(isSel ? Color.orange : Theme.accent)
+                        Text("\(pin.number)").font(.caption2.bold()).foregroundStyle(.white)
                             .padding(.horizontal, 5).background(.black.opacity(0.7), in: Capsule())
                     }.position(e.0)
                 }
@@ -547,7 +662,7 @@ struct MeasurementList: View {
                 }
                 .onDelete { model.remove($0.map { model.saved[$0].id }) }
             }
-            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nTap a spot to pin it, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
+            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nTap a spot to pin it, tap two pins, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
             .navigationTitle("Measurements")
             .toolbar { Button("Done") { dismiss() } }
         }
