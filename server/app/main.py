@@ -1,7 +1,7 @@
 import contextlib
-import os
 import io
 import json
+import os
 import re
 import secrets
 import shutil
@@ -9,20 +9,22 @@ import tempfile
 import time
 import uuid
 import zipfile
-from typing import Annotated
 from pathlib import Path, PurePosixPath
+from typing import Annotated
 
 import anyio.to_thread
 import numpy as np
 import trimesh
 from anyio import from_thread
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
-from . import live as live_mod, formlimits, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
+from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -30,16 +32,18 @@ ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "p
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
              "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json"}
 PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json|model\.usdz|features\.json)$")  # derived from model.stl: stale once it changes
+MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
+SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a model uploaded by hand, kept as it came
+PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
+MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
+SCALE_MAX = 1e4   # a scale or a height outside (0, this) is a typo (or NaN, which would make meta.json unservable)
 
 
 def _clear_print_prep(d: Path, keep_colours: bool = False):
     for f in d.iterdir():
         if PRINT_FILE.match(f.name) and not (keep_colours and f.name == "colours.json"):
             f.unlink()
-MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
-SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a model uploaded by hand, kept as it came
-PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
-MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
+
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
@@ -85,20 +89,42 @@ def _meta(d: Path) -> dict:
     return json.loads((d / "meta.json").read_text())
 
 
-_sweep_log: dict[str, str] = {}
+def _save_meta(d: Path, meta: dict):
+    (d / "meta.json").write_text(json.dumps(meta, indent=1))
 
 
-def _sweep_ok(d: Path, meta: dict) -> bool:
+def _all_scans() -> list[tuple[Path, dict]]:
+    """Every scan folder with its meta. A meta.json that cannot be read (half written, hand edited) is skipped:
+    one broken scan must not take the whole list down."""
+    out = []
+    for d in DATA.glob("*") if DATA.exists() else []:
+        try:
+            m = _meta(d)
+        except (OSError, ValueError):
+            continue
+        if isinstance(m, dict):
+            out.append((d, m))
+    return out
+
+
+def _safe_filename(name: str) -> str:
+    """Names are typed by users: no path separators, quotes or control characters, which would break Content-Disposition."""
+    return re.sub(r'[\\/"\x00-\x1f]', "-", name)
+
+
+def _download_name(d: Path, suffix: str, fallback: str) -> str:
+    return _safe_filename(_meta(d).get("name") or fallback) + suffix
+
+
+def _sweep(d: Path, meta: dict) -> tuple[bool, str]:
     """Try the one-spot depth-panorama room; if it cannot be made, the ordinary room conversion runs instead."""
     try:
         ok, log = sweep_mod.convert_sweep(d, meta.get("scale", 1.0))
     except Exception as e:
         ok, log = False, f"{type(e).__name__}: {e}"
-    if ok:
-        _sweep_log[str(d)] = log
-    else:
+    if not ok:
         print(f"sweep conversion failed for {d.name}: {log}", flush=True)
-    return ok
+    return ok, log
 
 
 def _convert(d: Path) -> dict:
@@ -110,8 +136,8 @@ def _convert(d: Path) -> dict:
             ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
         elif meta.get("turntable"):  # fixed phone, spinning plate: fuse the LiDAR frames in the part's own frame
             ok, out = turntable.fuse(d, meta.get("scale", 1.0))
-        elif not (d / "footprint.json").exists() and sweep_mod.is_sweep(d, meta) and _sweep_ok(d, meta):
-            ok, out = True, _sweep_log[str(d)]
+        elif not (d / "footprint.json").exists() and sweep_mod.is_sweep(d, meta) and (sweep := _sweep(d, meta))[0]:
+            ok, out = sweep
         else:
             # a free scan with depth frames (a room, a corner): merge the depth into a clean surface; else fit one through the points
             room = not (d / "footprint.json").exists() and frame_tools.depth_frames(d) >= 5
@@ -136,7 +162,7 @@ def _convert(d: Path) -> dict:
         meta["log"] = out
         meta["converted_at"] = time.time()
         meta["settings"] = _settings(d, meta)
-        (d / "meta.json").write_text(json.dumps(meta, indent=1))
+        _save_meta(d, meta)
         return meta
     if meta.get("kind") == "object":
         scale = meta.get("scale", 1.0)
@@ -153,7 +179,7 @@ def _convert(d: Path) -> dict:
         meta["log"] = out
         meta["converted_at"] = time.time()
         meta["settings"] = _settings(d, meta)
-        (d / "meta.json").write_text(json.dumps(meta, indent=1))
+        _save_meta(d, meta)
         return meta
     try:
         script, log = convert.convert(json.loads((d / "scan.json").read_text()))
@@ -170,7 +196,7 @@ def _convert(d: Path) -> dict:
         meta["status"] = "error"
     meta["log"] = "\n".join(l for l in log if l)
     meta["converted_at"] = time.time()
-    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    _save_meta(d, meta)
     return meta
 
 
@@ -198,7 +224,7 @@ def _settings(d: Path, meta: dict) -> dict:
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
                  usdz: UploadFile | None = File(None), model: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
-                 kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), info: str = Form(""), project: str = Form(""),
+                 kind: str = Form("room"), scale: float = Form(1.0, gt=0, lt=SCALE_MAX), real_height_mm: float = Form(0.0, ge=0, lt=SCALE_MAX), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), info: str = Form(""), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None),
                  masks: list[UploadFile] = File(default=[])):
     if kind not in ("room", "object", "mesh"):
@@ -212,50 +238,48 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     model_ext = Path(model.filename or "").suffix.lower() if model is not None else ""
     if model is not None and model_ext not in objects.MESH_EXTS:
         raise HTTPException(422, f"model files are {', '.join(objects.MESH_EXTS)}")
+    project = _project_name(project, allow_empty=True)
     scan_id = uuid.uuid4().hex[:12]
     d = DATA / scan_id
-    d.mkdir(parents=True)
-    if json_file is not None:
-        with open(d / "scan.json", "wb") as f:
-            shutil.copyfileobj(json_file.file, f)
-    if usdz is not None:
-        with open(d / "scan.usdz", "wb") as f:
-            shutil.copyfileobj(usdz.file, f)
-    if model is not None:   # a ready-made model: kept as it came, so a re-convert (new scale) starts from it
-        with open(d / f"source{model_ext}", "wb") as f:
-            shutil.copyfileobj(model.file, f)
-    if mesh is not None:
-        with open(d / "scan.ply", "wb") as f:
-            shutil.copyfileobj(mesh.file, f)
-    if footprint is not None:
-        (d / "footprint.json").write_bytes(await footprint.read())
-    if masks:  # the part's outline in each photo, made on the phone
-        (d / "masks").mkdir(exist_ok=True)
-        names = []
-        for m in masks:
-            fname = Path(m.filename or "").name
-            if MASK_NAME.match(fname) and fname.endswith(".png"):
-                (d / "masks" / fname).write_bytes(await m.read())
-                names.append(fname.replace(".png", ".jpg"))
-        (d / "masks" / "phone.json").write_text(json.dumps(names))
-    photo_count = 0
-    if photos:
-        (d / "photos").mkdir()
-        for p in photos:
-            fname = Path(p.filename or "").name
-            if PHOTO_NAME.match(fname):
-                with open(d / "photos" / fname, "wb") as f:
-                    shutil.copyfileobj(p.file, f)
-                photo_count += fname.endswith(".jpg")
-        if photos_meta is not None:
-            (d / "photos.json").write_bytes(await photos_meta.read())
-    (d / "meta.json").write_text(json.dumps({"id": scan_id, "name": name, "kind": kind, "scale": scale,
-                                             "photo_count": photo_count, "project": project.strip(), "created_at": time.time(),
-                                             **({"real_height_mm": real_height_mm} if real_height_mm > 0 else {}),
-                                             **({"turntable": True} if turntable_scan else {}),
-                                             **({"ring": True} if ring_scan else {}),
-                                             **({"phone": _json_or_empty(info)} if info else {})}))
-    meta = await anyio.to_thread.run_sync(_convert, d)
+
+    def store() -> dict:   # in a worker thread: copying a big upload and converting it must not stall the websockets
+        d.mkdir(parents=True)
+        for up, target in ((json_file, "scan.json"), (usdz, "scan.usdz"), (model, f"source{model_ext}"),   # a model is kept as it came,
+                           (mesh, "scan.ply"), (footprint, "footprint.json")):                            # so a re-convert starts from it
+            if up is not None:
+                with open(d / target, "wb") as f:
+                    shutil.copyfileobj(up.file, f)
+        if masks:  # the part's outline in each photo, made on the phone
+            (d / "masks").mkdir()
+            names = []
+            for m in masks:
+                fname = Path(m.filename or "").name
+                if MASK_NAME.match(fname) and fname.endswith(".png"):
+                    with open(d / "masks" / fname, "wb") as f:
+                        shutil.copyfileobj(m.file, f)
+                    names.append(fname.replace(".png", ".jpg"))
+            (d / "masks" / "phone.json").write_text(json.dumps(names))
+        photo_count = 0
+        if photos:
+            (d / "photos").mkdir()
+            for p in photos:
+                fname = Path(p.filename or "").name
+                if PHOTO_NAME.match(fname):
+                    with open(d / "photos" / fname, "wb") as f:
+                        shutil.copyfileobj(p.file, f)
+                    photo_count += fname.endswith(".jpg")
+            if photos_meta is not None:
+                with open(d / "photos.json", "wb") as f:
+                    shutil.copyfileobj(photos_meta.file, f)
+        _save_meta(d, {"id": scan_id, "name": name.strip()[:200] or "Scan", "kind": kind, "scale": scale,
+                       "photo_count": photo_count, "project": project, "created_at": time.time(),
+                       **({"real_height_mm": real_height_mm} if real_height_mm > 0 else {}),
+                       **({"turntable": True} if turntable_scan else {}),
+                       **({"ring": True} if ring_scan else {}),
+                       **({"phone": _json_or_empty(info)} if info else {})})
+        return _convert(d)
+
+    meta = await anyio.to_thread.run_sync(store)
     hub.live = None
     await hub.broadcast({"type": "scan", "id": scan_id, "status": meta["status"]})
     await hub.broadcast({"type": "live_end"})
@@ -278,16 +302,11 @@ def get_mask(scan_id: str, name: str, overlay: bool = False, solid: bool = False
         raise HTTPException(404, "no mask")
     if not overlay:
         return FileResponse(p)
-    from io import BytesIO
-
-    import numpy as np
-    from PIL import Image
     m = np.asarray(Image.open(p).convert("L")) > 127
     rgba = np.zeros(m.shape + (4,), dtype=np.uint8)
     rgba[m] = (255, 40, 40, 255 if solid else 130)
-    buf = BytesIO()
+    buf = io.BytesIO()
     Image.fromarray(rgba).save(buf, "PNG")
-    from fastapi.responses import Response
     return Response(buf.getvalue(), media_type="image/png")
 
 
@@ -297,12 +316,8 @@ async def put_mask(scan_id: str, name: str, request: Request):
     d = _dir(scan_id)
     if not MASK_NAME.match(name) or not name.endswith(".png"):
         raise HTTPException(422, "bad mask name")
-    from io import BytesIO
-
-    import numpy as np
-    from PIL import Image
     try:
-        img = Image.open(BytesIO(await request.body()))
+        img = Image.open(io.BytesIO(await request.body()))
         arr = np.asarray(img.convert("RGBA"))
     except Exception:
         raise HTTPException(422, "not a PNG")
@@ -326,8 +341,8 @@ def detect_frame(scan_id: str, file: str):
 def rebuild(scan_id: str):
     """Fuse every frame (its depth, colour and mask) into a new point cloud and surface."""
     d = _dir(scan_id)
+    meta = _not_busy(d)
     _clear_print_prep(d)
-    meta = _meta(d)
     if meta.get("ring"):        # ring scans: the outlines (phone or corrected by hand) carve the shape
         ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
         meta["settings"] = _settings(d, meta)
@@ -336,15 +351,14 @@ def rebuild(scan_id: str):
     meta["status"] = "ok" if ok else "error"
     meta["log"] = out
     meta["converted_at"] = time.time()
-    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    _save_meta(d, meta)
     from_thread.run(hub.broadcast, {"type": "scan", "id": scan_id, "status": meta["status"]})
     return meta
 
 
 @app.get("/api/scans")
 def list_scans():
-    metas = [_meta(d) for d in DATA.glob("*") if (d / "meta.json").exists()] if DATA.exists() else []
-    return sorted(metas, key=lambda m: m["created_at"], reverse=True)
+    return sorted((m for _, m in _all_scans()), key=lambda m: m.get("created_at", 0), reverse=True)
 
 
 @app.get("/api/scans/{scan_id}")
@@ -352,16 +366,21 @@ def get_scan(scan_id: str):
     return _meta(_dir(scan_id))
 
 
-@app.post("/api/scans/{scan_id}/convert")
-def reconvert(scan_id: str, scale: float | None = None):
-    d = _dir(scan_id)
-    if _meta(d).get("status") in ("capturing", "building"):
+def _not_busy(d: Path) -> dict:
+    meta = _meta(d)
+    if meta.get("status") in ("capturing", "building"):
         raise HTTPException(409, "this scan is still being captured or built: use Build what I have, or wait")
+    return meta
+
+
+@app.post("/api/scans/{scan_id}/convert")
+def reconvert(scan_id: str, scale: Annotated[float | None, Query(gt=0, lt=SCALE_MAX)] = None):
+    d = _dir(scan_id)
+    meta = _not_busy(d)
     if scale is not None:
-        meta = _meta(d)
         meta["scale"] = scale
         meta.pop("real_height_mm", None)  # a scale typed by hand wins over the one worked out from the real height
-        (d / "meta.json").write_text(json.dumps(meta))
+        _save_meta(d, meta)
     meta = _convert(d)
     from_thread.run(hub.broadcast, {"type": "scan", "id": scan_id, "status": meta["status"]})
     return meta
@@ -384,7 +403,7 @@ async def events(ws: WebSocket):
     hub.viewers.add(ws)
     if hub.live is not None:
         await ws.send_json({"type": "live", "room": hub.live})
-    for m in list(getattr(hub, "live_maps", {}).values()):   # a guided capture in progress: its latest map
+    for m in list(hub.live_maps.values()):   # a guided capture in progress: its latest map
         await ws.send_json(m)
     try:
         while True:
@@ -409,9 +428,11 @@ async def patch_scan(scan_id: str, patch: ScanPatch):
     for k, v in patch.model_dump(exclude_none=True).items():
         if k == "tags":
             meta[k] = sorted({t.strip().lstrip("#")[:30] for t in v if t.strip()})
+        elif k == "project":
+            meta[k] = _project_name(v, allow_empty=True)
         else:
             meta[k] = v.strip() if k != "notes" else v
-    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    _save_meta(d, meta)
     await hub.broadcast({"type": "list"})
     return meta
 
@@ -444,24 +465,24 @@ def _zip_response(path: Path, filename: str) -> FileResponse:
 
 @app.get("/api/scans/{scan_id}/bundle.zip")
 def scan_bundle(scan_id: str):
-    _dir(scan_id)
-    return _zip_response(_zip_scans([scan_id]), f"{_meta(DATA / scan_id).get('name', scan_id)}.zip".replace("/", "_"))
+    return _zip_response(_zip_scans([scan_id]), _download_name(_dir(scan_id), ".zip", scan_id))
 
 
 @app.get("/api/export.zip")
 def export_all(project: str | None = None, ids: str | None = None):
-    metas = [_meta(d) for d in DATA.glob("*") if (d / "meta.json").exists()] if DATA.exists() else []
     wanted = set(ids.split(",")) if ids else None
-    ids = [m["id"] for m in metas if (project is None or m.get("project", "") == project) and (wanted is None or m["id"] in wanted)]
+    ids = [d.name for d, m in _all_scans() if (project is None or m.get("project", "") == project) and (wanted is None or d.name in wanted)]
     if not ids:
         raise HTTPException(404, "nothing to export")
-    return _zip_response(_zip_scans(ids), f"{project or 'roomscan-all'}.zip".replace("/", "_"))
+    return _zip_response(_zip_scans(ids), _safe_filename(project or "roomscan-all") + ".zip")
 
 
 @app.post("/api/import")
-async def import_zip(file: UploadFile = File(...), project: str | None = Form(None)):
-    """Restore scans from an export zip. Only known artifact names are extracted, and every scan gets a new id."""
+def import_zip(file: UploadFile = File(...), project: str | None = Form(None)):
+    """Restore scans from an export zip. Only known artifact names are extracted, and every scan gets a new id.
+    A plain def: FastAPI runs it in a worker thread, so a big zip does not stall the websockets."""
     imported = []
+    project = _project_name(project, allow_empty=True) if project is not None else None
     try:
         z = zipfile.ZipFile(file.file)
     except zipfile.BadZipFile:
@@ -475,7 +496,7 @@ async def import_zip(file: UploadFile = File(...), project: str | None = Form(No
                 continue
             rel = "/".join(parts[1:])
             known = rel in ARTIFACTS or SOURCE_FILE.match(rel) or (len(parts) == 3 and parts[1] == "photos" and PHOTO_NAME.match(parts[2])) \
-                or (len(parts) == 3 and parts[1] == "masks" and MASK_NAME.match(parts[2]))
+                or (len(parts) == 3 and parts[1] == "masks" and (MASK_NAME.match(parts[2]) or parts[2] == "phone.json"))
             if known:
                 total += info.file_size
                 groups.setdefault(parts[0], []).append((info, rel))
@@ -492,18 +513,21 @@ async def import_zip(file: UploadFile = File(...), project: str | None = Form(No
                 with z.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
             try:
-                meta = json.loads((d / "meta.json").read_text())
+                meta = _meta(d)
+                if not isinstance(meta, dict):
+                    raise ValueError("meta.json is not an object")
                 meta.update({"id": new_id, "imported_from": old_id})
+                meta.pop("share", None)   # the original's share link must not open the copy (and stay open when the original revokes it)
                 if project is not None:
-                    meta["project"] = project.strip()
-                (d / "meta.json").write_text(json.dumps(meta, indent=1))
+                    meta["project"] = project
+                _save_meta(d, meta)
             except (ValueError, OSError):
                 shutil.rmtree(d, ignore_errors=True)
                 continue
             imported.append({"id": new_id, "name": meta.get("name", new_id)})
     if not imported:
         raise HTTPException(422, "no scans found in zip")
-    await hub.broadcast({"type": "list"})
+    from_thread.run(hub.broadcast, {"type": "list"})
     return {"imported": imported}
 
 
@@ -523,12 +547,11 @@ def _save_projects(names: list[str]):
     _projects_file().write_text(json.dumps(sorted(set(names))))
 
 
-def _all_metas() -> list[dict]:
-    return [_meta(d) for d in DATA.glob("*") if (d / "meta.json").exists()] if DATA.exists() else []
-
-
-def _project_name(name: str) -> str:
+def _project_name(name: str, allow_empty: bool = False) -> str:
+    """Every way a scan gets a project goes through here: a '/' would make /api/projects/{name} unreachable."""
     name = name.strip()
+    if allow_empty and not name:
+        return ""
     if not name or "/" in name or len(name) > 200:
         raise HTTPException(422, "project name must be 1-200 characters and contain no '/'")
     return name
@@ -542,7 +565,7 @@ class ProjectBody(BaseModel):
 def list_projects():
     """A project is a home: a named group of rooms and objects. Empty projects exist until deleted."""
     counts: dict[str, int] = {}
-    for m in _all_metas():
+    for _, m in _all_scans():
         if m.get("project"):
             counts[m["project"]] = counts.get(m["project"], 0) + 1
     names = set(_stored_projects()) | set(counts)
@@ -560,12 +583,11 @@ async def create_project(body: ProjectBody):
 @app.patch("/api/projects/{name}")
 async def rename_project(name: str, body: ProjectBody):
     new = _project_name(body.name)
-    for m in _all_metas():
+    for d, m in _all_scans():
         if m.get("project") == name:
             m["project"] = new
-            (DATA / m["id"] / "meta.json").write_text(json.dumps(m, indent=1))
-    _save_projects([new if n == name else n for n in _stored_projects()] + [new])
-    _save_projects([n for n in _stored_projects() if n != name])
+            _save_meta(d, m)
+    _save_projects([n for n in _stored_projects() if n != name] + [new])
     await hub.broadcast({"type": "list"})
     return {"name": new}
 
@@ -574,14 +596,14 @@ async def rename_project(name: str, body: ProjectBody):
 async def delete_project(name: str, delete_scans: bool = False):
     """Removes the project. Its rooms are kept (moved to 'no project') unless delete_scans is set."""
     removed = 0
-    for m in _all_metas():
+    for d, m in _all_scans():
         if m.get("project") == name:
             if delete_scans:
-                shutil.rmtree(DATA / m["id"])
+                shutil.rmtree(d)
                 removed += 1
             else:
                 m["project"] = ""
-                (DATA / m["id"] / "meta.json").write_text(json.dumps(m, indent=1))
+                _save_meta(d, m)
     _save_projects([n for n in _stored_projects() if n != name])
     await hub.broadcast({"type": "list"})
     return {"deleted": name, "scans_deleted": removed}
@@ -690,6 +712,11 @@ class PreviewRequest(BaseModel):
     connector: PlaneConnector = PlaneConnector()
 
 
+def _mesh_json(m: trimesh.Trimesh) -> dict:
+    """A mesh for three.js: flat vertex (mm, 2 decimals) and face lists."""
+    return {"vertices": np.round(m.vertices, 2).ravel().tolist(), "faces": m.faces.ravel().tolist()}
+
+
 def _thin(m: trimesh.Trimesh, max_faces: int) -> trimesh.Trimesh:
     if len(m.faces) <= max_faces:
         return m
@@ -731,10 +758,7 @@ def cut_plane(scan_id: str, req: PlaneCutRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
     out = _store_cut(d, parts, pins, log)
-    out["views"] = []
-    for side, m in views:
-        t = _thin(m, 15000)
-        out["views"].append({"side": side, "vertices": np.round(t.vertices, 2).ravel().tolist(), "faces": t.faces.ravel().tolist()})
+    out["views"] = [{"side": side, **_mesh_json(_thin(m, 15000))} for side, m in views]
     return out
 
 
@@ -758,17 +782,11 @@ def autofit(scan_id: str, req: AutoFit = AutoFit()):
     return out
 
 
-def _view_mesh(d: Path, max_faces: int) -> trimesh.Trimesh:
-    """model.stl for the browser: very dense meshes are thinned."""
-    return _thin(_model(d), max_faces)
-
-
 @app.get("/api/scans/{scan_id}/print/mesh.json")
-def print_mesh(scan_id: str, max_faces: int = 60000):
-    """model.stl as vertices and faces (mm, Z up) for the cut view."""
-    m = _view_mesh(_dir(scan_id), max_faces)
-    return {"vertices": np.round(m.vertices, 2).ravel().tolist(), "faces": m.faces.ravel().tolist(),
-            "size_mm": [round(float(x), 1) for x in m.extents], "origin_mm": [round(float(x), 2) for x in m.bounds[0]]}
+def print_mesh(scan_id: str, max_faces: Annotated[int, Query(ge=1000, le=1_000_000)] = 60000):
+    """model.stl as vertices and faces (mm, Z up) for the cut view; very dense meshes are thinned."""
+    m = _thin(_model(_dir(scan_id)), max_faces)
+    return {**_mesh_json(m), "size_mm": [round(float(x), 1) for x in m.extents], "origin_mm": [round(float(x), 2) for x in m.bounds[0]]}
 
 
 @app.post("/api/scans/{scan_id}/fit")
@@ -787,21 +805,20 @@ def fit_check(scan_id: str, reference: UploadFile | None = File(None), against: 
             ref = loaded if isinstance(loaded, trimesh.Trimesh) else trimesh.util.concatenate(list(loaded.geometry.values()))
         if not len(ref.faces):
             raise ValueError("no surface in the file")
-        scan = _view_mesh(d, 40000)
+        scan = _thin(_model(d), 40000)
         res = fit_mod.compare(scan, ref)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(400, f"could not compare: {type(e).__name__}: {e}")
-    res.update(vertices=np.round(scan.vertices, 2).ravel().tolist(), faces=scan.faces.ravel().tolist())
+    res.update(_mesh_json(scan))
     return res
 
 
 @app.get("/api/scans/{scan_id}/section.svg")
 def section(scan_id: str, axis: str = "z", at: float = 1.0):
     """Cross-section outline of model.stl at a plane (mm from the low end along the axis)."""
-    from fastapi.responses import Response
-    if axis not in "xyz" or len(axis) != 1:
+    if axis not in ("x", "y", "z"):
         raise HTTPException(400, "axis must be x, y or z")
     m = _model(_dir(scan_id))
     lo, hi = m.bounds[:, "xyz".index(axis)]
@@ -860,8 +877,7 @@ def panorama_jpg(scan_id: str, width: int = 3072, download: bool = False):
     """The room as one 360 degree picture (equirectangular JPEG), stitched from the scan's photos with their poses."""
     _panorama(scan_id, width)
     d = _dir(scan_id)
-    name = f"{_meta(d).get('name', scan_id)} panorama.jpg".replace("/", "-")
-    return FileResponse(d / "panorama.jpg", media_type="image/jpeg", filename=name if download else None)
+    return FileResponse(d / "panorama.jpg", media_type="image/jpeg", filename=_download_name(d, " panorama.jpg", scan_id) if download else None)
 
 
 @app.get("/api/scans/{scan_id}/model.usdz")
@@ -874,7 +890,7 @@ def model_usdz(scan_id: str):
             usdzout.make_usdz(d, out)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
-    return FileResponse(out, media_type="model/vnd.usdz+zip", filename=f"{_meta(d).get('name', scan_id)}.usdz".replace("/", "-"))
+    return FileResponse(out, media_type="model/vnd.usdz+zip", filename=_download_name(d, ".usdz", scan_id))
 
 
 @app.get("/api/scans/{scan_id}/model_colour.3mf")
@@ -890,13 +906,10 @@ def model_colour_3mf(scan_id: str, k: int = 4):
 
 def _shared(token: str) -> Path:
     """The scan folder a share link points to. Only scans that were shared and not revoked."""
-    if DATA.exists() and re.fullmatch(r"[A-Za-z0-9_-]{8,40}", token):
-        for d in DATA.glob("*"):
-            try:
-                if (d / "meta.json").exists() and _meta(d).get("share") == token:
-                    return d
-            except Exception:
-                continue
+    if re.fullmatch(r"[A-Za-z0-9_-]{8,40}", token):
+        for d, m in _all_scans():
+            if m.get("share") == token:
+                return d
     raise HTTPException(404, "this link is not shared (any more)")
 
 
@@ -909,7 +922,7 @@ def share_on(scan_id: str, request: Request):
         raise HTTPException(400, "only scans with a printable model can be shared")
     meta = _meta(d)
     meta.setdefault("share", secrets.token_urlsafe(9))
-    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    _save_meta(d, meta)
     return {"token": meta["share"], "path": f"/s/{meta['share']}", "url": str(request.base_url).rstrip("/") + f"/s/{meta['share']}"}
 
 
@@ -918,24 +931,24 @@ def share_off(scan_id: str):
     d = _dir(scan_id)
     meta = _meta(d)
     meta.pop("share", None)
-    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    _save_meta(d, meta)
     return {"shared": False}
 
 
 @app.get("/s/{token}")
 def share_page(token: str):
     _shared(token)
-    return FileResponse(Path(__file__).parent / "static" / "share.html", media_type="text/html")
+    return FileResponse(STATIC / "share.html", media_type="text/html")
 
 
 @app.get("/s/{token}/mesh.json")
 def share_mesh(token: str):
     d = _shared(token)
-    m = _view_mesh(d, 60000)
-    out = {"name": _meta(d).get("name", ""), "vertices": np.round(m.vertices, 2).ravel().tolist(), "faces": m.faces.ravel().tolist(),
-           "size_mm": [round(float(x), 1) for x in m.extents]}
+    full = _model(d)
+    m = _thin(full, 60000)
+    out = {"name": _meta(d).get("name", ""), **_mesh_json(m), "size_mm": [round(float(x), 1) for x in m.extents]}
     ply = d / "colored.ply"
-    if ply.exists() and len(m.faces) == len(_model(d).faces):          # colours only when the mesh was not thinned
+    if ply.exists() and m is full:          # colours only when the mesh was not thinned
         rgb = printprep.vertex_rgb_for(m, ply)
         if rgb is not None:
             out["colors"] = np.round(rgb / 255.0, 3).ravel().tolist()
@@ -945,7 +958,7 @@ def share_mesh(token: str):
 @app.get("/s/{token}/model.stl")
 def share_stl(token: str):
     d = _shared(token)
-    return FileResponse(d / "model.stl", media_type="model/stl", filename=f"{_meta(d).get('name', 'model')}.stl".replace("/", "-"))
+    return FileResponse(d / "model.stl", media_type="model/stl", filename=_download_name(d, ".stl", "model"))
 
 
 @app.get("/api/scans/{scan_id}/features")
@@ -962,7 +975,7 @@ def scan_features(scan_id: str):
 def scan_quality(scan_id: str):
     """Score, coverage gaps and tips for a ring scan (cached as quality.json)."""
     d = _dir(scan_id)
-    if not (d / "photos.json").exists() or not json.loads((d / "meta.json").read_text()).get("ring"):
+    if not (d / "photos.json").exists() or not _meta(d).get("ring"):
         raise HTTPException(404, "the quality report is for ring scans")
     return quality.cached(d)
 
@@ -980,11 +993,7 @@ def photo(scan_id: str, name: str, up: bool = False):
             x_up, y_up = meta["transform"][0][1], meta["transform"][1][1]   # world height of the camera's right and up axes
             angle = (90 if x_up > 0 else -90) if abs(x_up) > abs(y_up) else (180 if y_up < 0 else 0)
             if angle:
-                from io import BytesIO
-
-                from fastapi.responses import Response
-                from PIL import Image
-                buf = BytesIO()
+                buf = io.BytesIO()
                 Image.open(p).rotate(angle, expand=True).save(buf, "JPEG", quality=88)
                 return Response(buf.getvalue(), media_type="image/jpeg")
     return FileResponse(p)
@@ -996,9 +1005,6 @@ def download(scan_id: str, file: str):
     if not (file in ARTIFACTS or PRINT_FILE.match(file)) or not p.exists():
         raise HTTPException(404, "file not found")
     return FileResponse(p, filename=file)
-
-
-STATIC.mkdir(exist_ok=True)
 
 
 # ---- printed ring: what the user measured, and a photo check of it
@@ -1017,7 +1023,6 @@ def ring_info():
 async def ring_calibrate(marker_mm: float = Form(0.0), centre_distance_mm: float = Form(0.0), save: bool = Form(True),
                          photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None)):
     """Photos of the printed ring (with LiDAR depth) plus the caliper readings. Saved for ring scans only if the photos check out."""
-    import tempfile
     if photos_meta is None or not photos:
         raise HTTPException(422, "send photos and photos_meta")
     with tempfile.TemporaryDirectory() as tmp:
