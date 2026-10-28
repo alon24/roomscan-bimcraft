@@ -111,6 +111,17 @@
     <h1 id="title"></h1>
     <div>Status: <b id="status"></b><span class="hint" id="appInfo"></span></div>
     <div class="row" id="actions"></div>
+    <!-- live guided capture (docs/live-guide.md): the map the phone is being sent, watched from here -->
+    <div id="livePanel" hidden style="margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:8px">
+      <div class="row" style="align-items:center;gap:10px"><b id="liveTitle">Live capture</b><span class="hint" id="livePct"></span>
+        <button class="btn" id="liveBuild" hidden>Build what I have</button></div>
+      <div class="hint" id="liveSummary" style="margin:4px 0">Waiting for the phone…</div>
+      <div class="row" style="gap:14px;align-items:flex-start">
+        <div><canvas id="liveGrid" width="10" height="10" style="border:1px solid var(--line);border-radius:6px;background:#2b2f33;max-width:100%"></canvas>
+          <div class="hint" style="font-size:11px">top = where the phone first pointed · <span style="color:#3fae6a">■</span> good <span style="color:#e0a030">■</span> thin <span style="color:#8fb8d8">■</span> floor looked across · ● the phone</div></div>
+        <ol id="liveNeeds" style="margin:0 0 0 18px;padding:0;flex:1;min-width:200px"></ol>
+      </div>
+    </div>
     <div class="row" id="modes" hidden></div>
     <div class="grid">
       <div>
@@ -461,6 +472,7 @@ async function show(id) {
   $("status").textContent = meta.status; $("status").className = meta.status;
   $("appInfo").textContent = meta.phone?.app ? `  ·  phone app ${meta.phone.app}${meta.phone["scan type"] ? "  ·  " + meta.phone["scan type"] : ""}` : "  ·  phone app: not reported (older app)";
   $("log").textContent = meta.log || "";
+  liveShow(meta);
   { // what this model was made with: the phone's settings and the server's
     const lines = [], add = (title, o) => { if (o && Object.keys(o).length) { lines.push(title); for (const [k, v] of Object.entries(o)) lines.push(`  ${k.replaceAll("_", " ")}: ${typeof v === "object" ? JSON.stringify(v) : v}`); } };
     add("Server", { "server version": $("verTop").textContent || undefined, scanned: new Date(meta.created_at * 1000).toLocaleString(), type: meta.kind, ...(meta.settings || {}) });
@@ -1777,6 +1789,51 @@ function show3d(group, keepView = false) {
   loop();
 }
 
+// ---- live guided capture: watch the map the server sends to the phone (docs/live-guide.md)
+const LIVE_COL = ["#2b2f33", "#e0a030", "#3fae6a", "#8fb8d8"];   // unseen, thin, good, free floor
+let liveLast = null;
+
+function liveShow(meta) {
+  const capturing = meta.status === "capturing", building = meta.status === "building";
+  $("livePanel").hidden = !(capturing || building);
+  $("liveBuild").hidden = !capturing;
+  $("liveTitle").textContent = building ? "Building the model from the frames…" : "Live capture";
+  if (!(capturing || building)) { liveLast = null; return; }
+  if (liveLast && liveLast.id === meta.id) liveDraw(liveLast);
+  else { $("liveSummary").textContent = building ? "The server is making the model." : `${meta.photo_count || 0} frames so far. Waiting for the phone…`; $("liveNeeds").replaceChildren(); $("livePct").textContent = ""; }
+  $("liveBuild").onclick = async () => {
+    $("liveBuild").disabled = true;
+    const r = await fetch(`/api/scans/${meta.id}/finish`, { method: "POST" });
+    if (!r.ok) { $("liveSummary").textContent = "Could not build: " + ((await r.json().catch(() => ({}))).detail || r.status); $("liveBuild").disabled = false; return; }
+    $("liveSummary").textContent = "Building…"; loadList(); setTimeout(() => show(meta.id), 1500);
+  };
+}
+
+function liveDraw(m) {
+  const g = m.map.grid, cv = $("liveGrid"), px = Math.max(2, Math.min(7, Math.floor(420 / Math.max(g.w, g.h))));
+  cv.width = g.w * px; cv.height = g.h * px;
+  const c = cv.getContext("2d"), bytes = Uint8Array.from(atob(g.data), ch => ch.charCodeAt(0));
+  for (let z = 0; z < g.h; z++) for (let x = 0; x < g.w; x++) { c.fillStyle = LIVE_COL[bytes[z * g.w + x]] || LIVE_COL[0]; c.fillRect(x * px, z * px, px, px); }
+  const at = (wx, wz) => [Math.max(0, Math.min(g.w, (wx - g.x0) / g.cell)) * px, Math.max(0, Math.min(g.h, (wz - g.z0) / g.cell)) * px];
+  m.map.needs.forEach((n, i) => {
+    const [x, y] = at(n.target[0], n.target[2]);
+    c.fillStyle = "#e8484a"; c.beginPath(); c.arc(x, y, 8, 0, 7); c.fill();
+    c.fillStyle = "#fff"; c.font = "bold 11px sans-serif"; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText(String(i + 1), x, y + 0.5);
+  });
+  if (m.map.you) { const [x, y] = at(m.map.you[0], m.map.you[2]); c.fillStyle = "#fff"; c.strokeStyle = "#000"; c.lineWidth = 2; c.beginPath(); c.arc(x, y, 6, 0, 7); c.fill(); c.stroke(); }
+  $("livePct").textContent = `${m.map.percent}% covered`;
+  $("liveSummary").textContent = m.map.summary;
+  $("liveNeeds").replaceChildren(...m.map.needs.map(n => Object.assign(document.createElement("li"), { textContent: n.text })));
+}
+
+function liveMap(m) {
+  liveLast = m;
+  if (!current) { show(m.id); return; }           // nothing open: jump to the capture that is running
+  if (m.id === current) { $("livePanel").hidden = false; liveDraw(m); }
+}
+
+function liveEnd(id) { if (liveLast && liveLast.id === id) liveLast = null; }
+
 // ---- live updates: new scans appear by themselves; a scan in progress is drawn as it grows
 let live = false;
 
@@ -1833,6 +1890,10 @@ function connect() {
       loadList();
     } else if (m.type === "issue") {
       loadIssues();
+    } else if (m.type === "live_map") {
+      liveMap(m);
+    } else if (m.type === "live_end_map") {
+      liveEnd(m.id);
     } else if (m.type === "live_end") {
       live = false;
     } else if (m.type === "scan") {

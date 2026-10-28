@@ -72,3 +72,25 @@ Frames are written to a temp folder first and sent in order; if the socket drops
 
 ## Verification on Linux
 `tools/live_replay.py` streams an existing scan's frames over the WebSocket (for example the 28-frame sweep `6eb3b7f85b31`). Tests assert: acks arrive; a mid-stream disconnect + resume loses or duplicates nothing; `finish` gives the same model as the batch path for the same frames. Live maps are also pushed to the web page through `/ws/events`, so a replay can be watched in Chrome.
+
+
+## Changes
+
+### 2026-10-29 Offline first, and how the server settled the details
+**Offline is the default-safe path.** The phone captures with no network exactly as before (frames on the phone, the batch `POST /api/scans` later). Live is an optional extra: capture never waits for it.
+
+- A live scan that loses the connection **continues on the phone**. Frames the server has not acknowledged are sent after a reconnect (`hello.resume_after`).
+- If the phone stops while offline, the missing frames complete the live scan with **`POST /api/scans/{id}/frames`** (multipart: `photos` = the jpg and `.depth` files, `photos_meta` = the photos.json manifest). The server matches by `timestamp`, skips frames it already stored, names the new ones itself, does **not** start a build, and answers `{added, skipped, total}`. Only for a scan whose status is `capturing` (else 409). Then finish with `POST /api/scans/{id}/finish` (answers `{status:"building"}`).
+- **Patching offline: `POST /api/scans/{id}/add`** (multipart, the same fields as the batch upload: `photos`, `photos_meta`, optional `info`). The frames are stored as session N, registered to the old scan with the same code the live patch mode uses, rewritten into the old frame, and the scan is rebuilt. Answer: `{aligned, rms_mm, message, added, skipped, status?}`. If the frames cannot be matched (`aligned:false`) nothing in `photos.json` changes and the old model stays; the frames are kept in `sessions.json`.
+
+**What the implementation does where the doc was open**
+- `POST /api/live` is shared with the old RoomPlan push (a partial CapturedRoom, never stored). The server tells them apart by the body: `kind` = `"room"` or `"sweep"` starts a capture, anything else is the old behaviour.
+- `hello` is answered with `ack` (the cumulative number the server holds, 0 at the start), `state` (`capturing` or `building`) and, once there is something to show, a `map`. So after `hello` read the ack before counting acks for frames.
+- Extra server -> phone message: `{type:"error", message}` for a malformed frame or an unknown message; the socket stays open. A frame after `finish` is refused with an `error`.
+- `aligned` is sent each time a registration attempt finishes (every 6 new frames until it succeeds). `ok:false` messages carry the advice in plain words (film an area you already scanned; or, when the room looks the same from two directions, film something distinctive).
+- Before `aligned`, a patch session's frames are held in `sessions.json` only; `photos.json` never contains a transform in the wrong frame. Maps before alignment cover the new session alone and carry a first need `{id:"align", kind:"gap", priority:3}`.
+- Need ids look like `gap-3`. A need keeps its id and place (target, stand, look) until it is satisfied: gone from the candidates for 3 updates in a row.
+- `cancel` keeps the scan as a draft: `meta.status` stays `capturing` (with `live.json.cancelled`), so the list shows it and "Build what I have" works.
+- `meta.status` values for a live scan: `capturing` -> `building` -> `ok` | `error`. A patch session sets the old scan to `capturing` and puts the old status back if nothing new could be added.
+- Browser viewers get `{type:"live_map", id, name, map}` on `/ws/events` (and the latest one when a page opens), then `{type:"live_end_map", id}`.
+- Auto-finish: a capture with no socket and no news for 10 minutes (`LIVE_IDLE_S` seconds) is built by the server.
