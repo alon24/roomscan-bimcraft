@@ -49,3 +49,6 @@ PORT=8010 ./deploy.sh      # prints "Server vX build N"
 - The user can delete scans from another browser while you work. If the scan list shrinks, check `docker compose logs server | grep DELETE` before assuming a bug.
 - Verify UI changes in a real browser (Claude in Chrome), click at the real positions in a screenshot, and close the tab afterwards.
 - Real scans are the only test of guessed JSON key names: save the first real one into `server/tests/fixtures/`.
+- The server image is also built in CI (`server-image.yml`, amd64 + arm64 on native runners, pushed to ghcr). Another computer runs `docker compose -f docker-compose.prebuilt.yml pull && up -d`; `deploy.sh` is only for building from source.
+- Verify in Chrome by calling the page: set a file input with a `DataTransfer` and dispatch `change`; `read_page`/JS output that contains a query string comes back as `[BLOCKED]`, so use screenshots for that.
+- A background wait on `gh run list -L1` picks whichever run is newest at that moment: after a push, `sleep 15` first or it watches the previous build.
