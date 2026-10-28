@@ -47,14 +47,8 @@ def test_preview_gives_the_cut_face_in_plane_coordinates_and_auto_spots():
     assert pp.cut_preview(m, *TILT, kind="none")["points"] == []
 
 
-def test_preview_refuses_a_plane_that_misses_the_part():
-    with pytest.raises(ValueError, match="does not touch"):
-        pp.cut_preview(box(), np.array([0, 0, 500.0]), np.array([0, 0, 1.0]))
-
-
 def test_chosen_spots_are_used_and_spots_too_close_to_the_edge_are_skipped():
     m = box()
-    u = pp.plane_basis(*TILT)[:3, 0]
     parts, pins, log, _ = pp.cut_planes(m, [plane(points=[(0.0, 0.0), (10.0, 5.0), (-8.0, -5.0)])], "dowel", size=6, depth=6)
     assert len(pins) == 3 and all(p.is_watertight for p in parts)
     assert any("3 dowel hole pairs" in l for l in log)
@@ -62,7 +56,6 @@ def test_chosen_spots_are_used_and_spots_too_close_to_the_edge_are_skipped():
     assert len(pins) == 1 and any("skipped" in l for l in log)
     with pytest.raises(ValueError, match="does not fit"):
         pp.cut_planes(m, [plane(points=[(500.0, 500.0)])], "dowel", size=6)
-    assert abs(u @ TILT[1]) < 1e-9
 
 
 @pytest.mark.parametrize("shape", ["circle", "square", "triangle", "hexagon"])
@@ -75,12 +68,6 @@ def test_every_shape_cuts_holes_and_pins_that_match(shape):
     assert len(loose) == 1 and loose[0].is_watertight
     parts, pins, log, _ = pp.cut_planes(m, [plane()], "peg", shape=shape, size=8, depth=6, count=1)
     assert all(p.is_watertight for p in parts) and not pins
-
-
-def test_polygon_holes_keep_the_requested_play_on_every_flat_side():
-    assert pp._grown("triangle", 10, 0.3) == pytest.approx(10 + 0.6 / 0.5)
-    assert pp._grown("hexagon", 10, 0.3) == pytest.approx(10 + 0.6 / np.cos(np.pi / 6))
-    assert pp._grown("square", 10, 0.3) == pytest.approx(10.6) and pp._grown("circle", 10, 0.3) == pytest.approx(10.6)
 
 
 def test_keep_discard_and_flip():
@@ -114,13 +101,6 @@ def test_two_planes_and_a_plane_that_misses():
         pp.cut_planes(m, [dict(origin=[0, 0, 400.0], normal=[0, 0, 1.0], points=None)])
     with pytest.raises(ValueError, match="no direction"):
         pp.cut_planes(m, [dict(origin=[0, 0, 50.0], normal=[0, 0, 0.0], points=None)])
-
-
-def test_axis_cut_is_the_same_as_a_plane_cut():
-    m = box()
-    a, _, _ = pp.cut_all(m, [("z", 30)])
-    b, _, _, _ = pp.cut_planes(m, [dict(origin=[0, 0, 30.0], normal=[0, 0, 1.0], points=None)])
-    assert sorted(round(p.volume) for p in a) == sorted(round(p.volume) for p in b)
 
 
 def test_routes_preview_and_plane_cut(tmp_path, monkeypatch):

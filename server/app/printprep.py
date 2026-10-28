@@ -4,6 +4,7 @@ import io
 import json
 import math
 import os
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -30,8 +31,8 @@ def suggest_cut(size_mm: list[float], bed: list[float] = BED_MM) -> dict | None:
     over = [s / b for s, b in zip(size_mm, bed)]
     if max(over) <= 1:
         return None
-    axis = "xyz"[int(np.argmax(over))]
-    return {"axis": axis, "at": round(size_mm["xyz".index(axis)] / 2, 1), "bed_mm": bed}
+    i = int(np.argmax(over))
+    return {"axis": "xyz"[i], "at": round(size_mm[i] / 2, 1), "bed_mm": bed}
 
 
 def _bounds(mesh: trimesh.Trimesh, axis: str) -> tuple[float, float]:
@@ -156,7 +157,6 @@ def usable_points(polys, wanted, size: float) -> list[tuple[float, float]]:
 
 def _shape_mesh(shape: str, size: float, height: float) -> trimesh.Trimesh:
     """A bar `height` long along z. size = width (round, square) or the circle through the corners (triangle, hexagon)."""
-    shape = "circle" if shape == "round" else shape
     if shape == "square":
         return trimesh.creation.box(extents=(size, size, height))
     sections = {"circle": 48, "triangle": 3, "hexagon": 6}[shape]
@@ -274,11 +274,12 @@ def cut_planes(mesh: trimesh.Trimesh, planes: list[dict], kind: str = "none", sh
     if kind != "none" and not (keep_upper and keep_lower):
         kind = "none"
         log.append("a part is discarded, so there is nothing to join")
+    mesh = mesh.copy()
     if kind != "none" and not mesh.is_watertight:
         trimesh.repair.fill_holes(mesh)
         if not mesh.is_watertight:
             raise ValueError("the model has holes, so connectors cannot be added: cut with 'none' or rebuild the model")
-    pieces = [Piece(mesh.copy())]
+    pieces = [Piece(mesh)]
     for pl in planes:
         o, n = np.asarray(pl["origin"], dtype=float), _unit(pl["normal"])
         label = pl.get("label") or "the cut plane"
@@ -366,12 +367,11 @@ def cut_preview(mesh: trimesh.Trimesh, origin, normal, kind: str = "dowel", shap
 def pin_meshes(pins: list) -> list[trimesh.Trimesh]:
     """Loose dowel pins, lying on their side (printed along their length they are strongest)."""
     out = []
-    for pin in pins:
-        d, length = pin[0], pin[1]
-        m = _shape_mesh(pin[2] if len(pin) > 2 else "circle", d - 0.1, length)
+    for size, length, shape in pins:
+        m = _shape_mesh(shape, size - 0.1, length)
         m.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
-        lo = m.bounds[0]
-        m.apply_translation([-m.bounds.mean(axis=0)[0], -m.bounds.mean(axis=0)[1], -lo[2]])
+        lo, hi = m.bounds
+        m.apply_translation([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
         out.append(m)
     return out
 
@@ -382,7 +382,7 @@ def lay_out(parts: list[trimesh.Trimesh], extra: list[trimesh.Trimesh] = ()) -> 
     for n, m in enumerate(list(parts) + list(extra), 1):
         m = m.copy()
         w = m.extents[0]
-        m.apply_translation([x + w / 2, 0, 0])
+        m.apply_translation([x - m.bounds[0][0], 0, 0])
         scene.add_geometry(m, node_name=f"part{n}" if n <= len(parts) else f"pin{n - len(parts)}",
                            geom_name=f"part{n}" if n <= len(parts) else f"pin{n - len(parts)}")
         x += w + GAP_MM
@@ -443,30 +443,22 @@ def tolerance_test(size: float = 6.0, depth: float = 8.0, steps=CLEARANCE_STEPS)
             if cut is not None:
                 bar = cut
     bar.apply_translation([-length / 2, 0, 0])
-    return lay_out([bar], pin_meshes([(size, 2 * depth - 1.0)] * 2))
+    return lay_out([bar], pin_meshes([(size, 2 * depth - 1.0, "circle")] * 2))
 
 
 def section_svg(mesh: trimesh.Trimesh, axis: str, at_mm: float) -> str:
     """Outline of the cross-section at `axis = at_mm` as an SVG (mm), the cut face seen from the high side."""
-    i = AXES[axis]
-    lo, hi = _bounds(mesh, axis)
-    origin = np.zeros(3); origin[i] = lo + at_mm
-    normal = np.zeros(3); normal[i] = 1
-    sec = mesh.section(plane_origin=origin, plane_normal=normal)
-    if sec is None:
+    polys, _ = section_polygons(mesh, *axis_plane(mesh, axis, at_mm))
+    if not polys:
         raise ValueError("the plane does not touch the part")
-    planar, to3d = sec.to_planar()
-    b = planar.bounds
+    b = np.array([p.bounds for p in polys])
+    x0, y0, x1, y1 = b[:, 0].min(), b[:, 1].min(), b[:, 2].max(), b[:, 3].max()
     pad = 4
-    w, h = (b[1] - b[0]) + 2 * pad
-    paths = []
-    for poly in planar.polygons_full:
-        d = "M" + " L".join(f"{x - b[0][0] + pad:.2f},{b[1][1] - y + pad:.2f}" for x, y in poly.exterior.coords) + " Z"
-        for ring in poly.interiors:
-            d += " M" + " L".join(f"{x - b[0][0] + pad:.2f},{b[1][1] - y + pad:.2f}" for x, y in ring.coords) + " Z"
-        paths.append(d)
+    w, h = x1 - x0 + 2 * pad, y1 - y0 + 2 * pad
+    ring = lambda r: "M" + " L".join(f"{x - x0 + pad:.2f},{y1 - y + pad:.2f}" for x, y in r.coords) + " Z"
+    d = " ".join(" ".join(ring(r) for r in (p.exterior, *p.interiors)) for p in polys)
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.1f}mm" height="{h:.1f}mm" viewBox="0 0 {w:.2f} {h:.2f}">'
-            f'<path d="{" ".join(paths)}" fill="#c9a46c" fill-opacity=".5" fill-rule="evenodd" stroke="#333" stroke-width=".4"/></svg>')
+            f'<path d="{d}" fill="#c9a46c" fill-opacity=".5" fill-rule="evenodd" stroke="#333" stroke-width=".4"/></svg>')
 
 
 def _nearest(rgb: np.ndarray) -> str:
@@ -560,7 +552,6 @@ def vertex_rgb_for(mesh_mm: trimesh.Trimesh, ply: Path) -> np.ndarray | None:
 def colour_3mf(scan_dir: Path, k: int = 4) -> tuple[bytes, list[dict]]:
     """model.stl as one 3MF whose every triangle carries one of the suggested filaments (3MF basematerials, per triangle).
     Slicers differ in how much of this they read: PrusaSlicer/Orca show the colours and let you map each to a filament slot."""
-    import zipfile
     stl, ply = scan_dir / "model.stl", scan_dir / "colored.ply"
     if not stl.exists() or not ply.exists():
         raise ValueError("this scan has no colours to print with")
@@ -583,8 +574,7 @@ def colour_3mf(scan_dir: Path, k: int = 4) -> tuple[bytes, list[dict]]:
              f'<basematerials id="1">{bases}</basematerials>'
              f'<object id="2" type="model" pid="1" pindex="0"><mesh><vertices>{verts}</vertices><triangles>{tris}</triangles></mesh></object>'
              '</resources><build><item objectid="2"/></build></model>')
-    import io as _io
-    buf = _io.BytesIO()
+    buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'

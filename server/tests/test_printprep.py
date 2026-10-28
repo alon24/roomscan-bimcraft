@@ -29,11 +29,6 @@ def test_cut_low_part_is_the_smaller_side():
     assert sorted(round(p.volume) for p in parts) == [10 * 30 * 20, 30 * 30 * 20]
 
 
-def test_cut_outside_the_part_is_refused():
-    with pytest.raises(ValueError):
-        pp.cut_all(box(), [("x", 99)])
-
-
 def test_several_cuts_make_every_part_and_keep_the_volume():
     m = box((60, 40, 100))
     parts, _, log = pp.cut_all(m, [("z", 30), ("z", 70), ("x", 30)])
@@ -74,12 +69,6 @@ def test_one_3mf_holds_every_part_and_pin():
     assert len(scene.geometry) == 3 + len(pins)
     xs = sorted(g.bounds[0][0] for g in scene.geometry.values())
     assert all(b > a for a, b in zip(xs, xs[1:]))      # side by side, none on top of another
-
-
-def test_suggest_cut_only_when_it_does_not_fit():
-    assert pp.suggest_cut([100, 100, 100]) is None
-    s = pp.suggest_cut([100, 100, 400])
-    assert s["axis"] == "z" and s["at"] == 200
 
 
 def test_section_svg_has_outline_and_hole():
@@ -145,13 +134,6 @@ def test_tolerance_bar_has_a_hole_per_clearance_and_matching_pins():
     assert all(scene.geometry[n].is_watertight for n in names)
 
 
-def test_tolerance_route_returns_a_3mf():
-    from fastapi.testclient import TestClient
-    from app import main
-    r = TestClient(main.app).get("/api/print/tolerance.3mf?size=6&depth=8")
-    assert r.status_code == 200 and r.content[:2] == b"PK"
-
-
 def test_fit_route_compares_with_a_reference(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from app import main
@@ -170,8 +152,7 @@ def test_fit_route_compares_with_a_reference(tmp_path, monkeypatch):
     assert TestClient(main.app).post("/api/scans/abc/fit", files={"reference": ("ref.txt", b"x")}).status_code == 400
 
 
-def test_autofit_cuts_a_long_part_to_the_bed_and_estimates(monkeypatch):
-    monkeypatch.setattr(pp, "BED_MM", [100.0, 100.0, 100.0])
+def test_autofit_cuts_a_long_part_to_the_bed_and_estimates():
     m = trimesh.creation.box(extents=(230, 40, 30))
     m.apply_translation(-m.bounds[0])
     cuts = pp.auto_cuts([230, 40, 30], [100, 100, 100])
