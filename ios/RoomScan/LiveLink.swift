@@ -97,9 +97,9 @@ final class LiveLink: NSObject, ObservableObject {
 
     private func connect() {
         guard active, let id = scanID else { return }
-        var comps = URLComponents(string: server)
-        comps?.scheme = (comps?.scheme == "https") ? "wss" : "ws"
-        guard let base = comps?.url else { return }
+        guard var comps = URLComponents(string: server) else { return }
+        comps.scheme = comps.scheme == "https" ? "wss" : "ws"
+        guard let base = comps.url else { return }
         let t = session.webSocketTask(with: base.appendingPathComponent("ws/live/\(id)"))
         task = t
         t.resume()
