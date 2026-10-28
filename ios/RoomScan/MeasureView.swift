@@ -52,6 +52,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     @Published var labels: [String: String] = [:]
     @Published var links: [PinLink] = []
     @Published var relocalizing = false
+    @Published var actionPin: String?          // the pin whose action menu is open
 
     var camPos = SIMD3<Float>(0, 0, 0)
     var zoom: CGFloat = 1                // display zoom, so a tap can be matched to a pin
@@ -260,7 +261,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             let d = hypot(CGFloat(s.x) - p.x, CGFloat(s.y) - p.y)
             return d < reach ? (pin, d) : nil
         }.min { $0.1 < $1.1 }
-        if let hit { toggleSelect(hit.0.name) } else { addPin(at: p) }
+        if let hit { actionPin = hit.0.name; UISelectionFeedbackGenerator().selectionChanged() } else { addPin(at: p) }
     }
 
     func toggleSelect(_ name: String) {
@@ -289,15 +290,42 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             world = SIMD3(c.x, c.y, c.z)
         }
         guard let w = world else { fail(); return }
+        place(w)
+    }
 
+    private func anchor(_ name: String, at w: SIMD3<Float>) -> ARAnchor {
         var m = matrix_identity_float4x4
         m.columns.3 = SIMD4(w.x, w.y, w.z, 1)
+        return ARAnchor(name: name, transform: m)
+    }
+
+    private func place(_ w: SIMD3<Float>) {
         let next = (pinAnchors.keys.map(number).max() ?? 0) + 1
         let name = "pin-\(next)"
-        sceneView.session.add(anchor: ARAnchor(name: name, transform: m))
+        sceneView.session.add(anchor: anchor(name, at: w))
         // With one pin selected, the new one joins it so the distance shows at once; otherwise it starts a new pick.
         if selected.count == 1 { selected.append(name) } else { selected = [name] }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    /// Aim the crosshair, then pin exactly there (no finger covering the spot).
+    func pinAtCrosshair() {
+        guard let p = lastPoint, let d = distance, d >= Self.minRange, d <= Self.maxRange else { fail(); return }
+        place(p)
+    }
+
+    /// Re-place an existing pin where the crosshair points now. Its number, name and links stay.
+    func moveToCrosshair(_ name: String) {
+        guard let p = lastPoint, let d = distance, d >= Self.minRange, d <= Self.maxRange else { fail(); return }
+        if let a = pinAnchors[name] { sceneView.session.remove(anchor: a) }
+        sceneView.session.add(anchor: anchor(name, at: p))
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    func link(_ a: String, _ b: String) {
+        guard a != b, !isLinked(a, b) else { return }
+        links.append(PinLink(a: a, b: b))
+        saveMeta()
     }
 
     private func fail() { UINotificationFeedbackGenerator().notificationOccurred(.error) }
@@ -409,6 +437,8 @@ struct MeasureView: View {
     @State private var showList = false
     @State private var showCal = false
     @State private var showPins = false
+    @State private var renaming: String?
+    @State private var newName = ""
     @State private var zoom: CGFloat = 1
     @ObservedObject private var cal = CalibrationStore.shared
 
@@ -416,6 +446,11 @@ struct MeasureView: View {
     static func text(_ raw: Double, _ kind: CalKind = .none) -> (big: String, small: String) {
         let m = kind == .wall ? CalibrationStore.shared.wall(raw) : kind == .span ? CalibrationStore.shared.leg(raw) : raw
         return (String(format: "%.3f m", m), String(format: "%.1f cm  ·  %.0f mm", m * 100, m * 1000))
+    }
+
+    private var pinTitle: String {
+        guard let n = model.actionPin, let p = model.pin(n) else { return "Pin" }
+        return "Pin \(p.number)" + (model.labels[n].map { $0.isEmpty ? "" : " · " + $0 } ?? "")
     }
 
     private var status: (String, Color) {
@@ -474,6 +509,27 @@ struct MeasureView: View {
         .sheet(isPresented: $showList) { MeasurementList(model: model) }
         .sheet(isPresented: $showCal) { CalibrationView(model: model) }
         .sheet(isPresented: $showPins) { PinsView(model: model) }
+        .confirmationDialog(pinTitle, isPresented: Binding(get: { model.actionPin != nil }, set: { if !$0 { model.actionPin = nil } }), titleVisibility: .visible) {
+            if let n = model.actionPin {
+                Button(model.selected.contains(n) ? "Unselect" : "Select to measure") { model.toggleSelect(n) }
+                Button("Measure from here to the crosshair") { model.selected = [n] }
+                if model.selected.count == 1, model.selected[0] != n {
+                    Button(model.isLinked(n, model.selected[0]) ? "Remove the line to the selected pin" : "Keep a line to the selected pin") {
+                        let other = model.selected[0]
+                        if model.isLinked(n, other) { model.links.removeAll { ($0.a == n && $0.b == other) || ($0.a == other && $0.b == n) }; model.saveMeta() }
+                        else { model.link(n, other) }
+                    }
+                }
+                Button("Name…") { renaming = n; newName = model.labels[n] ?? "" }
+                Button("Move to the crosshair") { model.moveToCrosshair(n) }
+                Button("Delete", role: .destructive) { model.deletePin(n) }
+            }
+        }
+        .alert("Name this pin", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("e.g. left wall, window top", text: $newName)
+            Button("Save") { if let r = renaming { model.rename(r, newName) }; renaming = nil }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
     }
 
     private var readout: some View {
@@ -534,6 +590,8 @@ struct MeasureView: View {
                 .buttonStyle(CaptureButtonStyle())
             Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised").lineLimit(1) }
                 .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil || model.holding)
+            Button { model.pinAtCrosshair() } label: { Image(systemName: "plus.viewfinder") }
+                .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil)
             Button { showPins = true } label: { Label("\(model.pins.count)", systemImage: "mappin.and.ellipse").lineLimit(1) }
                 .buttonStyle(CaptureButtonStyle())
             Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet").lineLimit(1) }
@@ -606,15 +664,21 @@ private struct PinLayer: View {
                 let q = project(pin.pos)
                 let isSel = model.selected.contains(pin.name)
                 if onScreen(q) {
+                    // The bullseye's centre is the pinned point itself; the text hangs below it so it never shifts the marker.
+                    let colour = isSel ? Color.orange : Theme.accent
+                    ZStack {
+                        Circle().stroke(.white, lineWidth: 3).frame(width: 32, height: 32)
+                        Circle().stroke(colour, lineWidth: 3).frame(width: 20, height: 20)
+                        Circle().fill(colour).frame(width: 7, height: 7)
+                    }
+                    .shadow(color: .black.opacity(0.6), radius: 2)
+                    .position(x: q.pt.x, y: q.pt.y)
                     VStack(spacing: 2) {
-                        Text("\(pin.number)").font(.caption2.bold()).foregroundStyle(.white).frame(width: isSel ? 26 : 20, height: isSel ? 26 : 20)
-                            .background(isSel ? Color.orange : Theme.accent, in: Circle()).overlay(Circle().stroke(.white, lineWidth: isSel ? 3 : 2))
-                        if let l = model.labels[pin.name], !l.isEmpty {
-                            Text(l).font(.caption2.bold()).padding(.horizontal, 4).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
-                        }
+                        Text("\(pin.number)" + (model.labels[pin.name].map { $0.isEmpty ? "" : " · " + $0 } ?? "")).font(.caption2.bold())
+                            .padding(.horizontal, 6).padding(.vertical, 1).background(colour, in: Capsule()).foregroundStyle(.white)
                         Text(MeasureView.text(Double(simd_length(pin.pos - model.camPos)), .wall).big).font(.caption2)
-                            .padding(3).background(.black.opacity(0.6), in: Capsule()).foregroundStyle(.white)
-                    }.position(x: q.pt.x, y: q.pt.y + 16)
+                            .padding(.horizontal, 4).background(.black.opacity(0.6), in: Capsule()).foregroundStyle(.white)
+                    }.position(x: q.pt.x, y: q.pt.y + 40)
                 } else {
                     let e = edge(q)
                     VStack(spacing: 0) {

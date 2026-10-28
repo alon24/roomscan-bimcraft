@@ -37,6 +37,9 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    - 3 or more: area, perimeter and the angle at each pin, in the order you picked them.
    - Placing a new pin while one pin is selected adds it to the pick, so pin, pin gives a distance at once.
      **Clear selection** unpicks everything but keeps the pins.
+   **Tap a bullseye** (a pin) to open its menu: select, measure from it to the crosshair, keep a line to the selected pin,
+   name it, **move it to the crosshair**, or delete it. The bullseye's centre is exactly the pinned point.
+   The **+ viewfinder button** pins at the crosshair itself: aim first, then press, with no finger in the way.
 5. **Manage pins** (the pin button, bottom row): tick pins to select, swipe a pin to **name** it ("left wall") or delete it,
    link or unlink the two ticked pins, see all kept lines, untick all, delete all pins.
 6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links when you leave the Measure
@@ -178,6 +181,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.39.1 | Bullseye centred exactly on the pinned point, tap it for a menu (select, name, move to crosshair, link, delete), pin-at-crosshair button. |
 | 0.39.0 | **Pin management**: pins are independent, tap to select, measure between any selection (distance, floor and height parts, area, perimeter, angles), keep chosen links, name and delete pins, all remembered with the room map. |
 | 0.38.1 | Pinch to zoom on the Measure screen. |
 | 0.38.0 | **Calibration** against a tape (wall and pin-to-pin checks, error before and after, correction on/off), averaged Hold with spread, depth confidence filter, unreadable-surface warning. |
