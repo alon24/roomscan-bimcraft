@@ -21,9 +21,9 @@ extension View {
 
 /// The scan buttons: Start / Stop / Upload as large capsules; destructive ones (Reset, New scan) in red, greyed out when disabled.
 struct CaptureButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { Body(configuration: configuration) }
+    func makeBody(configuration: Configuration) -> some View { CaptureButtonLabel(configuration: configuration) }
 
-    struct Body: View {
+    struct CaptureButtonLabel: View {
         let configuration: ButtonStyleConfiguration
         @Environment(\.isEnabled) private var enabled
 
