@@ -471,7 +471,7 @@ struct GuidedPanel: View {
                     Button("Re-aim") { tracker.reaim() }
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(CaptureButtonStyle())
         }
     }
 }

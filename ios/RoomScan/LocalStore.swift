@@ -200,7 +200,8 @@ struct SavedScansSection: View {
             }
             ForEach(store.items) { s in
                 NavigationLink { SavedScanDetail(scan: s, store: store) } label: {
-                    HStack {
+                    HStack(spacing: 12) {
+                        Image(systemName: kindIcon(s.kind, ring: s.ringScan)).font(.title3).foregroundStyle(Theme.accent).frame(width: 28)
                         VStack(alignment: .leading) {
                             Text(s.name)
                             Text("\(s.kindLabel) · \(s.photos.filter { $0.hasSuffix(".jpg") }.count) photos · \(ByteCountFormatter.string(fromByteCount: LocalStore.bytes(s), countStyle: .file))")

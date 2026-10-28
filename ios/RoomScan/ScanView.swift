@@ -324,7 +324,7 @@ struct ScanView: View {
                     Text("3D model").tag(1)
                 }
                 .pickerStyle(.segmented)
-                Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                HelpCard(text: guide)
                 if mode == 0 { ZoomControl(zoom: $zoom) }
                 Spacer()
                 if mode == 1 {
@@ -354,7 +354,7 @@ struct ScanView: View {
                         Button("Save") { model.saveOnPhone() }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(CaptureButtonStyle())
             }
             .padding()
         }

@@ -46,7 +46,9 @@ enum Uploader {
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["id"] as? String
+        let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        Notifier.scanDone(name: name, status: reply?["status"] as? String ?? "ok")
+        return reply?["id"] as? String
     }
 
     /// Fire-and-forget partial scan for the live web view. Failures are ignored: the final upload is what counts.

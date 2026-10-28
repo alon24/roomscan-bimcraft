@@ -393,7 +393,7 @@ struct ObjectScanView: View {
                         Button("Save") { model.saveOnPhone() }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(CaptureButtonStyle())
             }
             .padding()
         }

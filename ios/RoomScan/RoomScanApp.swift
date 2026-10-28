@@ -18,6 +18,7 @@ struct RoomScanApp: App {
         bar.configureWithOpaqueBackground()
         UITabBar.appearance().standardAppearance = bar
         UITabBar.appearance().scrollEdgeAppearance = bar
+        Notifier.setUp()
     }
 
     var body: some Scene {
@@ -29,6 +30,7 @@ struct RoomScanApp: App {
                     ModelsView().tabItem { Label("Models", systemImage: "cube.box") }
                 }
                 .toolbarBackground(.visible, for: .tabBar)
+                .tint(Theme.accent)
                 .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gear") } }
                 .task { Reporter.log("app launched"); await Reporter.flush(); await Self.syncRing() }
                 .overlay(alignment: .bottom) { UploadProgressLine().padding(.bottom, 56).allowsHitTesting(false) }

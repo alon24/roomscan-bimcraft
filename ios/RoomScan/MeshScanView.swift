@@ -646,7 +646,7 @@ struct MeshScanView: View {
                     }
                 }
                 if !model.guidedActive {
-                    Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    HelpCard(text: guide)
                 }
                 if model.scanning && !model.guidedActive {
                     VStack(spacing: 2) {
@@ -676,7 +676,7 @@ struct MeshScanView: View {
                         Button("New scan", role: .destructive) { mode = 0; model.discard(); model.guided.mode = fixedMode ?? initialMode }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(CaptureButtonStyle())
                 Button("Report a problem") { Reporter.report(tab: "mesh", message: "Manual report", detail: model.status) }
                     .font(.caption)
             }

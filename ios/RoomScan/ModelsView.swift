@@ -60,9 +60,12 @@ struct ModelsView: View {
                 NavigationLink {
                     ModelDetailView(scan: s)
                 } label: {
-                    VStack(alignment: .leading) {
-                        Text(s.name)
-                        Text("\(s.kind) · \(s.status)").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Image(systemName: kindIcon(s.kind)).font(.title3).foregroundStyle(Theme.accent).frame(width: 28)
+                        VStack(alignment: .leading) {
+                            Text(s.name)
+                            Text("\(s.kind) · \(s.status)").font(.caption).foregroundStyle(s.status == "ok" ? Color.secondary : Color.red)
+                        }
                     }
                 }
                 .swipeActions { Button("Delete", role: .destructive) { Task { await model.delete(s, server: serverURL) } } }
