@@ -228,3 +228,14 @@ def test_manual_upload_of_a_ready_made_model(client):
     assert re["status"] == "ok" and client.get(f"/api/scans/{sid}/print").json()["size_mm"] == [60.0, 40.0, 20.0]
     assert client.post("/api/scans", data={"kind": "object"}, files={"model": ("x.txt", io.BytesIO(b"hi"))}).status_code == 422
     assert client.post("/api/scans", data={"kind": "object"}, files={"model": ("bad.stl", io.BytesIO(b"nope"))}).json()["status"] == "error"
+
+
+def test_tags_are_cleaned_and_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATA", tmp_path)
+    d = tmp_path / "t1"
+    d.mkdir()
+    (d / "meta.json").write_text('{"id":"t1","name":"x","created_at":1,"status":"ok"}')
+    c = TestClient(main.app)
+    r = c.patch("/api/scans/t1", json={"tags": ["#Gear ", "gear", "", "bracket"]})
+    assert r.json()["tags"] == ["Gear", "bracket", "gear"]
+    assert c.get("/api/scans").json()[0]["tags"] == ["Gear", "bracket", "gear"]

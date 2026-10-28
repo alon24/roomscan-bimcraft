@@ -365,6 +365,7 @@ class ScanPatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     project: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=5000)
+    tags: list[str] | None = Field(None, max_length=12)
 
 
 @app.patch("/api/scans/{scan_id}")
@@ -372,7 +373,10 @@ async def patch_scan(scan_id: str, patch: ScanPatch):
     d = _dir(scan_id)
     meta = _meta(d)
     for k, v in patch.model_dump(exclude_none=True).items():
-        meta[k] = v.strip() if k != "notes" else v
+        if k == "tags":
+            meta[k] = sorted({t.strip().lstrip("#")[:30] for t in v if t.strip()})
+        else:
+            meta[k] = v.strip() if k != "notes" else v
     (d / "meta.json").write_text(json.dumps(meta, indent=1))
     await hub.broadcast({"type": "list"})
     return meta

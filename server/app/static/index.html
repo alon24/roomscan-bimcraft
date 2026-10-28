@@ -102,6 +102,13 @@
             <button class="btn" id="clearMeasure">Clear</button>
           </span>
         </div>
+        <div id="qualityBox" hidden style="margin:6px 0 14px;padding:10px;border:1px solid var(--line);border-radius:8px">
+          <div class="row" style="align-items:center;gap:12px">
+            <div id="qScore" style="font-size:2rem;font-weight:700;min-width:3.2em;text-align:center;border-radius:10px;padding:6px 10px"></div>
+            <div style="flex:1;min-width:200px"><b>Scan quality</b> <span class="hint" id="qSummary"></span><ul id="qTips" style="margin:6px 0 0 18px;padding:0"></ul></div>
+            <svg id="qPolar" width="170" height="170" viewBox="-85 -85 170 170" role="img" aria-label="Where the phone was round the part"></svg>
+          </div>
+        </div>
         <div id="printBar" hidden style="margin:6px 0 14px;padding:10px;border:1px solid var(--line);border-radius:8px">
           <b>Cut into parts</b>
           <p class="hint" style="margin:4px 0 8px">Pick an axis, move the slider (or click the model) until the blue plane sits where you want the cut, then <b>Add cut</b>. Add as many as you like, then <b>Make parts</b>: every part goes into one 3MF.</p>
@@ -131,6 +138,13 @@
             <button class="btn" id="colourBtn" title="Filament colours that match the scan">Colour suggestions</button>
           </div>
           <div class="hint" id="cutHint"></div>
+          <div class="row" style="align-items:center;margin:4px 0">
+            <a class="btn" id="tolBtn" href="#" title="A small bar with holes of 0.1 to 0.5 mm play and two pins. Print it, see which hole the pin fits, and type that play above.">Tolerance test print (3MF)</a>
+            <span class="hint">holes of 0.1 to 0.5 mm play, 1 to 5 notches</span>
+            <label class="btn" style="cursor:pointer">Compare with a reference…<input id="fitFile" type="file" accept=".stl,.3mf,.obj,.ply,.glb,.off" hidden></label>
+          </div>
+          <div class="hint" id="fitHint"></div>
+          <div id="fitOut" class="row" style="align-items:flex-start;gap:12px"></div>
           <div class="row" style="align-items:flex-start;gap:12px">
             <div id="cutView" style="flex:2;min-width:240px;height:340px;border:1px solid var(--line);border-radius:6px;position:relative"></div>
             <div id="cutOut" style="flex:1;min-width:140px"></div>
@@ -246,7 +260,7 @@ async function loadList() {
   const [scans, projects] = await Promise.all([api("/api/scans"), api("/api/projects")]);
   $("projList").replaceChildren(...projects.map(p => Object.assign(document.createElement("option"), { value: p.name })));
   const q = $("search").value.trim().toLowerCase();
-  const visible = scans.filter(s => !q || s.name.toLowerCase().includes(q));
+  const visible = scans.filter(s => !q || [s.name, s.project, (s.tags || []).join(" "), s.kind].join(" ").toLowerCase().includes(q));
   SEL.all = visible;
   for (const id of [...SEL.ids]) if (!scans.some(x => x.id === id)) SEL.ids.delete(id);   // deleted elsewhere
   selCount();
@@ -297,7 +311,7 @@ async function loadList() {
       };
       b.textContent = (s.kind === "object" ? "◆ " : s.kind === "mesh" ? "◉ " : "▢ ") + s.name;
       const small = document.createElement("small");
-      small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?");
+      small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?") + (s.tags?.length ? " · #" + s.tags.join(" #") : "");
       b.append(small);
       b.onclick = () => { if (SEL.ids.size) cb.click(); else show(s.id); };   // while anything is ticked a tap ticks; otherwise it opens
       li.append(cb, b); ul.append(li);
@@ -394,6 +408,10 @@ async function show(id) {
     const v = await ask("Rename", [{ key: "name", label: "Name", value: meta.name }]);
     if (v?.name) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
   });
+  mk("Tags…", async () => {
+    const v = await ask("Tags", [{ key: "tags", label: "Tags, separated by commas (search finds them)", value: (meta.tags || []).join(", ") }], "Save");
+    if (v) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify({ tags: v.tags.split(",").map(t => t.trim().replace(/^#/, "")).filter(Boolean) }) }); show(id); loadList(); }
+  });
   mk("Move to home…", async () => {
     const v = await ask("Move to home", [{ key: "project", label: "Home (empty = none)", value: meta.project ?? "", list: true }], "Move");
     if (v) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
@@ -405,6 +423,7 @@ async function show(id) {
     }
   }, "danger");
   loadList();
+  setupQuality(id, meta);
   if (isMesh) {
     const poses = await loadPhotos(meta);
     if (meta.status === "ok") {
@@ -895,6 +914,73 @@ async function cutViewer(id) {
   draw();
 }
 
+async function setupQuality(id, meta) {
+  const box = $("qualityBox");
+  box.hidden = true;
+  if (!meta.ring) return;
+  const r = await fetch(`/api/scans/${id}/quality`);
+  if (!r.ok || current !== id) return;
+  const q = await r.json();
+  const col = q.grade === "good" ? "#2e9d57" : q.grade === "fair" ? "#d98a00" : "#d64545";
+  $("qScore").textContent = q.score; $("qScore").style.cssText += `;background:${col};color:#fff`;
+  $("qSummary").textContent = `${q.usable} of ${q.frames} frames used` + (q.speed ? ` · tray ${q.speed.median}°/s (steady is 5 to 20)` : "") + (q.distance_mm ? ` · camera ${Math.round(q.distance_mm.median / 10)} cm away` : "");
+  $("qTips").replaceChildren(...q.tips.map(t => Object.assign(document.createElement("li"), { textContent: t })));
+  // top view: angle round the ring, distance from the centre = how high the phone was (centre = straight above, rim = level)
+  const svg = $("qPolar"), NS = "http://www.w3.org/2000/svg", mk = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  svg.replaceChildren(mk("circle", { r: 78, fill: "none", stroke: "#8888", "stroke-width": 1 }), mk("circle", { r: 78 * (1 - 25 / 90), fill: "none", stroke: "#8884", "stroke-dasharray": "3 3" }),
+                      mk("circle", { r: 78 * (1 - 55 / 90), fill: "none", stroke: "#8884", "stroke-dasharray": "3 3" }));
+  for (const g of q.gaps) {   // empty sectors
+    const a0 = g[0] * Math.PI / 180, a1 = g[1] * Math.PI / 180, p = a => `${78 * Math.cos(a)},${-78 * Math.sin(a)}`;
+    svg.append(mk("path", { d: `M0,0 L${p(a0)} A78,78 0 ${g[1] - g[0] > 180 ? 1 : 0} 0 ${p(a1)} Z`, fill: "#d6454533" }));
+  }
+  for (const [az, el] of q.points) { const r = 78 * (1 - el / 90), a = az * Math.PI / 180; svg.append(mk("circle", { cx: r * Math.cos(a), cy: -r * Math.sin(a), r: 2.2, fill: col })); }
+  box.hidden = false;
+}
+
+const heat = (d, lim, signed) => {   // blue = inside the reference, red = outside, white = on it
+  const t = Math.max(-1, Math.min(1, d / lim));
+  if (!signed) return [1, 1 - Math.abs(t), 1 - Math.abs(t)];
+  return t >= 0 ? [1, 1 - t, 1 - t] : [1 + t, 1 + t, 1];
+};
+
+async function fitCheck(id, file) {
+  const out = $("fitOut"), hint = $("fitHint");
+  out.replaceChildren(); hint.textContent = "Lining the reference up and measuring (about 10 seconds)…";
+  const f = new FormData(); f.append("reference", file);
+  const r = await fetch(`/api/scans/${id}/fit`, { method: "POST", body: f });
+  if (current !== id) return;
+  if (!r.ok) { hint.textContent = "Could not compare: " + ((await r.json().catch(() => ({}))).detail || r.status); return; }
+  const m = await r.json();
+  const lim = Math.max(0.5, m.p95_mm);
+  hint.textContent = "";
+  const holder = document.createElement("div"); holder.style.cssText = "flex:2;min-width:240px;height:320px;border:1px solid var(--line);border-radius:6px";
+  const side = document.createElement("div"); side.style.cssText = "flex:1;min-width:160px";
+  side.innerHTML = `<b>${m.rms_mm} mm</b> typical difference (RMS)<br>95% of the scan is within <b>${m.p95_mm} mm</b>, worst <b>${m.max_mm} mm</b>` +
+    (m.signed ? `<br>${m.signed_mean_mm > 0.05 ? "The scan is <b>fatter</b> than the reference by " + m.signed_mean_mm + " mm on average" : m.signed_mean_mm < -0.05 ? "The scan is <b>thinner</b> than the reference by " + (-m.signed_mean_mm) + " mm on average" : "No average fatter/thinner trend"}` : "") +
+    (m.volume_ratio ? `<br>Volume: ${Math.round(m.volume_ratio * 100)}% of the reference` : "") +
+    `<div class="hint" style="margin-top:6px">Colours: ${m.signed ? "red = scan outside the reference, blue = inside, white = on it" : "white = on it, red = off it"}; full colour at ${lim.toFixed(2)} mm.</div>`;
+  out.append(holder, side);
+  const W = holder.clientWidth || 400, H = 320;
+  const rend = new THREE.WebGLRenderer({ antialias: true }); rend.setSize(W, H); holder.append(rend.domElement);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.8));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(m.vertices, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(m.deviation_mm.flatMap(d => heat(d, lim, m.signed)), 3));
+  g.setIndex(m.faces); g.computeVertexNormals();
+  const model = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide })); scene.add(model);
+  const box = new THREE.Box3().setFromObject(model), c = box.getCenter(new THREE.Vector3()), R = box.getSize(new THREE.Vector3()).length();
+  const cam = new THREE.PerspectiveCamera(45, W / H, R / 100, R * 20); cam.up.set(0, 0, 1);
+  let az = -0.8, el = 0.5, dist = R * 1.4, drag = null;
+  const draw = () => { cam.position.set(c.x + dist * Math.cos(el) * Math.sin(az), c.y - dist * Math.cos(el) * Math.cos(az), c.z + dist * Math.sin(el)); cam.lookAt(c); rend.render(scene, cam); };
+  const e = rend.domElement;
+  e.onpointerdown = ev => { drag = [ev.clientX, ev.clientY]; e.setPointerCapture(ev.pointerId); };
+  e.onpointermove = ev => { if (!drag) return; az -= (ev.clientX - drag[0]) * 0.01; el = Math.max(-1.5, Math.min(1.5, el + (ev.clientY - drag[1]) * 0.01)); drag = [ev.clientX, ev.clientY]; draw(); };
+  e.onpointerup = () => { drag = null; };
+  e.onwheel = ev => { ev.preventDefault(); dist = Math.max(R * 0.3, Math.min(R * 4, dist * (1 + Math.sign(ev.deltaY) * 0.1))); draw(); };
+  draw();
+}
+
 async function setupPrint(id) {
   const bar = $("printBar");
   bar.hidden = true;
@@ -905,6 +991,11 @@ async function setupPrint(id) {
   const info = await r.json();
   Object.assign(PRINT, { id, size: info.size_mm });
   bar.hidden = false;                      // the viewer needs a visible box to measure
+  $("fitOut").replaceChildren(); $("fitHint").textContent = "";
+  $("fitFile").value = ""; $("fitFile").onchange = () => { const f = $("fitFile").files[0]; if (f) fitCheck(id, f); };
+  $("tolBtn").onclick = e => { e.preventDefault(); location.href = `/api/print/tolerance.3mf?size=${+$("connD").value || 6}&depth=${+$("connDepth").value || 8}`; };
+  try { const v = localStorage.getItem("connClr"); if (v) $("connClr").value = v; } catch {}
+  $("connClr").onchange = () => { try { localStorage.setItem("connClr", $("connClr").value); } catch {} };
   const sug = info.suggested_cut;
   const axisI = () => AXIS_I[$("cutAxis").value];
   const here = () => ({ axis: $("cutAxis").value, at: +$("cutAt").value });
