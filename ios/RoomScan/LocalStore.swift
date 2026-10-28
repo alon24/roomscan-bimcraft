@@ -1,4 +1,5 @@
 import SwiftUI
+import SceneKit
 
 /// Everything one scan uploads, so it can be sent now or kept on the phone and sent later.
 struct ScanPackage {
@@ -235,9 +236,20 @@ struct SavedScanDetail: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var zipURL: URL?
+    @State private var preview: SCNScene?
+    @State private var previewNote = "Building the preview…"
 
     var body: some View {
         Form {
+            Section {
+                if let preview {
+                    OrbitSceneView(scene: preview).frame(height: 360).listRowInsets(EdgeInsets())
+                    Text("What the phone captured: one finger turns, pinch zooms, two fingers move. Upload makes the finished model.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text(previewNote)
+                }
+            }
             Section("Name") {
                 TextField("Name", text: $name).onSubmit { LocalStore.rename(scan, to: name) }
                 Button("Save the name") { LocalStore.rename(scan, to: name) }.disabled(name == scan.name || name.isEmpty)
@@ -264,5 +276,11 @@ struct SavedScanDetail: View {
         }
         .navigationTitle(scan.name)
         .onAppear { name = scan.name }
+        .task {
+            let id = scan
+            let built = await Task.detached(priority: .userInitiated) { SavedPreview.scene(for: id) }.value
+            preview = built
+            if built == nil { previewNote = "No 3D preview for this scan: it has no model file, only photos and depth. Upload it to see the server's model." }
+        }
     }
 }
