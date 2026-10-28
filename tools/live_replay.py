@@ -58,7 +58,8 @@ class Link:
 
     def open(self):
         from websockets.sync.client import connect
-        self.ws = connect(self.url, max_size=None)
+        self._cm = connect(self.url, max_size=None)
+        self.ws = self._cm.__enter__()
         self.ws.send(json.dumps({"type": "hello", "resume_after": self.acked, "app": "live_replay"}))
 
     def drop(self):

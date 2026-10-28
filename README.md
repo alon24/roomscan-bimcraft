@@ -82,6 +82,34 @@ Room tab, **From one spot**. You don't walk round the room: stand in the middle,
 - The phone keeps a photo, the LiDAR depth and the camera's direction twice a second. The server turns them into a 360° picture of
   the room and a model of it seen from that spot, with its measurements.
 
+### Live guided capture (two-way, optional)
+While you scan a room the phone can send each frame to the server **as it is taken**. The server works out what is still missing and
+sends a small map back: where you are, what is covered and what is thin, and a short list of what to capture next, in plain words
+("The walls to the right are not seen yet. Turn that way slowly and film them."). The phone draws the map and markers; the thinking
+stays on the server. Because the frames are already on the server when you stop, there is **no big upload at the end**.
+
+<img src="docs/img/live-panel.png" width="560">
+
+- **Offline always works.** Live is an extra. With no network the phone captures exactly as before and uploads later. If the
+  connection drops mid-scan the phone keeps scanning and sends what is missing when it is back. If it never comes back, the
+  rest is sent afterwards and the scan is built from everything (`POST /api/scans/{id}/frames`, then Build what I have).
+- **Watch it on the web page.** Open the scan page while someone scans: the scan appears by itself with a **Live capture** panel:
+  the top-down map (green = seen well, orange = thin or far, blue = floor looked across, white dot = the phone), the percent
+  covered, the numbered things to capture next, and **Build what I have** for a capture that was left unfinished (it also builds
+  by itself after 10 minutes without news).
+- **What the needs are.** Directions of the room never faced (walls, ceiling, floor, as on the phone's dial), holes in the outline,
+  walls seen only from more than 3 m or from fewer than 3 frames, a ceiling or floor hardly seen, blurry frames. At most 5; a need
+  keeps its place until you have satisfied it.
+- **Patch a scan you already have.** Start a capture on an existing room scan ("add more"). After a few frames the server finds
+  where the new session sits in the first one (gravity is shared, so only a turn and a shift are unknown; it matches the LiDAR
+  geometry), tells the phone, and from then on the map shows what the first scan already covered, in the phone's own frame. The new
+  frames are fused with the old ones into one rebuilt model. If it cannot tell (a bare room, or a room that looks the same from two
+  sides) it says so and asks you to film something distinctive instead of guessing. The same works for frames captured offline:
+  `POST /api/scans/{id}/add` returns `{aligned, rms_mm, message}` and leaves the old model alone if it cannot match.
+- **Try it without a phone:** `python tools/live_replay.py --scan-dir data/scans/<id> --kind sweep --speed 2 --finish` streams an
+  existing scan's frames the way the phone would (`--drop-after 12` cuts the connection and resumes; `--resume-scan <id>` patches).
+  The protocol is in `docs/live-guide.md`.
+
 ### Object tab: scan a part
 Two ways, both produce a coloured 3D mesh:
 
@@ -271,6 +299,7 @@ looks wrong and I will fix it.
 |---|---|
 | 0.42.2 | Ring dial bands now low <32° / mid 32-50° / high >50° with a live camera-angle label; Room tab **From one spot** sweep mode with its own coverage dial (walls, ceiling, floor); uploads over 1000 files accepted (server). |
 | 0.42.1 | Measure: only the bullseye in the middle creates a pin (tap it), taps elsewhere do nothing; tap a pin to open its menu. |
+| 0.44.0 (server) | **Live guided capture**: two-way WebSocket with the phone (live map and what-to-capture-next), live panel and Build what I have on the scan page, patching an existing scan by registering a new session to it, offline routes `/frames` and `/add`, uploads of any size, `tools/live_replay.py`. |
 | 0.43.0 | **Room from one spot**: sweep the phone from the middle; 360 degree panorama (viewer and download), depth-panorama room model with flat walls, room width, length and height and wall distances, a 'you stood here' marker instead of a red star of camera arrows, blended brightness-matched colours for room scans. |
 | 0.42.0 | **Android app** (APK built in CI, thin shell for Photo Measure) and a **Get the app** page on the server (`/apps.html`) that hands out the APK and IPA. |
 | 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |
