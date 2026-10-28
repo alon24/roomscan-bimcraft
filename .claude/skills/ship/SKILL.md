@@ -58,3 +58,8 @@ PORT=8010 ./deploy.sh      # prints "Server vX build N"
 - The server image is also built in CI (`server-image.yml`, amd64 + arm64 on native runners, pushed to ghcr). Another computer runs `docker compose -f docker-compose.prebuilt.yml pull && up -d`; `deploy.sh` is only for building from source.
 - Verify in Chrome by calling the page: set a file input with a `DataTransfer` and dispatch `change`; `read_page`/JS output that contains a query string comes back as `[BLOCKED]`, so use screenshots for that.
 - A background wait on `gh run list -L1` picks whichever run is newest at that moment: after a push, `sleep 15` first or it watches the previous build.
+- Watch your own push by SHA, not `-L1` (other sessions push too; the installed gh has no `--commit` flag):
+  `gh run list -R alon24/roomscan-bimcraft --workflow ios.yml -L5 --json databaseId,status,headSha -q ".[] | select(.headSha==\"$(git rev-parse HEAD)\")"`.
+  The iOS and Android workflows cancel a running build when a newer push arrives, so a `cancelled` run is not a failure.
+- Several sessions can share this working tree. Commit only your paths with `git commit -m ... -- <paths>`, and never leave a
+  `git rm` staged: the next session's plain `git commit` sweeps it into their commit.

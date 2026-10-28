@@ -12,7 +12,6 @@ final class SweepCoverage: ObservableObject {
     static let stayWithin = 0.35                       // metres of wandering before we say "turn on the spot"
     /// Cell layout matches RingCoverageDial: band 0 outer ring, 1 middle, 2 inner.
     static let bandPitch: [Double] = [0, 55, -50]       // walls (level), ceiling (up), floor (down), degrees above the horizon
-    static let bandName = ["the walls", "the ceiling", "the floor"]
 
     @Published var cells = [Bool](repeating: false, count: 72)
     @Published var hint = "Stand in the middle and turn slowly on the spot."
