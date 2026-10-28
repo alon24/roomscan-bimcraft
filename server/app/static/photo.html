@@ -40,7 +40,7 @@
 </head>
 <body>
 <main>
-  <header><h1>Photo Measure</h1><a href="/">← scans</a></header>
+  <header><h1>Photo Measure</h1><a href="#" id="srv" hidden onclick="AndroidApp.changeServer();return false">server</a><a href="/apps.html">get the app</a><a href="/">← scans</a></header>
 
   <div class="card">
     <b>1. Put a known object on the same flat surface</b>
@@ -235,6 +235,7 @@ $("flatBtn").onclick = async () => {
   n.append(a); out.replaceChildren(im, n);
 };
 
+if (window.AndroidApp) $("srv").hidden = false;   // inside the Android app
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 list();
 </script>

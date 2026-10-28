@@ -21,7 +21,7 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import apps, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -1048,5 +1048,6 @@ class NoCacheStatic(StaticFiles):
         return r
 
 
+app.include_router(apps.router)   # the Android APK and iPhone IPA, from data/apps
 app.include_router(photomeasure.router)   # measure from a photo with a card or paper as the ruler
 app.mount("/", NoCacheStatic(directory=STATIC, html=True), name="ui")

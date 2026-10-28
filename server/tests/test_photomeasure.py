@@ -86,3 +86,18 @@ def test_api_detect_homography_and_rectify():
 
     assert c.post("/api/photo/detect", files={"file": ("p.jpg", b"not a picture", "image/jpeg")}).status_code == 400
     assert c.post("/api/photo/detect", files={"file": ("p.jpg", jpg.tobytes(), "image/jpeg")}, data={"ref": "custom"}).status_code == 400
+
+
+def test_apps_are_listed_and_served(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import apps, main
+    (tmp_path / "RoomScan.apk").write_bytes(b"PK\x03\x04apk")
+    (tmp_path / "notes.txt").write_text("not an app")
+    monkeypatch.setattr(apps, "APPS", tmp_path)
+    c = TestClient(main.app)
+    j = c.get("/api/apps").json()
+    assert [x["name"] for x in j] == ["RoomScan.apk"] and j[0]["kind"] == "android"
+    r = c.get("/apps/RoomScan.apk")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/vnd.android.package-archive" and r.content.startswith(b"PK")
+    assert c.get("/apps/notes.txt").status_code == 404
+    assert c.get("/apps/..%2Fmain.py").status_code == 404

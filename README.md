@@ -196,6 +196,17 @@ Files are in `docs/ring/`; see `docs/turntable-ring.md`. Print at 100% and keep 
 
 ---
 
+## Get the apps from your own server
+Open `http://<server>:8010/apps.html`. It lists the **Android app (APK)** and the **iPhone app (IPA)** that this server holds, with
+download buttons and install steps, and a link to the no-install web app.
+- Put the newest builds on the server with `./tools/get-apps.sh` (downloads the last successful iPhone and Android builds from
+  GitHub into `data/apps/`; needs `gh` logged in). Run it after each build, or add it to your routine.
+- **Android app** (`android/`, built by GitHub Actions to `RoomScan.apk`): a thin window around this server's web app. It opens
+  Photo Measure, with the camera and photo picker working, and asks for the server address on first start. No LiDAR scanning
+  on Android. Sideload it: download on the phone, allow "install from this browser", install. Play Protect may warn because it
+  is not from the Play Store. It is signed with a debug key, so an update installs over the old one only if it was built the same way.
+- **iPhone app**: cannot be installed from a browser. Download the IPA from the page, then install it with iloader.
+
 ## 4. Install the server
 
 ```bash
@@ -222,6 +233,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.42.0 | **Android app** (APK built in CI, thin shell for Photo Measure) and a **Get the app** page on the server (`/apps.html`) that hands out the APK and IPA. |
 | 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |
 | 0.40.0 | **Cut tool like Orca Slicer's**: big panel, move and tilt the cut plane with the mouse, two-colour preview with pull-apart, keep/discard/flip, connector shapes (circle, square, triangle, hexagon), click to add, move or remove connectors on the cut face, any-angle cuts. Server: `/cut/preview`, `/cut/plane`. |
 | 0.39.1 | Bullseye centred exactly on the pinned point, tap it for a menu (select, name, move to crosshair, link, delete), pin-at-crosshair button. |

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get the app</title>
+<link rel="icon" href="/icons/photo-192.png">
+<style>
+  :root { --bg:#f6f7f8; --card:#fff; --ink:#15191c; --mute:#66707a; --line:#d9dee2; --acc:#0f9d8f; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111416; --card:#1b1f22; --ink:#eef1f3; --mute:#9aa4ad; --line:#2d343a; --acc:#2dd4bf; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,sans-serif; padding:0 16px 32px; }
+  main { max-width:760px; margin:0 auto; }
+  h1 { font-size:1.3rem; margin:18px 0 4px; }
+  h2 { font-size:1.05rem; margin:0 0 4px; }
+  a { color:var(--acc); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin:12px 0; }
+  .btn { display:inline-block; background:var(--acc); color:#fff; border-radius:10px; padding:10px 16px; font-weight:600; text-decoration:none; margin:6px 8px 6px 0; }
+  .btn.off { opacity:.4; pointer-events:none; }
+  .hint { color:var(--mute); font-size:.9rem; }
+  ol { margin:6px 0 0 20px; padding:0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Get the app</h1>
+  <div class="hint">Served from your own server: <b id="origin"></b></div>
+
+  <div class="card">
+    <h2>Android</h2>
+    <div class="hint">Photo Measure and your scans, in an app window with the camera. (Scanning with LiDAR is iPhone only.)</div>
+    <a class="btn off" id="apk" href="#">Download the Android app</a> <span class="hint" id="apkInfo">not on this server yet</span>
+    <ol>
+      <li>Open this page <b>on the phone</b> and tap Download.</li>
+      <li>Open the downloaded file. If asked, allow <b>install from this browser</b> (Settings, Install unknown apps), then Install. Play Protect may warn that the app is unknown: that is because it is not from the Play Store.</li>
+      <li>First start: type the address above (with <code>http://</code> and the port).</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>No install: the web app</h2>
+    <div class="hint">Works on Android, iPhone and computers straight from the browser.</div>
+    <a class="btn" href="/photo.html">Open Photo Measure</a>
+    <div class="hint">Over HTTPS your browser also offers "Install app" / "Add to Home screen" for it.</div>
+  </div>
+
+  <div class="card">
+    <h2>iPhone</h2>
+    <div class="hint">The scanning app (LiDAR, ring, rooms, Measure). It cannot be installed from the browser: download the file here, then install it from a computer with iloader (see the README).</div>
+    <a class="btn off" id="ipa" href="#">Download RoomScan.ipa</a> <span class="hint" id="ipaInfo">not on this server yet</span>
+  </div>
+  <div class="hint">Files are put here by <code>tools/get-apps.sh</code> (newest successful build from GitHub). <a href="/">← scans</a></div>
+</main>
+<script>
+document.getElementById("origin").textContent = location.origin;
+fetch("/api/apps").then(r => r.json()).then(list => {
+  for (const [kind, a, info] of [["android", "apk", "apkInfo"], ["ios", "ipa", "ipaInfo"]]) {
+    const f = list.find(x => x.kind === kind);
+    if (!f) continue;
+    document.getElementById(a).href = "/apps/" + f.name; document.getElementById(a).classList.remove("off");
+    document.getElementById(info).textContent = `${(f.size / 1048576).toFixed(1)} MB · built ${f.age_hours < 48 ? Math.round(f.age_hours) + " h ago" : new Date(f.modified * 1000).toLocaleDateString()}`;
+  }
+}).catch(() => {});
+</script>
+</body>
+</html>
