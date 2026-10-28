@@ -33,6 +33,7 @@ def _clear_print_prep(d: Path, keep_colours: bool = False):
         if PRINT_FILE.match(f.name) and not (keep_colours and f.name == "colours.json"):
             f.unlink()
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
+SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a model uploaded by hand, kept as it came
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
 
@@ -117,7 +118,8 @@ def _convert(d: Path) -> dict:
             if z > 0:
                 scale = meta["real_height_mm"] / z
                 meta["scale"] = scale
-        ok, out = objects.convert_object(d / "scan.usdz", d, scale)
+        source = next(iter(d.glob("source.*")), None) if not (d / "scan.usdz").exists() else None
+        ok, out = (objects.convert_mesh_file(source, d, scale) if source else objects.convert_object(d / "scan.usdz", d, scale))
         meta["status"] = "ok" if (d / "model.stl").exists() else "error"
         meta["printable"] = ok
         meta["log"] = out
@@ -167,7 +169,7 @@ def _settings(d: Path, meta: dict) -> dict:
 
 @app.post("/api/scans")
 async def upload(json_file: UploadFile | None = File(None, alias="json"),
-                 usdz: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
+                 usdz: UploadFile | None = File(None), model: UploadFile | None = File(None), mesh: UploadFile | None = File(None), footprint: UploadFile | None = File(None), name: str = Form("Scan"),
                  kind: str = Form("room"), scale: float = Form(1.0), real_height_mm: float = Form(0.0), turntable_scan: bool = Form(False), ring_scan: bool = Form(False), info: str = Form(""), project: str = Form(""),
                  photos: list[UploadFile] = File(default=[]), photos_meta: UploadFile | None = File(None),
                  masks: list[UploadFile] = File(default=[])):
@@ -177,8 +179,11 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
         raise HTTPException(422, "mesh scans need a mesh (ply) file")
     if kind == "room" and json_file is None:
         raise HTTPException(422, "room scans need a json file")
-    if kind == "object" and usdz is None:
-        raise HTTPException(422, "object scans need a usdz file")
+    if kind == "object" and usdz is None and model is None:
+        raise HTTPException(422, "object scans need a usdz file (or a model file: stl, 3mf, obj)")
+    model_ext = Path(model.filename or "").suffix.lower() if model is not None else ""
+    if model is not None and model_ext not in objects.MESH_EXTS:
+        raise HTTPException(422, f"model files are {', '.join(objects.MESH_EXTS)}")
     scan_id = uuid.uuid4().hex[:12]
     d = DATA / scan_id
     d.mkdir(parents=True)
@@ -188,6 +193,9 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
     if usdz is not None:
         with open(d / "scan.usdz", "wb") as f:
             shutil.copyfileobj(usdz.file, f)
+    if model is not None:   # a ready-made model: kept as it came, so a re-convert (new scale) starts from it
+        with open(d / f"source{model_ext}", "wb") as f:
+            shutil.copyfileobj(model.file, f)
     if mesh is not None:
         with open(d / "scan.ply", "wb") as f:
             shutil.copyfileobj(mesh.file, f)
@@ -427,7 +435,7 @@ async def import_zip(file: UploadFile = File(...), project: str | None = Form(No
             if info.is_dir() or len(parts) < 2:
                 continue
             rel = "/".join(parts[1:])
-            known = rel in ARTIFACTS or (len(parts) == 3 and parts[1] == "photos" and PHOTO_NAME.match(parts[2])) \
+            known = rel in ARTIFACTS or SOURCE_FILE.match(rel) or (len(parts) == 3 and parts[1] == "photos" and PHOTO_NAME.match(parts[2])) \
                 or (len(parts) == 3 and parts[1] == "masks" and MASK_NAME.match(parts[2]))
             if known:
                 total += info.file_size

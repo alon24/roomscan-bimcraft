@@ -120,23 +120,52 @@ def report(mesh: trimesh.Trimesh) -> dict:
     }
 
 
+MESH_EXTS = (".stl", ".3mf", ".obj", ".ply", ".glb", ".gltf", ".off")   # model files that can be uploaded by hand
+
+
+def load_mesh_file(path: Path) -> trimesh.Trimesh:
+    """A ready-made model (STL, 3MF, OBJ…) as one mesh, in the file's own units (taken as mm)."""
+    m = trimesh.load(path, force="mesh")
+    if not isinstance(m, trimesh.Trimesh) or len(m.faces) == 0:
+        raise ValueError("this file has no triangles")
+    return m
+
+
+def _write(mesh: trimesh.Trimesh, log: list[str], outdir: Path, extra=None) -> tuple[bool, str]:
+    mesh.export(outdir / "model.stl")
+    mesh.export(outdir / "model.3mf")
+    (outdir / "preview.json").write_text(json.dumps({
+        "vertices": np.round(mesh.vertices, 2).ravel().tolist(),
+        "faces": mesh.faces.ravel().tolist()}))
+    if extra:
+        extra(log)
+    rep = report(mesh)
+    log.append(json.dumps(rep))
+    (outdir / "report.json").write_text(json.dumps(rep))
+    return rep["watertight"], "\n".join(log) + ("" if rep["watertight"] else "\nWARNING: mesh is not watertight; slicer may need repair")
+
+
+def convert_mesh_file(src: Path, outdir: Path, scale: float = 1.0) -> tuple[bool, str]:
+    """Same outputs as convert_object, from an uploaded STL/3MF/OBJ instead of a phone scan."""
+    try:
+        mesh, log = clean(load_mesh_file(src), scale)
+        log.insert(0, f"imported {src.name} (units taken as mm)")
+        return _write(mesh, log, outdir)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def convert_object(src: Path, outdir: Path, scale: float = 1.0) -> tuple[bool, str]:
     """Write model.stl, model.3mf and preview.json into outdir. Returns (ok, log)."""
     try:
         mesh, log = clean(load_usdz(src), scale)
-        mesh.export(outdir / "model.stl")
-        mesh.export(outdir / "model.3mf")
-        (outdir / "preview.json").write_text(json.dumps({
-            "vertices": np.round(mesh.vertices, 2).ravel().tolist(),
-            "faces": mesh.faces.ravel().tolist()}))
-        try:
-            if extract_textured(src, outdir):
-                log.append("textured preview written")
-        except Exception as e:  # the plain preview still works
-            log.append(f"no textured preview: {type(e).__name__}: {e}")
-        rep = report(mesh)
-        log.append(json.dumps(rep))
-        (outdir / "report.json").write_text(json.dumps(rep))
-        return rep["watertight"], "\n".join(log) + ("" if rep["watertight"] else "\nWARNING: mesh is not watertight; slicer may need repair")
+
+        def textured(log):
+            try:
+                if extract_textured(src, outdir):
+                    log.append("textured preview written")
+            except Exception as e:  # the plain preview still works
+                log.append(f"no textured preview: {type(e).__name__}: {e}")
+        return _write(mesh, log, outdir, textured)
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"

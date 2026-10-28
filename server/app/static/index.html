@@ -65,9 +65,10 @@
 <body>
 <aside>
   <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
-  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn">Import zip</button></div>
+  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn" title="Upload a scan by hand: a zip from this server, scan.json (floor plan), .usdz (object), .ply (3D room), or a model (.stl .3mf .obj). You can also drop files on this panel.">Upload file…</button></div>
+  <div class="hint" id="uploadMsg" hidden></div>
   <div class="row" hidden>
-    <input type="file" id="importFile" accept=".zip,application/zip" hidden></div>
+    <input type="file" id="importFile" multiple accept=".zip,.json,.usdz,.ply,.stl,.3mf,.obj,.glb,.gltf,.off" hidden></div>
   <input id="search" placeholder="Search rooms and objects" type="search">
   <div id="list"></div>
   <datalist id="projList"></datalist>
@@ -310,15 +311,43 @@ $("newHome").onclick = async () => {
   const v = await ask("New home", [{ key: "name", label: "Name" }], "Create");
   if (v?.name) { await api("/api/projects", { method: "POST", body: JSON.stringify(v) }); loadList(); }
 };
-$("importBtn").onclick = () => $("importFile").click();
-$("importFile").onchange = async e => {
-  const f = e.target.files[0]; e.target.value = "";
-  if (!f) return;
-  const fd = new FormData(); fd.append("file", f);
-  const r = await api("/api/import", { method: "POST", body: fd });
+// ---- upload by hand: the kind of scan comes from the file's extension; the server converts it like a phone upload
+const UPLOAD_KIND = { json: ["room", "json"], usdz: ["object", "usdz"], ply: ["mesh", "mesh"],
+                      stl: ["object", "model"], "3mf": ["object", "model"], obj: ["object", "model"], glb: ["object", "model"], gltf: ["object", "model"], off: ["object", "model"] };
+async function uploadFiles(files) {
+  const msg = $("uploadMsg"); msg.hidden = false;
+  let last = null, n = 0;
+  for (const f of files) {
+    const ext = f.name.split(".").pop().toLowerCase(), name = f.name.replace(/\.[^.]+$/, "");
+    msg.textContent = `Uploading ${f.name} (${++n} of ${files.length})…`;
+    try {
+      if (ext === "zip") {
+        const fd = new FormData(); fd.append("file", f);
+        const r = await api("/api/import", { method: "POST", body: fd });
+        last = r.imported[0]?.id ?? last;
+      } else if (UPLOAD_KIND[ext]) {
+        const [kind, field] = UPLOAD_KIND[ext];
+        const fd = new FormData(); fd.append(field, f); fd.append("kind", kind); fd.append("name", name);
+        const res = await fetch("/api/scans", { method: "POST", body: fd });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || res.status));
+        last = j.id;
+      } else throw new Error("not a file this server reads (zip, json, usdz, ply, stl, 3mf, obj)");
+    } catch (e) { msg.textContent = `${f.name}: ${e.message}`; await loadList(); return; }
+  }
+  msg.textContent = `Uploaded ${files.length} file${files.length > 1 ? "s" : ""}.`;
+  setTimeout(() => { msg.hidden = true; }, 5000);
   await loadList();
-  if (r.imported[0]) show(r.imported[0].id);
-};
+  if (last) show(last);
+}
+$("importBtn").onclick = () => $("importFile").click();
+$("importFile").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length) uploadFiles(fs); };
+{ // drop files anywhere on the side panel
+  const side = document.querySelector("aside");
+  side.ondragover = e => { if ([...(e.dataTransfer?.types || [])].includes("Files")) { e.preventDefault(); side.style.outline = "2px dashed var(--acc)"; } };
+  side.ondragleave = () => { side.style.outline = ""; };
+  side.ondrop = e => { e.preventDefault(); side.style.outline = ""; if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); };
+}
 
 function clearDetail() { current = null; $("detail").hidden = true; $("hint").hidden = false; }
 
