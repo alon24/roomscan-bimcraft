@@ -26,9 +26,17 @@ final class CoverageTracker: ObservableObject {
     @Published var ringCells = [Bool](repeating: false, count: 72)
     @Published var ringHint = ""
     static let ringSectors = 24
+    // Camera angle above the ring plane that counts as low / middle / high. Real scans only ever reached 33 to 44 degrees (holding the
+    // phone by hand with the markers in view), so a 25 degree edge for "low" was never reached: the outer ring would not fill.
+    static let lowMax = 32.0, midMax = 50.0
+    static func ringBand(_ el: Double) -> Int { el < lowMax ? 0 : (el < midMax ? 1 : 2) }
+    static func bandName(_ b: Int) -> String { ["low", "middle", "high"][b] }
+    private var ringReadings = 0
     private func noteRing(_ r: RingSpeedMonitor.Reading) {
         guard let az = r.az, let el = r.elev else { return }
-        let band = el < 25 ? 0 : (el < 55 ? 1 : 2)
+        ringReadings += 1
+        if ringReadings % 8 == 0 { Reporter.log("ring angle \(Int(el))° az \(Int(az))° band \(Self.bandName(Self.ringBand(el)))") }   // so a report shows which angles were reached
+        let band = Self.ringBand(el)
         ringCells[band * Self.ringSectors + min(Self.ringSectors - 1, Int(az / (360 / Double(Self.ringSectors))))] = true
         ringHint = Self.hint(for: ringCells)
     }
@@ -39,8 +47,8 @@ final class CoverageTracker: ObservableObject {
         func share(_ b: Int) -> Double { Double(cells[b * ringSectors..<(b + 1) * ringSectors].filter { $0 }.count) / Double(ringSectors) }
         let low = share(0), mid = share(1), high = share(2)
         if mid < 0.85 { return "Turn the tray slowly: the first turn is \(Int(mid * 100))% done." }
-        if low < 0.7 { return "Now hold the phone lower, nearly level with the top of the part, and turn the tray once more." }
-        if high < 0.5 { return "Last: hold the phone high, looking down from above, for a quarter turn or more." }
+        if low < 0.7 { return "Now lower the phone until the angle reads under \(Int(lowMax))°, and turn the tray once more." }
+        if high < 0.5 { return "Last: raise the phone until the angle reads over \(Int(midMax))°, looking down from above, for a quarter turn or more." }
         return "The whole ring is covered at every height. Tap Stop."
     }
     private var turntableTicks = 0
@@ -451,7 +459,15 @@ struct GuidedPanel: View {
             if tracker.phase == .capturing && tracker.ring {
                 HStack(spacing: 12) {
                     RingCoverageDial(cells: tracker.ringCells).frame(width: 96, height: 96)
-                    Text(tracker.ringHint.isEmpty ? "Waiting for the ring…" : tracker.ringHint).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(tracker.ringHint.isEmpty ? "Waiting for the ring…" : tracker.ringHint).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                        if let e = tracker.speed?.elev {   // the number to steer by: low is under 32, middle 32 to 50, high over 50
+                            let b = CoverageTracker.ringBand(e)
+                            Text("Camera angle \(Int(e))° (\(CoverageTracker.bandName(b)))").font(.caption2.monospacedDigit())
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Theme.accent.opacity(b == 0 ? 0.9 : 0.5), in: Capsule()).foregroundStyle(.white)
+                        }
+                    }
                 }
                 .padding(10).card()
             }

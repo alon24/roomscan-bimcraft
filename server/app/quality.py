@@ -13,7 +13,7 @@ FAST, IDEAL, SLOW = 30.0, 20.0, 5.0          # degrees a second: the same limits
 NEAR, FAR = 180.0, 420.0                      # camera distance from the ring centre, mm
 MAX_ERR, MIN_MARKERS = 3.0, 4                 # a frame is used only with a fit like this (as in ring.fuse)
 BINS = 36                                     # 10 degree sectors round the part
-BANDS = (("low", 0, 25), ("middle", 25, 55), ("high", 55, 91))
+BANDS = (("low", 0, 32), ("middle", 32, 50), ("high", 50, 91))   # the same edges as the phone's dial (GuidedScan.lowMax / midMax)
 
 
 def _poses(d: Path) -> list[dict]:
@@ -102,11 +102,11 @@ def analyse(d: Path) -> dict:
     for name, lo, hi in BANDS:
         if bands[name] < 3:
             if name == "low":
-                tips.append("Add a low pass: hold the phone nearly level with the top of the part for one more turn. Sides and overhangs are thin without it.")
+                tips.append("Add a low pass: lower the phone until the angle on screen reads under 32° and turn the tray once more. Sides and overhangs are thin without it.")
             elif name == "high":
-                tips.append("Add a pass from above (over 55°). The top of the part has few views.")
+                tips.append("Add a pass from above (over 50°). The top of the part has few views.")
             else:
-                tips.append("There are few frames at a middle angle (25° to 55°), the best one for the whole shape.")
+                tips.append("There are few frames at a middle angle (32° to 50°), the best one for the whole shape.")
     if len(rates) and out["speed"]["too_fast"] > 0.1:
         tips.append(f"{round(out['speed']['too_fast'] * 100)}% of the time the tray turned faster than {FAST:.0f}°/s: slower gives sharper photos.")
     if len(rates) and out["speed"]["too_slow"] > 0.4:
