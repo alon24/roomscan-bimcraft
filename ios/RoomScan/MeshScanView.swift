@@ -39,6 +39,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var stalled = 0
     let guided = CoverageTracker()
     let sweep = SweepCoverage()      // "Sweep from one spot": where the camera has looked
+    let live = LiveLink()            // optional two-way link to the server (docs/live-guide.md)
+    var liveWanted = false           // room scans: the Room tab asks for it
     var sweepMode = false
     @Published var guidedActive = false
     private var coverageTimer: Timer?
@@ -112,6 +114,10 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
         sweep.reset()
+        if liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true) {
+            live.begin(server: UserDefaults.standard.string(forKey: "serverURL") ?? "", kind: sweepMode ? "sweep" : "room",
+                       name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo)
+        }
         if guided.ring { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
         guidedActive = guided.isActive
         overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
@@ -120,6 +126,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             guard let self else { return }
             self.guided.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
             if self.sweepMode, let f = self.sceneView.session.currentFrame { self.sweep.update(f) }
+            self.live.pump(self.recorder, frame: self.sceneView.session.currentFrame)
         }
         ticks = 0
         cloud = []; cloudColours = []; occupied = []; shownPoints = 0; cloudNode.geometry = nil
@@ -191,6 +198,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         scanning = false
         hud = ""; status = ""
         Reporter.log("mesh: reset by user")
+        live.abandon()
         startPreview()      // back to the live camera at the start screen, not a paused one
     }
 
@@ -330,6 +338,22 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     @MainActor func upload(server: String) async {
+        // Scanned with the live link: the frames are (nearly) all on the server already, so only the build is left. If that cannot be
+        // done (the connection never came back), fall through to the ordinary upload from the phone, which always works.
+        if live.scanID != nil, let rec = recorder {
+            status = "Finishing on the server…"
+            do {
+                let id = try await live.complete(recorder: rec, info: scanInfo)
+                UserDefaults.standard.set(id, forKey: "lastScanID")
+                status = "Uploaded: built on the server from the live frames"
+                Notifier.scanDone(name: sweepMode ? "Sweep" : "3D room", status: "ok")
+                live.end()
+                return
+            } catch {
+                Reporter.log("live finish failed (\(error)), uploading from the phone instead")
+                live.abandon()
+            }
+        }
         guard let package else { return }
         if outlining { status = "Still outlining the part in the photos, upload again in a moment"; return }
         status = "Uploading…"
@@ -597,6 +621,7 @@ struct MeshScanView: View {
     var initialMode = 0     // 0 free scan, 1 guided object, 2 turntable, 3 ring
     var fixedMode: Int? = nil   // the Room and Object tabs each use one kind of scan, without the picker
     var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
+    var liveGuide = false       // Room tab: use the two-way link to the server when it can be reached
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 AR overlay, 1 3D model
@@ -643,6 +668,10 @@ struct MeshScanView: View {
                 .ignoresSafeArea().allowsHitTesting(false).scaleEffect(zoom)
             }
             TraceTapLayer(tracker: model.guided, view: model.sceneView, zoom: zoom)
+            if liveGuide && model.scanning {
+                GeometryReader { geo in LiveNeedLayer(live: model.live, view: model.sceneView, size: geo.size, zoom: zoom) }
+                    .ignoresSafeArea().allowsHitTesting(false)
+            }
             VStack(spacing: 8) {
                 if fixedMode == nil && !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
                 HStack(spacing: 8) {
@@ -667,6 +696,7 @@ struct MeshScanView: View {
                 }
                 Spacer()
                 if sweepMode && model.scanning { SweepPanel(sweep: model.sweep, frames: model.framesSoFar) }
+                if liveGuide && model.scanning { LivePanel(live: model.live) }
                 if model.guidedActive && model.scanning {
                     GuidedPanel(tracker: model.guided) { model.guided.setObject(model.sceneView) }
                 }
@@ -694,7 +724,7 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
-        .onAppear { model.sweepMode = sweepMode; if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
+        .onAppear { model.sweepMode = sweepMode; model.liveWanted = liveGuide; if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
         .onDisappear { model.pausePreview() }
     }
 }

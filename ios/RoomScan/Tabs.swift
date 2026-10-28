@@ -18,7 +18,7 @@ struct RoomTab: View {
                  ? "A coloured 3D copy of the room and everything in it, from the LiDAR and the photos. To look at and measure."
                  : "Stand in one place and turn the phone round (a small or cluttered room). Gives a 360° picture and a measured model of the room.")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal)
-            if kind == 0 { ScanView() } else if kind == 1 { MeshScanView(fixedMode: 0) } else { MeshScanView(fixedMode: 0, sweepMode: true) }
+            if kind == 0 { ScanView() } else if kind == 1 { MeshScanView(fixedMode: 0, liveGuide: true) } else { MeshScanView(fixedMode: 0, sweepMode: true, liveGuide: true) }
         }
     }
 }

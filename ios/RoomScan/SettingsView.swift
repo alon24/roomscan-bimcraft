@@ -5,6 +5,7 @@ struct SettingsView: View {
     @AppStorage("liveStream") private var liveStream = true
     @AppStorage("project") private var project = ""
     @AppStorage("allFrames") private var allFrames = true
+    @AppStorage("liveGuide") private var liveGuide = true
     @State private var serverVersion = "checking…"
 
     var body: some View {
@@ -30,6 +31,9 @@ struct SettingsView: View {
             }
             Section(footer: Text("Mesh scans keep a photo, the LiDAR depth and the position of every half second (up to 400 frames), so each frame can be checked and corrected on the web page. Uses more storage and upload time.")) {
                 Toggle("Keep every frame", isOn: $allFrames)
+            }
+            Section(footer: Text("When the server can be reached, a room scan sends its frames while you scan and the server shows what is still missing (a map, and where to point the camera). Without a connection the scan carries on and is kept on the phone, exactly as before.")) {
+                Toggle("Live guidance", isOn: $liveGuide)
             }
             Section(footer: Text("Show the room in the web UI while you scan.")) {
                 Toggle("Live preview", isOn: $liveStream)
