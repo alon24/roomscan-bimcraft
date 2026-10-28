@@ -358,7 +358,7 @@ struct ScanView: View {
             }
             .padding()
         }
-        .pinchZoom($zoom)
+        .pinchZoom($zoom, enabled: mode == 0)
     }
 }
 

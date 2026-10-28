@@ -10,6 +10,7 @@ import Metal
 final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     let sceneView = ARSCNView(frame: .zero)
     @Published var scanning = false
+    @Published var previewOn = UserDefaults.standard.object(forKey: "previewOn") as? Bool ?? true   // the live camera before Start; the icon switches it off
     @Published var status = ""
     @Published var hud = ""
     @Published var plyURL: URL?
@@ -65,10 +66,16 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     /// Show the camera as soon as the tab opens, so it is clear the app is alive before anything is scanned.
     func startPreview() {
-        guard !scanning, plyURL == nil else { return }
+        guard previewOn, !scanning, plyURL == nil else { return }
         let cfg = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
         sceneView.session.run(cfg)
+    }
+
+    func setPreview(_ on: Bool) {
+        previewOn = on
+        UserDefaults.standard.set(on, forKey: "previewOn")
+        if on { startPreview() } else if !scanning { sceneView.session.pause() }
     }
 
     func pausePreview() {
@@ -614,6 +621,7 @@ struct MeshScanView: View {
                 Color(white: 0.1).ignoresSafeArea()
             } else {
                 ARSceneRepresentable(view: model.sceneView).ignoresSafeArea().scaleEffect(zoom)
+                    .opacity(!model.previewOn && !model.scanning && model.plyURL == nil ? 0 : 1)
             }
             if model.scanning {
                 Canvas { ctx, _ in
@@ -627,7 +635,16 @@ struct MeshScanView: View {
             TraceTapLayer(tracker: model.guided, view: model.sceneView, zoom: zoom)
             VStack(spacing: 8) {
                 if fixedMode == nil && !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
-                if model.modelScene == nil || model.scanning { ZoomControl(zoom: $zoom) }
+                HStack(spacing: 8) {
+                    if model.modelScene == nil || model.scanning { ZoomControl(zoom: $zoom) }
+                    if !model.scanning && model.plyURL == nil {
+                        Button { model.setPreview(!model.previewOn) } label: {
+                            Image(systemName: model.previewOn ? "video.fill" : "video.slash.fill").padding(8)
+                                .background(.thinMaterial, in: Capsule())
+                        }
+                        .accessibilityLabel(model.previewOn ? "Turn the camera off" : "Turn the camera on")
+                    }
+                }
                 if !model.guidedActive {
                     Text(guide).font(.callout).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
@@ -665,7 +682,7 @@ struct MeshScanView: View {
             }
             .padding()
         }
-        .pinchZoom($zoom)
+        .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
         .onAppear { if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
         .onDisappear { model.pausePreview() }
     }
