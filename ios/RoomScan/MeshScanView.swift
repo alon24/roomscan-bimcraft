@@ -50,8 +50,6 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var cloudColours: [SIMD3<Float>] = []
     private var occupied = Set<Int64>()
     private var cloudTimer: Timer?
-    private var shownPoints = 0
-    private let cloudNode = SCNNode()
     private let ciContext = CIContext()
     private let maxPoints = 1_000_000
     private let voxel: Float = 0.015
@@ -64,7 +62,6 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         super.init()
         sceneView.delegate = self
         sceneView.automaticallyUpdatesLighting = true
-        sceneView.scene.rootNode.addChildNode(cloudNode)
         guided.attach(to: sceneView.scene)
     }
 
@@ -129,7 +126,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             self.live.pump(self.recorder, frame: self.sceneView.session.currentFrame)
         }
         ticks = 0
-        cloud = []; cloudColours = []; occupied = []; shownPoints = 0; cloudNode.geometry = nil
+        cloud = []; cloudColours = []; occupied = []
         cloudTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.addPoints() }
         lock.lock(); meshAnchors = [:]; lock.unlock()
         let cfg = ARWorldTrackingConfiguration()
@@ -190,8 +187,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         Screen.awake(false)
         guided.end()
         guidedActive = false
-        cloud = []; cloudColours = []; occupied = []; shownPoints = 0
-        cloudNode.geometry = nil
+        cloud = []; cloudColours = []; occupied = []
         lock.lock(); meshAnchors = [:]; lock.unlock()
         recorder = nil
         plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
@@ -343,8 +339,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         if live.scanID != nil, let rec = recorder {
             status = "Finishing on the server…"
             do {
-                let id = try await live.complete(recorder: rec, info: scanInfo)
-                UserDefaults.standard.set(id, forKey: "lastScanID")
+                _ = try await live.complete(recorder: rec, info: scanInfo)
                 status = "Uploaded: built on the server from the live frames"
                 Notifier.scanDone(name: sweepMode ? "Sweep" : "3D room", status: "ok")
                 live.end()
@@ -358,8 +353,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         if outlining { status = "Still outlining the part in the photos, upload again in a moment"; return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(package, server: server)
-            if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
+            _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
             let saved = (try? LocalStore.save(package)) != nil
@@ -415,13 +409,6 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         let iy = Int64((p.y / size).rounded(.down)) & 0x1FFFFF
         let iz = Int64((p.z / size).rounded(.down)) & 0x1FFFFF
         return (ix << 42) | (iy << 21) | iz
-    }
-
-    /// Redraw the cloud as coloured dots over the camera picture.
-    private func refreshCloud() {
-        guard cloud.count != shownPoints else { return }
-        shownPoints = cloud.count
-        cloudNode.geometry = cloudGeometry()
     }
 
     private func cloudGeometry() -> SCNGeometry? {

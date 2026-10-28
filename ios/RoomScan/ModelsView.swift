@@ -1,5 +1,6 @@
 import SwiftUI
 import SceneKit
+import WebKit
 import SceneKit.ModelIO
 import ModelIO
 
@@ -198,4 +199,15 @@ struct WebPage: View {
         }
         .toolbar { Button("Reload") { reload += 1 } }
     }
+}
+
+/// The server's web viewer (WebGL) inside the app: same 3D preview and downloads as the browser.
+struct WebViewer: UIViewRepresentable {
+    let url: URL
+    func makeUIView(context: Context) -> WKWebView {
+        let w = WKWebView()
+        w.load(URLRequest(url: url))
+        return w
+    }
+    func updateUIView(_ w: WKWebView, context: Context) {}
 }

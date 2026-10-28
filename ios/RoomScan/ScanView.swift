@@ -279,8 +279,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         guard let package else { return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(package, server: server)
-            if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
+            _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
             let saved = (try? LocalStore.save(package)) != nil

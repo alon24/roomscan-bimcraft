@@ -228,12 +228,11 @@ final class ObjectScanModel: ObservableObject {
         status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
     }
 
-    func upload(server: String, scale: Double) async {
+    func upload(server: String) async {
         guard let package else { return }
         status = "Uploading…"
         do {
-            let id = try await Uploader.upload(package, server: server)
-            if let id { UserDefaults.standard.set(id, forKey: "lastScanID") }
+            _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
             let saved = (try? LocalStore.save(package)) != nil
@@ -389,7 +388,7 @@ struct ObjectScanView: View {
                         Button("Cancel") { model.cancel() }
                     }
                     if model.usdzURL != nil {
-                        Button("Upload") { Task { await model.upload(server: serverURL, scale: 1) } }
+                        Button("Upload") { Task { await model.upload(server: serverURL) } }
                         Button("Save") { model.saveOnPhone() }
                     }
                 }

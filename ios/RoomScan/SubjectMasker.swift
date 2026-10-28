@@ -70,17 +70,6 @@ enum SubjectMasker {
         return CGImageDestinationFinalize(dest) ? out as Data : nil
     }
 
-    /// Everything Vision lifts out of the background in one photo, as a black and white PNG at the photo's own size
-    /// (white = foreground). The server takes the flat stage and ring off with the LiDAR, so the plate being included is fine.
-    static func outlinePNG(_ url: URL, ctx: CIContext) -> Data? {
-        guard let img = CIImage(contentsOf: url) else { return nil }
-        let handler = VNImageRequestHandler(ciImage: img, options: [:])
-        let request = VNGenerateForegroundInstanceMaskRequest()
-        guard (try? handler.perform([request])) != nil, let obs = request.results?.first, !obs.allInstances.isEmpty,
-              let buf = try? obs.generateScaledMaskForImage(forInstances: obs.allInstances, from: handler) else { return nil }
-        return ctx.pngRepresentation(of: CIImage(cvPixelBuffer: buf), format: .L8, colorSpace: CGColorSpaceCreateDeviceGray(), options: [:])
-    }
-
     /// The part as an image with a transparent background: the foreground instance nearest the middle of the picture.
     private static func subject(of image: CIImage) -> CIImage? {
         let handler = VNImageRequestHandler(ciImage: image, options: [:])

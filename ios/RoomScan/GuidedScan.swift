@@ -40,9 +40,6 @@ final class CoverageTracker: ObservableObject {
         ringCells[band * Self.ringSectors + min(Self.ringSectors - 1, Int(az / (360 / Double(Self.ringSectors))))] = true
         ringHint = Self.hint(for: ringCells)
     }
-    func ringShare(_ band: Int) -> Double {
-        Double(ringCells[band * Self.ringSectors..<(band + 1) * Self.ringSectors].filter { $0 }.count) / Double(Self.ringSectors)
-    }
     static func hint(for cells: [Bool]) -> String {
         func share(_ b: Int) -> Double { Double(cells[b * ringSectors..<(b + 1) * ringSectors].filter { $0 }.count) / Double(ringSectors) }
         let low = share(0), mid = share(1), high = share(2)
