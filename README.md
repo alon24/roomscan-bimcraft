@@ -118,6 +118,30 @@ straight above (it warns if the angle is steep). Good for glass, mirrors, shiny 
 app. On a plain `http://192.168...` address it works in the browser but the browser won't offer the install button.
 Everything runs on your own server (OpenCV finds the card); nothing leaves it.
 
+### Room from one spot: sweep the phone (and a 360 picture)
+Small room, cluttered room, no time to walk round it: **sit or stand in the middle and sweep the phone round** (turn on the spot, tip the
+phone up and down so floor and ceiling are in too). Upload it like any 3D room scan. The server notices that every frame was taken from
+about the same spot (or the app says "Sweep from one spot") and builds, from the photo, the LiDAR depth and the camera direction of each frame:
+
+<img src="docs/img/room-panorama.jpg" width="520" align="right">
+
+- **A 360 degree panorama picture** of the room: the photos stitched by their camera directions, brightness-matched so there are no stripes,
+  grey where nothing was seen. Open it with the **Panorama** button on the scan page: drag to look around, scroll to zoom, **Download JPG**.
+- **A room model seen from the middle**: the depth of every frame is fused into one depth image around where you stood, meshed, flattened
+  where it lies on a wall, floor or ceiling and coloured from the panorama. The scan page opens it **from the middle** (button **From outside**
+  to orbit it). Furniture stays as it is; edges against the wall behind are not stretched.
+- **Numbers**: distance from where you stood to the front, right, back and left walls (front = where you first pointed the phone),
+  to the floor and the ceiling, and the **room's width, length and height**. They are listed under the model and drawn as labels in the 3D view,
+  with how much of the room was seen. A wall not in the sweep shows "not seen": turn the whole way round to get it.
+- The red camera arrows on the model are now one **"you stood here"** marker when you turned on the spot (28 arrows on one point looked like a red star).
+
+How good: on a synthetic box room the width, length and height come out within 2%. On your real scan (28 frames, about a third of the room
+swept) the height was 2.3 m, the front and left walls were found, the right and back walls were not in the sweep.
+Limits: LiDAR reaches about 5 m (a bigger room shows walls as "not seen"); glass and mirrors read badly; the phone must stay within about
+35 cm of one spot (a bigger move is treated as an ordinary room scan, or set `"sweep": false` in the scan info to force that).
+Other 3D room scans (walking round) now get brightness-matched, blended photo colours too: neighbouring colour jumps are about 16% smaller
+than before and the worst ones 22% smaller.
+
 ### Models tab: everything you scanned
 - Tap a scan to see it. **Not uploaded yet? You still get a 3D preview** of what the phone captured.
 - **Upload** sends it to the server. You get a "Model ready" banner when conversion finishes.
@@ -247,6 +271,7 @@ looks wrong and I will fix it.
 |---|---|
 | 0.42.2 | Ring dial bands now low <32° / mid 32-50° / high >50° with a live camera-angle label; Room tab **From one spot** sweep mode with its own coverage dial (walls, ceiling, floor); uploads over 1000 files accepted (server). |
 | 0.42.1 | Measure: only the bullseye in the middle creates a pin (tap it), taps elsewhere do nothing; tap a pin to open its menu. |
+| 0.43.0 | **Room from one spot**: sweep the phone from the middle; 360 degree panorama (viewer and download), depth-panorama room model with flat walls, room width, length and height and wall distances, a 'you stood here' marker instead of a red star of camera arrows, blended brightness-matched colours for room scans. |
 | 0.42.0 | **Android app** (APK built in CI, thin shell for Photo Measure) and a **Get the app** page on the server (`/apps.html`) that hands out the APK and IPA. |
 | 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |
 | 0.40.0 | **Cut tool like Orca Slicer's**: big panel, move and tilt the cut plane with the mouse, two-colour preview with pull-apart, keep/discard/flip, connector shapes (circle, square, triangle, hexagon), click to add, move or remove connectors on the cut face, any-angle cuts. Server: `/cut/preview`, `/cut/plane`. |
