@@ -12,6 +12,14 @@ struct RoomScanApp: App {
         UserDefaults.standard.set(r, forKey: "ringRadiusMM")
     }
 
+    init() {
+        // The scan views draw under the tab bar; without a background its icons vanish into the camera picture until it is tapped.
+        let bar = UITabBarAppearance()
+        bar.configureWithOpaqueBackground()
+        UITabBar.appearance().standardAppearance = bar
+        UITabBar.appearance().scrollEdgeAppearance = bar
+    }
+
     var body: some Scene {
         WindowGroup {
             NavigationStack {
@@ -20,6 +28,7 @@ struct RoomScanApp: App {
                     ObjectTab().tabItem { Label("Object", systemImage: "cube") }
                     ModelsView().tabItem { Label("Models", systemImage: "cube.box") }
                 }
+                .toolbarBackground(.visible, for: .tabBar)
                 .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gear") } }
                 .task { Reporter.log("app launched"); await Reporter.flush(); await Self.syncRing() }
                 .overlay(alignment: .bottom) { UploadProgressLine().padding(.bottom, 56).allowsHitTesting(false) }
