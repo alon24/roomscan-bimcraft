@@ -9,7 +9,7 @@ def _unit(v: np.ndarray) -> np.ndarray:
 
 
 def _sample(mesh: trimesh.Trimesh, n: int = 12000) -> tuple[np.ndarray, np.ndarray]:
-    pts, fi = trimesh.sample.sample_surface_even(mesh, n)
+    pts, fi = trimesh.sample.sample_surface_even(mesh, n, seed=0)
     return np.asarray(pts), np.asarray(mesh.face_normals[fi])
 
 
@@ -78,8 +78,8 @@ def find_cylinders(pts, nrm, mask, tol=0.5, min_pts=120, max_cyl=6, rng=None):
         radial = rel - np.outer(along, axis)
         # refine the radius and centre on the inliers
         r = float(np.linalg.norm(radial, axis=1).mean())
-        ang = np.degrees(np.arctan2(radial @ _unit(np.cross(axis, [1, 0, 0]) if abs(axis[0]) < .9 else np.cross(axis, [0, 1, 0])),
-                                    radial @ _unit(np.cross(_unit(np.cross(axis, [1, 0, 0]) if abs(axis[0]) < .9 else np.cross(axis, [0, 1, 0])), axis))))
+        e1 = _unit(np.cross(axis, [1, 0, 0] if abs(axis[0]) < .9 else [0, 1, 0]))   # two directions across the axis
+        ang = np.degrees(np.arctan2(radial @ e1, radial @ np.cross(e1, axis)))
         coverage = float(len(set(np.floor((ang + 180) / 30).astype(int))) / 12)
         outward = float(np.mean(np.einsum("ij,ij->i", nrm[sel], radial / np.maximum(np.linalg.norm(radial, axis=1, keepdims=True), 1e-9))))
         if coverage >= 0.5:                                          # a quarter of a round face is not enough to call it a cylinder
