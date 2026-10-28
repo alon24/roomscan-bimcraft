@@ -84,16 +84,18 @@ def analyse(d: Path) -> dict:
         bands=bands, distance_mm={"min": round(float(dist.min())), "median": round(float(np.median(dist))), "max": round(float(dist.max()))},
         mean_markers=round(float(np.mean([r["markers"] for r in ok])), 1), mean_error_px=round(float(np.mean([r["err"] for r in ok])), 2),
         points=[[round(r["az"], 1), round(r["elev"], 1)] for r in ok])
+    fast = slow = 0.0
     if len(rates):
+        fast, slow = round(float((rates > FAST).mean()), 3), round(float((rates < SLOW).mean()), 3)
         out["speed"] = {"median": round(float(np.median(rates)), 1), "p90": round(float(np.percentile(rates, 90)), 1),
-                        "too_fast": round(float((rates > FAST).mean()), 3), "too_slow": round(float((rates < SLOW).mean()), 3)}
+                        "too_fast": fast, "too_slow": slow}
     tips = []
     # score: 30 frames read, 30 angles covered, 20 heights, 20 steady speed
     s_frames = 30 * len(ok) / max(len(rows), 1)
     s_az = 30 * covered.mean() * (0.5 if gaps and max(g[1] - g[0] for g in gaps) >= 60 else 1.0)
     used_bands = sum(1 for n in bands.values() if n >= 3)
     s_el = {0: 0, 1: 8, 2: 15, 3: 20}[used_bands]
-    s_speed = 20 * (1 - min(1.0, (out["speed"]["too_fast"] if len(rates) else 0) * 1.5)) * (1 - min(1.0, (out["speed"]["too_slow"] if len(rates) else 0) * 0.5))
+    s_speed = 20 * (1 - min(1.0, fast * 1.5)) * (1 - min(1.0, slow * 0.5))
     score = round(s_frames + s_az + s_el + s_speed - 10 * near_far)
     if len(ok) < 0.9 * len(rows):
         tips.append(f"{len(rows) - len(ok)} of {len(rows)} frames could not be used (ring not read well). Keep 4 or more markers in view and in focus.")
@@ -107,10 +109,10 @@ def analyse(d: Path) -> dict:
                 tips.append("Add a pass from above (over 50°). The top of the part has few views.")
             else:
                 tips.append("There are few frames at a middle angle (32° to 50°), the best one for the whole shape.")
-    if len(rates) and out["speed"]["too_fast"] > 0.1:
-        tips.append(f"{round(out['speed']['too_fast'] * 100)}% of the time the tray turned faster than {FAST:.0f}°/s: slower gives sharper photos.")
-    if len(rates) and out["speed"]["too_slow"] > 0.4:
-        tips.append(f"The tray stood still or crept for {round(out['speed']['too_slow'] * 100)}% of the time. A steady turn of about 15°/s is enough.")
+    if fast > 0.1:
+        tips.append(f"{round(fast * 100)}% of the time the tray turned faster than {FAST:.0f}°/s: slower gives sharper photos.")
+    if slow > 0.4:
+        tips.append(f"The tray stood still or crept for {round(slow * 100)}% of the time. A steady turn of about 15°/s is enough.")
     if near_far > 0.2:
         tips.append(f"The phone was closer than {NEAR / 10:.0f} cm or farther than {FAR / 10:.0f} cm in {round(near_far * 100)}% of the frames.")
     score = max(0, min(100, score))
