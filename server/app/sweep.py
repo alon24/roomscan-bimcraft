@@ -271,6 +271,19 @@ def depth_mesh(D: np.ndarray, centre: np.ndarray, colours: np.ndarray | None = N
     return m
 
 
+def backdrop(D: np.ndarray, centre: np.ndarray, colours: np.ndarray) -> trimesh.Trimesh | None:
+    """A second, unbroken shell just behind the real surface, built from the FAR side of every depth jump. The real mesh is cut where the
+    depth jumps (an object against the wall behind it); without this, the page's background shows through those cuts as white outlines.
+    It sits 1.5% further out so it never fights the real surface where the two coincide."""
+    valid = np.isfinite(D)
+    if not valid.any():
+        return None
+    far = ndi.maximum_filter(np.where(valid, D, 0.0), size=9)
+    reach = ndi.binary_dilation(valid, iterations=4)
+    far = np.where(reach & (far > 0), far * 1.015, np.nan).astype(np.float32)
+    return depth_mesh(far, centre, colours, jump=50.0)
+
+
 def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     """Sweep-from-one-spot room: depth panorama -> measurements, flat clean surface, panorama colours. Writes colored.ply, mesh.bin,
     points.bin, report.json, room.json and panorama.jpg/json. Returns (ok, log)."""
@@ -295,6 +308,9 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     mesh = depth_mesh(D2, centre, col)
     if mesh is None or len(mesh.faces) == 0:
         return False, "the depth panorama could not be turned into a surface"
+    back = backdrop(D2, centre, col)
+    if back is not None and len(back.faces):
+        mesh = trimesh.util.concatenate([mesh, back])
     if scale != 1.0:
         mesh.apply_scale(scale)
     rgb = np.asarray(mesh.visual.vertex_colors)[:, :3]

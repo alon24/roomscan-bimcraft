@@ -769,7 +769,7 @@ function youHere(p, ext) {   // where you stood while sweeping: one marker inste
 
 // Distances from the middle to each wall / floor / ceiling, drawn as lines with labels in the 3D view
 function roomLabels(room, ext) {
-  const out = [], c = new THREE.Vector3(...room.centre), unit = Math.max(0.05, ext * 0.016);
+  const out = [], c = new THREE.Vector3(...room.centre), unit = Math.max(0.04, ext * 0.011);
   const mk = (name, dir, m) => {
     if (!m) return;
     const end = c.clone().addScaledVector(dir, m);

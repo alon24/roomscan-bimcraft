@@ -73,7 +73,7 @@ def test_sweep_conversion_makes_a_coloured_flat_room(tmp_path):
     v = m.vertices
     on = np.zeros(len(v), bool)
     for axis, lo, hi in ((0, -1.7, 2.3), (1, 0.0, 2.6), (2, -1.2, 1.8)):
-        on |= np.isclose(v[:, axis], lo, atol=0.05) | np.isclose(v[:, axis], hi, atol=0.05)
+        on |= np.isclose(v[:, axis], lo, atol=0.08) | np.isclose(v[:, axis], hi, atol=0.08)       # 8 cm: the backdrop shell sits 1.5% further out
     assert on.mean() > 0.9, on.mean()
     assert (d / "mesh.bin").exists() and (d / "panorama.jpg").exists() and not (d / "texturing.json").exists()
 
