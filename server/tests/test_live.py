@@ -241,14 +241,15 @@ def test_bad_frames_do_not_break_the_connection(client, rendered):
         no_pose = {k: v for k, v in photos[0].items() if k != "transform"}       # would break the build of the whole scan later
         ws.send_bytes(live_replay.pack_frame(d, no_pose, 1))
         assert "transform" in wait_message(ws, "error")["message"]
+        assert wait_message(ws, "ack")["n"] == 1                                 # dropped, but counted: a resend could not fix it
         ws.send_text("{not json")
         assert wait_message(ws, "error")
         ws.send_text("[1, 2]")
         assert wait_message(ws, "error")
         ws.send_json({"type": "dance"})
         assert "unknown" in wait_message(ws, "error")["message"]
-        acks, _ = send_frames(ws, d, photos[:2])
-        assert acks == [1, 2]
+        acks, _ = send_frames(ws, d, photos[1:3], first=2)
+        assert acks == [2, 3]
 
 
 def test_unknown_scan_and_wrong_kind(client):
@@ -437,6 +438,11 @@ def test_add_route_leaves_the_old_scan_alone_when_it_cannot_match(client, render
     assert j["aligned"] is False and j["message"]
     assert len(json.loads((main.DATA / sid / "photos.json").read_text())["photos"]) == n_before
     assert client.get(f"/api/scans/{sid}").json()["status"] == "ok"
+    # a live patch session that is left without a frame: the janitor puts the old status back and the old model stays
+    assert client.post("/api/live", json={"kind": "sweep", "resume_scan": sid}).json()["patch"] is True
+    assert live.janitor_once(now=time.time() + live.IDLE_S + 5) == [sid]
+    assert wait_status(client, sid) == "ok"
+    assert len(json.loads((main.DATA / sid / "photos.json").read_text())["photos"]) == n_before
 
 
 def test_a_gap_across_north_is_one_need_and_ceiling_and_floor_get_one_each(tmp_path):

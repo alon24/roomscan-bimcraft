@@ -97,5 +97,5 @@ Frames are written to a temp folder first and sent in order; if the socket drops
 
 ### 2026-10-29 Review fixes (small protocol tightening)
 - `POST /api/scans/{id}/add` and `POST /api/live` with `resume_scan` answer **409** while the scan is still `capturing` (two sessions writing the same folder corrupted it). Finish it first (`POST /api/scans/{id}/finish`).
-- A frame whose `photo` has no usable `transform` (4x4), `intrinsics` (3x3), `width`, `height` or a non-numeric `timestamp` is answered with `error` and is neither stored nor acknowledged (it used to be stored and then broke the build of the whole scan).
+- A frame whose `photo` has no usable `transform` (4x4), `intrinsics` (3x3), `width`, `height` or a non-numeric `timestamp` is answered with `error` and then an `ack` that counts it: the frame is dropped, not stored (a resend could not fix it, and an ack that stopped there would block every later frame). It used to be stored and then broke the build of the whole scan.
 - The `state` after `hello` is the scan's real state: `capturing`, `building`, `ready` or `error` (it used to stay `building` after the build had finished).

@@ -125,10 +125,14 @@ def _depth_array(photo: dict, data: bytes) -> np.ndarray | None:
     return np.frombuffer(data, dtype="<f4").reshape(h, w)
 
 
+class BadFrame(ValueError):
+    """A frame no resend can fix: it is dropped but still counts as received, so the cumulative ack moves past it."""
+
+
 def _check_photo(photo) -> None:
     """Refuse an entry every consumer would choke on later (it would break the build of the whole scan, not just this frame)."""
     if not isinstance(photo, dict):
-        raise ValueError("photo must be an object")
+        raise BadFrame("photo must be an object")
     try:
         if _mat(photo["transform"]).shape != (4, 4) or np.array(photo["intrinsics"], dtype=float).shape != (3, 3):
             raise ValueError
@@ -136,7 +140,7 @@ def _check_photo(photo) -> None:
             raise ValueError
         float(photo.get("timestamp") or 0)
     except (KeyError, TypeError, ValueError):
-        raise ValueError("photo needs transform (4x4), intrinsics (3x3), width, height and a numeric timestamp")
+        raise BadFrame("photo needs transform (4x4), intrinsics (3x3), width, height and a numeric timestamp")
 
 
 def _state(d: Path) -> str:
@@ -211,7 +215,7 @@ class Session:
 
     def _save_state(self, **extra) -> None:
         """live.json and sessions.json. Call with self.lock held: every live.json write of a live session goes through here."""
-        keep = {k: v for k, v in _read(self.d / "live.json", {}).items() if k in ("prev_status", "cancelled", "resume_scan", "old_count")}
+        keep = {k: v for k, v in _read(self.d / "live.json", {}).items() if k in ("prev_status", "cancelled", "resume_scan")}
         _write(self.d / "live.json", {**keep, **extra, "kind": self.kind, "session": self.index, "patch": self.patch,
                                       "got": sorted(self.got), "finish": self.finished})
         self.mine["aligned"] = self.aligned
@@ -235,8 +239,15 @@ class Session:
 
     def store_frame(self, n: int | None, photo: dict, jpeg: bytes, depth_bytes: bytes) -> int:
         """Write one frame (idempotent by phone frame number and by timestamp). Returns the cumulative ack.
-        Raises ValueError for an entry that cannot be used or once the scan is being built."""
-        _check_photo(photo)
+        Raises BadFrame for an entry that cannot be used (counted as received), ValueError once the scan is being built."""
+        try:
+            _check_photo(photo)
+        except BadFrame:
+            if n is not None:
+                with self.lock:
+                    if not self.finished:
+                        self.got.add(n); self._recount(); self._save_state()
+            raise
         with self.lock:
             if self.finished:
                 raise ValueError("this scan is already being built")
@@ -480,7 +491,7 @@ def create(body: dict) -> dict:
         _open_for_patch(d, meta)
         index = max(s["index"] for s in _sessions(d)["sessions"]) + 1
         _write(d / "live.json", {"kind": _old_kind(meta, kind), "session": index, "patch": True, "got": [], "finish": False,
-                                 "prev_status": meta.get("status"), "resume_scan": sid, "old_count": len(_photos(d))})
+                                 "prev_status": meta.get("status"), "resume_scan": sid})
         meta["status"] = "capturing"
         _save_meta(d, meta)
     else:
@@ -655,6 +666,9 @@ async def _on_frame(ws: WebSocket, sess: Session, data: bytes) -> None:
     sess.last_seen = time.time()
     try:
         ack = await anyio.to_thread.run_sync(sess.store_frame, n, photo, jpeg, depth)
+    except BadFrame as e:
+        await _send(ws, sess, {"type": "error", "message": f"frame {n} dropped: {e}"})
+        ack = sess.acked
     except ValueError as e:
         await _send(ws, sess, {"type": "error", "message": str(e)})
         return
@@ -668,6 +682,8 @@ async def _on_text(ws: WebSocket, sess: Session, m: dict) -> None:
         await _send(ws, sess, {"type": "ack", "n": sess.acked})
         await _send(ws, sess, {"type": "state", "status": _state(sess.d), "scan_id": sess.id})
         msg = await anyio.to_thread.run_sync(lambda: sess.next_map(force=True))
+        for q in sess.drain():               # as in the ticker: a queued `aligned` goes before a map that reflects it
+            await _send(ws, sess, q)
         if msg is not None:
             await _send(ws, sess, msg)
     elif t == "pose":
@@ -825,15 +841,12 @@ def add_to_scan(scan_id: str, photos: list[UploadFile] = File(default=[]), photo
 # ---------------------------------------------------------------- abandoned captures
 
 def abandon(d: Path, scan_id: str) -> None:
-    """A capture nobody has touched for IDLE_S: build what there is, or for a patch with nothing added put the old status back."""
+    """A capture nobody has touched for IDLE_S: build what there is. A patch goes through the same finish, which tries its
+    unmatched frames once more and puts the old status back if nothing could be added."""
     live = _read(d / "live.json", {})
-    n = len(_photos(d))
-    if (live.get("patch") and n <= int(live.get("old_count", 0))) or n == 0:
+    if not live.get("patch") and not _photos(d):
         meta = _meta(d)
-        if live.get("patch"):
-            meta["status"] = live.get("prev_status") or "ok"
-        else:
-            meta["status"], meta["log"] = "error", "the capture ended without any frame"
+        meta["status"], meta["log"] = "error", "the capture ended without any frame"
         _save_meta(d, meta)
         live["finish"] = True
         _write(d / "live.json", live)
