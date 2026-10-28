@@ -385,7 +385,7 @@ async function loadList() {
           const v = await ask("Rename home", [{ key: "name", label: "Name", value: name }]);
           if (v?.name && v.name !== name) { await api(`/api/projects/${encodeURIComponent(name)}`, { method: "PATCH", body: JSON.stringify(v) }); loadList(); }
         }),
-        Object.assign(icoBtn("⬇", "Download this home as a zip", () => {}), { onclick: () => location.href = `/api/export.zip?project=${encodeURIComponent(name)}` }),
+        icoBtn("⬇", "Download this home as a zip", () => { location.href = `/api/export.zip?project=${encodeURIComponent(name)}`; }),
         icoBtn("✕", "Delete home", async () => {
           const v = await ask(`Delete home “${name}”?`, [{ key: "also", label: "Type DELETE to also delete its rooms, or leave empty to keep them" }], "Delete home", true);
           if (!v) return;
@@ -461,11 +461,19 @@ $("importFile").onchange = e => { const fs = [...e.target.files]; e.target.value
   side.ondrop = e => { e.preventDefault(); side.style.outline = ""; if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); };
 }
 
-function clearDetail() { current = null; $("detail").hidden = true; $("hint").hidden = false; }
+// Every show() (and every switch away) takes a new number; an older show() that wakes up after an await sees it is stale and stops,
+// so a slow scan cannot paint over the one picked after it, and two redraws of the same scan (button + live event) do not mix.
+let showGen = 0;
+function clearDetail() { showGen++; current = null; $("detail").hidden = true; $("hint").hidden = false; }
 
 async function show(id) {
-  current = id;
-  const meta = await (await fetch(`/api/scans/${id}`)).json();
+  current = id; live = false;   // a later live frame must take the page over again, not be drawn into this scan's view
+  const gen = ++showGen, stale = () => gen !== showGen;
+  const res = await fetch(`/api/scans/${id}`);
+  if (stale()) return;
+  if (!res.ok) { clearDetail(); loadList(); return; }   // deleted meanwhile, or a stale ?scan= link
+  const meta = await res.json();
+  if (stale()) return;
   $("hint").hidden = true; $("detail").hidden = false;
   $("modes").hidden = true; ctx = null; $("framesBox").hidden = true; $("measureBar").hidden = true; MEAS.on = false;
   $("title").textContent = meta.name;
@@ -481,7 +489,7 @@ async function show(id) {
     $("settingsBox").hidden = lines.length === 0;
   }
   const isObj = meta.kind === "object", isMesh = meta.kind === "mesh";
-  $("printBar").hidden = true;
+  $("printBar").hidden = true; PRINT.closeStage?.(); PRINT.view?.dispose(); PRINT.view = null; clearFit();
   $("plan").hidden = isObj || isMesh;
   $("plan").src = !isObj && !isMesh && meta.status === "ok" ? `/api/scans/${id}/plan.png?t=${Date.now()}` : "";
   const actions = $("actions");
@@ -537,11 +545,12 @@ async function show(id) {
   setupQuality(id, meta);
   if (isMesh) {
     const poses = await loadPhotos(meta);
+    if (stale()) return;
     if (meta.status === "ok") {
       const r = await (await fetch(`/api/scans/${id}/report.json`)).json();
+      if (stale()) return;
       $("log").textContent = `Size: ${r.size_m.join(" × ")} m\n${r.points ? `Points: ${r.points}\n` : ""}${r.size_mm ? `Printable size: ${r.size_mm.join(" × ")} mm   Watertight: ${r.watertight ? "yes" : "NO"}\n` : ""}Triangles: ${r.faces}${r.coloured != null ? `\nColoured from photos: ${Math.round(r.coloured * 100)}%` : ""}\n\n` + (meta.log || "");
       if (r.stl) for (const f of ["model.stl", "model.3mf"]) {
-        if (current !== id || actions.querySelector(`a[download="${f}"]`)) continue;   // the page may be drawn twice at once (a live update)
         const a = document.createElement("a");
         a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}`; a.download = f;
         actions.append(a);
@@ -555,6 +564,7 @@ async function show(id) {
         // camera positions (tap one to open its photo), only where they share the scan's frame
         const ext = Math.max(...(r.size_m || (r.size_mm || [3000]).map(x => x / 1000)));
         const room = r.points || r.faces ? await loadRoom(id) : null;
+        if (stale()) return;
         const camList = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform);
         const camPos = camList.map(p => new THREE.Vector3(p.transform[3][0], p.transform[3][1], p.transform[3][2]));
         const camMid = camPos.length ? camPos.reduce((a, b) => a.add(b), new THREE.Vector3()).multiplyScalar(1 / camPos.length) : null;
@@ -570,6 +580,7 @@ async function show(id) {
         // Photo texture: every triangle drawn with the photo that sees it best, projected per pixel (built when first asked for)
         let texturable = false;
         if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`)).ok; } catch {} }
+        if (stale()) return;
         const first = views.surface && !meta.ring ? "surface" : texturable ? "textured" : views.surface ? "surface" : "points";
         const box = $("modes");
         const pick = async k => {
@@ -577,6 +588,7 @@ async function show(id) {
             $("log").textContent = "Loading the photos onto the surface…\n" + $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
             try { views.textured = withBox(await drawPhotoTextured(id, await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r)); }
             catch (e) { views.textured = null; texturable = false; $("log").textContent += "\nPhoto texture failed: " + e; k = first; }
+            if (stale()) return;
             $("log").textContent = $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
           }
           const middle = !room ? [] : [Object.assign(document.createElement("button"), { className: "btn", textContent: "From the middle", title: "Stand where you swept the phone and look round",
@@ -600,14 +612,17 @@ async function show(id) {
   }
   if (isObj) {
     await loadPhotos(meta);
+    if (stale()) return;
     if (meta.status === "ok") {
       const r = await (await fetch(`/api/scans/${id}/report.json`)).json();
+      if (stale()) return;
       $("log").textContent = `Size: ${r.size_mm.join(" × ")} mm\nWatertight: ${r.watertight ? "yes" : "NO – slicer may need repair"}\nVolume: ${r.volume_mm3 ?? "n/a"} mm³\nFaces: ${r.faces}\n\n` + (meta.log || "");
       try {
         const t = await fetch(`/api/scans/${id}/textured.json`);
+        const model = t.ok ? await t.json() : await (await fetch(`/api/scans/${id}/preview.json`)).json();
+        if (stale()) return;
         setMeasure(id, meta, t.ok ? (meta.scale ?? 1) : 1, r.size_mm);     // the textured model is shown before the scale is applied
-        if (t.ok) drawTextured(id, await t.json());
-        else drawMesh(await (await fetch(`/api/scans/${id}/preview.json`)).json());
+        if (t.ok) drawTextured(id, model); else drawMesh(model);
         await setupPrint(id);
       }
       catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
@@ -619,7 +634,8 @@ async function show(id) {
     const scan = await (await fetch(`/api/scans/${id}/scan.json`)).json();
     let index = null;
     if (poses.length) try { index = await (await fetch(`/api/scans/${id}/photo_index.json`)).json(); } catch {}
-    ctx = { id, scan, poses, index, mode: index && Object.keys(index).length ? "both" : "lidar" };
+    if (stale()) return;
+    ctx ={ id, scan, poses, index, mode: index && Object.keys(index).length ? "both" : "lidar" };
     setupModes();
     show3d(roomGroup(ctx), false);
   }
@@ -634,6 +650,7 @@ async function loadFrames(id) {
   grid.replaceChildren();
   let frames = [];
   try { frames = await (await fetch(`/api/scans/${id}/frames`)).json(); } catch {}
+  if (current !== id) return;
   box.hidden = !frames.some(f => f.has_depth);
   if (box.hidden) return;
   FR.id = id; FR.frames = frames;
@@ -742,11 +759,8 @@ async function loadPhotos(meta) {
   if (!(meta.photo_count > 0)) return [];
   let poses = [];
   try { const m = await (await fetch(`/api/scans/${meta.id}/photos.json`)).json(); poses = m.photos ?? m; } catch {}
-  const names = poses.length ? poses.map(p => p.file) : Array.from({ length: meta.photo_count }, (_, i) => null);
-  if (poses.length) for (const f of names) addThumb(meta.id, f);
-  else {  // no manifest (objects): list by index; server names are o001.jpg, o002.jpg, ...
-    for (let i = 1; i <= meta.photo_count; i++) addThumb(meta.id, `o${String(i).padStart(3, "0")}.jpg`);
-  }
+  if (poses.length) for (const p of poses) addThumb(meta.id, p.file);
+  else for (let i = 1; i <= meta.photo_count; i++) addThumb(meta.id, `o${String(i).padStart(3, "0")}.jpg`);   // no manifest (objects): o001.jpg, o002.jpg, ...
   return poses;
 }
 
@@ -808,6 +822,7 @@ function showRoomBox(room) {
   b.hidden = false;
 }
 
+$("panoClose").onclick = () => $("panoDlg").close();
 // A 360 panorama viewer: drag to look around, wheel to zoom. Directions follow the server's: azimuth 0 = the first heading, +90 = to the right.
 async function openPano(id) {
   const dlg = $("panoDlg"), box = $("panoView");
@@ -819,12 +834,16 @@ async function openPano(id) {
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
     info = await r.json();
   } catch (e) { $("panoHint").textContent = "No panorama: " + e; return; }
+  if (!dlg.open) return;
   $("panoHint").textContent = `Drag to look around · scroll or pinch to zoom · ${Math.round(info.coverage * 100)}% of the sphere is covered, grey = not seen by any photo` + (info.from_one_spot ? "" : " · the phone moved, so near objects may be slightly doubled");
   $("panoDl").href = `/api/scans/${id}/panorama.jpg?download=1`;
   const W = box.clientWidth, H = box.clientHeight;
   const rend = new THREE.WebGLRenderer({ antialias: true }); rend.setSize(W, H); box.append(rend.domElement);
   const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(70, W / H, 0.1, 100);
+  let alive = true;
+  dlg.onclose = () => { alive = false; rend.dispose(); rend.forceContextLoss(); box.replaceChildren(); };   // Close button and Esc alike
   const tex = await new Promise((ok, no) => new THREE.TextureLoader().load(`/api/scans/${id}/panorama.jpg`, ok, undefined, no));
+  if (!alive) { tex.dispose(); return; }
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = rend.capabilities.getMaxAnisotropy();
   const NU = 96, NV = 48, pos = [], uv = [], idx = [];
   for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) {
@@ -836,7 +855,7 @@ async function openPano(id) {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
   scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })));
-  let az = 0, el = 0, fov = 70, drag = null, alive = true;
+  let az = 0, el = 0, fov = 70, drag = null;
   const draw = () => {
     if (!alive) return;
     cam.fov = fov; cam.updateProjectionMatrix();
@@ -848,8 +867,7 @@ async function openPano(id) {
   dom.onpointermove = e => { if (!drag) return; const k = fov / 70 * 0.0055; az -= (e.clientX - drag[0]) * k; el = Math.max(-1.5, Math.min(1.5, el + (e.clientY - drag[1]) * k)); drag = [e.clientX, e.clientY]; draw(); };
   dom.onpointerup = () => { drag = null; };
   dom.onwheel = e => { e.preventDefault(); fov = Math.max(20, Math.min(100, fov * (1 + Math.sign(e.deltaY) * 0.08))); draw(); };
-  const close = () => { alive = false; rend.dispose(); tex.dispose(); box.replaceChildren(); dlg.close(); };
-  $("panoClose").onclick = close; dlg.onclose = () => { alive = false; };
+  dlg.addEventListener("close", () => tex.dispose(), { once: true });
   draw();
 }
 
@@ -1215,7 +1233,7 @@ async function cutViewer(id, hooks) {
 
   const view = {
     S, extent, pos, draw, angles: () => [-Math.asin(Math.max(-1, Math.min(1, S.n.y))) * 180 / Math.PI, Math.atan2(S.n.x, S.n.z) * 180 / Math.PI],
-    dispose() { rend.dispose(); },
+    dispose() { rend.dispose(); rend.forceContextLoss(); },
     setN(n) { S.n.copy(n).normalize(); keepInside(); this.leaveResult(); changed(); },
     setAngles(rxDeg, ryDeg) {
       const p = rxDeg * Math.PI / 180, t = ryDeg * Math.PI / 180;
@@ -1307,9 +1325,12 @@ const heat = (d, lim, signed) => {   // blue = inside the reference, red = outsi
   return t >= 0 ? [1, 1 - t, 1 - t] : [1 + t, 1 + t, 1];
 };
 
+let fitRend = null;   // the deviation viewer: one WebGL context at a time
+function clearFit() { fitRend?.dispose(); fitRend?.forceContextLoss(); fitRend = null; $("fitOut").replaceChildren(); $("fitHint").textContent = ""; }
+
 async function fitCheck(id, file, against) {
   const out = $("fitOut"), hint = $("fitHint");
-  out.replaceChildren(); hint.textContent = "Lining the reference up and measuring (about 10 seconds)…";
+  clearFit(); hint.textContent = "Lining the reference up and measuring (about 10 seconds)…";
   const f = new FormData(); if (against) f.append("against", against); else f.append("reference", file);
   const r = await fetch(`/api/scans/${id}/fit`, { method: "POST", body: f });
   if (current !== id) return;
@@ -1325,7 +1346,7 @@ async function fitCheck(id, file, against) {
     `<div class="hint" style="margin-top:6px">Colours: ${m.signed ? "red = scan outside the reference, blue = inside, white = on it" : "white = on it, red = off it"}; full colour at ${lim.toFixed(2)} mm.</div>`;
   out.append(holder, side);
   const W = holder.clientWidth || 400, H = 320;
-  const rend = new THREE.WebGLRenderer({ antialias: true }); rend.setSize(W, H); holder.append(rend.domElement);
+  const rend = fitRend = new THREE.WebGLRenderer({ antialias: true }); rend.setSize(W, H); holder.append(rend.domElement);
   const scene = new THREE.Scene(); scene.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.8));
   const g = new THREE.BufferGeometry();
@@ -1355,7 +1376,7 @@ async function setupPrint(id) {
   const info = await r.json();
   Object.assign(PRINT, { id, size: info.size_mm });
   bar.hidden = false;                      // the viewer needs a visible box to measure
-  $("fitOut").replaceChildren(); $("fitHint").textContent = "";
+  clearFit();
   $("fitFile").value = ""; $("fitFile").onchange = () => { const f = $("fitFile").files[0]; if (f) fitCheck(id, f); };
   $("featOut").replaceChildren(); $("colour3mf").href = `/api/scans/${id}/model_colour.3mf`;
   const sel = $("fitAgainst"); sel.replaceChildren(Object.assign(document.createElement("option"), { value: "", textContent: "choose…" }));
@@ -1597,7 +1618,8 @@ async function setupPrint(id) {
     requestAnimationFrame(() => view?.resize?.());
   };
   view = await cutViewer(id, hooks);
-  if (!view || current !== id) return;
+  if (!view) return;
+  if (current !== id) { view.dispose(); return; }   // another scan was picked while the mesh loaded
   const q0 = new URLSearchParams(location.search);   // ?cut=1 opens the tool; &rx=..&ry=..&pos=.. set the plane (for links and screenshots)
   if (q0.get("cut")) {
     openStage(true);
@@ -1618,15 +1640,6 @@ function drawMesh(m) {
   const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xc9a46c, roughness: 0.7, side: THREE.DoubleSide }));
   mesh.rotation.x = -Math.PI / 2;  // model is Z-up (printer), three.js is Y-up
   show3d(mesh);
-}
-
-function draw(scan, keepView = false, markers = []) {
-  const group = new THREE.Group();
-  for (const m of markers) group.add(m);
-  for (const w of scan.walls || []) group.add(surfaceMesh(w, 0xb8bec8, 0.75));
-  for (const d of scan.doors || []) group.add(surfaceMesh(d, 0xb5733a, 1));
-  for (const w of scan.windows || []) group.add(surfaceMesh(w, 0x4aa3df, 0.7));
-  show3d(group, keepView);
 }
 
 let V = null;  // persistent 3D view: {scene, cam, group, place, fit}
@@ -1696,7 +1709,7 @@ function show3d(group, keepView = false) {
   cancelAnimationFrame(raf);
   const el = $("view");
   MEAS.objs = []; MEAS.pts = []; $("measureOut").hidden = true;
-  if (renderer) { renderer.dispose(); el.replaceChildren(); }
+  if (renderer) { renderer.dispose(); renderer.forceContextLoss(); el.replaceChildren(); }
   const W = el.clientWidth, H = el.clientHeight;
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(W, H);
@@ -1839,12 +1852,14 @@ let live = false;
 
 function enterLive() {
   if (live) return;
-  live = true; current = null;
+  live = true; current = null; showGen++;
   V = null;  // force a fresh scene sized to the page
   $("hint").hidden = true; $("detail").hidden = false;
   $("title").textContent = "● Live scan";
   $("status").textContent = "scanning"; $("status").className = "";
   $("actions").replaceChildren(); $("plan").hidden = true; $("log").textContent = "Receiving from the phone…";
+  for (const b of ["printBar", "measureBar", "qualityBox", "modes", "photosBox", "framesBox", "settingsBox", "roomBox", "livePanel"]) $(b).hidden = true;   // the last scan's panels
+  PRINT.closeStage?.(); PRINT.view?.dispose(); PRINT.view = null; clearFit();
   loadList();
 }
 
@@ -1884,7 +1899,7 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === "live") {
       enterLive();
-      draw(m.room, true);
+      show3d(roomGroup({ scan: m.room, poses: [], mode: "lidar" }), true);
     } else if (m.type === "list") {
       if (m.deleted && m.deleted === current) clearDetail();
       loadList();

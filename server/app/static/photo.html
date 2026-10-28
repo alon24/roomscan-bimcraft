@@ -223,12 +223,15 @@ window.onresize = () => draw();
 
 $("undo").onclick = () => { if (pending) pending = null; else meas.pop(); draw(); list(); };
 $("clear").onclick = () => { meas = []; pending = null; draw(); list(); };
+let flatUrl = null;
 $("flatBtn").onclick = async () => {
   const out = $("flatOut"); out.textContent = "Straightening…";
   const f = refBody(); f.append("file", blob, "photo.jpg"); f.append("corners", JSON.stringify(corners));
   const r = await fetch("/api/photo/rectify", { method: "POST", body: f });
   if (!r.ok) { out.textContent = "Could not straighten: " + ((await r.json().catch(() => ({}))).detail || r.status); return; }
   const ppm = r.headers.get("X-Px-Per-Mm"), url = URL.createObjectURL(await r.blob());
+  if (flatUrl) URL.revokeObjectURL(flatUrl);   // each straightened image is a few MB held by its blob URL
+  flatUrl = url;
   const im = Object.assign(document.createElement("img"), { id: "flat", src: url, alt: "Top-down view" });
   const a = Object.assign(document.createElement("a"), { href: url, download: "straightened.png", textContent: "Download" });
   const n = Object.assign(document.createElement("div"), { className: "hint", textContent: `Top-down and to scale: ${(+ppm).toFixed(2)} pixels per mm. ` });
