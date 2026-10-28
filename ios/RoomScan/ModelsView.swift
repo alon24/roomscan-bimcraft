@@ -50,7 +50,7 @@ final class ModelsModel: ObservableObject {
 
 struct ModelsView: View {
     @StateObject private var model = ModelsModel()
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
 
     var body: some View {
         List {
@@ -80,7 +80,7 @@ struct ModelsView: View {
 
 struct ModelDetailView: View {
     let scan: ScanSummary
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var scene: SCNScene?
     @State private var note = "Downloading the model…"
     @State private var size = ""
@@ -186,7 +186,7 @@ struct ModelDetailView: View {
 /// The server's page for one scan, inside the app.
 struct WebPage: View {
     let scanID: String
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var reload = 0
 
     var body: some View {

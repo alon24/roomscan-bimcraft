@@ -1,6 +1,32 @@
 import ARKit
 import CoreImage
 
+struct PhotoMeta: Codable {
+    let file: String
+    let timestamp: Double            // wall clock, seconds since 1970
+    let transform: [[Float]]         // camera-to-world, 4 columns, same world frame as the CapturedRoom
+    let intrinsics: [[Float]]        // 3 columns, for an image of `width` x `height`
+    let width: Int
+    let height: Int
+    let exposureDuration: Double
+    let exposureOffset: Float
+    let ambientIntensity: Float?
+    let ambientColorTemperature: Float?
+    let depthFile: String?           // raw little-endian Float32, row-major, metres; aligned with the image
+    let depthWidth: Int?
+    let depthHeight: Int?
+}
+
+/// Everything needed to put the photos back in the room: poses, intrinsics, depth, and the conventions.
+struct PhotoManifest: Codable {
+    var version = 2
+    var units = "metres"
+    var worldFrame = "ARKit session world: right-handed, +Y up. Same frame as the CapturedRoom surface transforms."
+    var cameraFrame = "ARKit camera: +X right, +Y up, looks down -Z. transform maps camera space to world."
+    var imageFrame = "Unrotated sensor image (landscape). Origin top-left, u right, v down. intrinsics columns: [fx,0,0],[0,fy,0],[cx,cy,1] for width x height; scale them for the depth map size."
+    var photos: [PhotoMeta]
+}
+
 /// Takes a photo whenever the camera has moved ~25 cm or turned ~15 degrees, with its pose, intrinsics and depth,
 /// in the same ARKit world frame as the mesh. The server uses them to colour the mesh.
 final class PhotoRecorder {
@@ -8,6 +34,7 @@ final class PhotoRecorder {
     private(set) var metas: [PhotoMeta] = []
     private(set) var urls: [URL] = []
     private var lastPose: simd_float4x4?
+    private var lastTimestamp: TimeInterval = -1
     private let ciContext = CIContext()
     var maxPhotos = 120
     var maxSide: CGFloat = 1280
@@ -21,7 +48,9 @@ final class PhotoRecorder {
 
     /// `force` skips the movement test: the guided scan decides when a new view is worth a photo.
     func consider(_ frame: ARFrame, force: Bool = false) {
-        guard metas.count < maxPhotos, case .normal = frame.camera.trackingState else { return }
+        // `currentFrame` stays on the last frame when the session is interrupted (another tab's camera), and forced
+        // captures would otherwise fill the scan with copies of it.
+        guard metas.count < maxPhotos, frame.timestamp != lastTimestamp, case .normal = frame.camera.trackingState else { return }
         let t = frame.camera.transform
         if !force, let last = lastPose {
             let moved = simd_length(t.columns.3 - last.columns.3) > 0.25
@@ -40,6 +69,7 @@ final class PhotoRecorder {
         let name = String(format: "p%03d.jpg", n)
         guard (try? jpeg.write(to: dir.appendingPathComponent(name))) != nil else { return }
         lastPose = t
+        lastTimestamp = frame.timestamp
         let m = frame.camera.intrinsics
         let kf = Float(k)
         let scaled = simd_float3x3(columns: (m.columns.0 * kf, m.columns.1 * kf, SIMD3(m.columns.2.x * kf, m.columns.2.y * kf, 1)))

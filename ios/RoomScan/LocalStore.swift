@@ -191,7 +191,7 @@ final class SavedStore: ObservableObject {
 /// "On this phone": scans saved for later, at the top of the Models tab.
 struct SavedScansSection: View {
     @StateObject private var store = SavedStore()
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
 
     var body: some View {
         Section {
@@ -233,7 +233,7 @@ struct SavedScansSection: View {
 struct SavedScanDetail: View {
     let scan: SavedScan
     @ObservedObject var store: SavedStore
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var zipURL: URL?

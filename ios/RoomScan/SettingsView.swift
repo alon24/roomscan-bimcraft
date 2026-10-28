@@ -1,7 +1,14 @@
 import SwiftUI
 
+/// The server address typed in Settings, with one default for every reader. Code outside views must use `url`, not
+/// `UserDefaults.string(forKey:)`, which is nil until Settings is first changed and silently turned off live guidance and reports.
+enum ServerAddress {
+    static let defaultURL = "http://192.168.1.10:8000"
+    static var url: String { UserDefaults.standard.string(forKey: "serverURL") ?? defaultURL }
+}
+
 struct SettingsView: View {
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @AppStorage("liveStream") private var liveStream = true
     @AppStorage("project") private var project = ""
     @AppStorage("allFrames") private var allFrames = true

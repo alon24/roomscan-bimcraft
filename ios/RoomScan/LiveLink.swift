@@ -80,7 +80,8 @@ final class LiveLink: NSObject, ObservableObject {
     // MARK: connection
 
     private func createSession() async {
-        guard active, let url = URL(string: server)?.appendingPathComponent("api/live") else { return }
+        guard active else { return }
+        guard let url = URL(string: server)?.appendingPathComponent("api/live") else { await MainActor.run { self.link = .offline }; return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"; req.timeoutInterval = 6
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -242,6 +243,7 @@ final class LiveLink: NSObject, ObservableObject {
         serverReady = false
         let sendDeadline = Date().addingTimeInterval(120)
         while acked < rec.count {
+            if !active { throw LiveError.notLive }      // New scan pressed meanwhile
             if Date() > sendDeadline { throw LiveError.timeout }
             pump(rec, frame: nil)
             note = "Sending \(rec.count - acked) frames to the server…"
@@ -253,6 +255,7 @@ final class LiveLink: NSObject, ObservableObject {
         let buildDeadline = Date().addingTimeInterval(900)
         while Date() < buildDeadline {
             try await Task.sleep(nanoseconds: 2_000_000_000)
+            if !active { throw LiveError.notLive }
             if serverReady { return id }
             if let (data, _) = try? await session.data(from: url), let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let status = (o["status"] as? String) ?? ((o["meta"] as? [String: Any])?["status"] as? String) {

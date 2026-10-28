@@ -63,7 +63,7 @@ final class RingCalibrationModel: NSObject, ObservableObject {
 
 struct RingCalibrationView: View {
     @StateObject private var model = RingCalibrationModel()
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var markerText = ""
     @State private var outerText = ""
     @State private var zoom: CGFloat = 1

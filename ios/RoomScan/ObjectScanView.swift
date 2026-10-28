@@ -245,7 +245,7 @@ final class ObjectScanModel: ObservableObject {
 struct ObjectScanView: View {
     @StateObject private var model = ObjectScanModel()
     @StateObject private var turntable = TurntableCapture()
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     var walkOnly = false          // the Object tab's "Without the ring": Apple's walk-around capture only
     @State private var mode = 0   // 0 walk around the part, 1 turntable (phone fixed, part turns)
     @State private var heightText = ""

@@ -1,33 +1,6 @@
 import SwiftUI
 import RoomPlan
 import ARKit
-import CoreImage
-
-struct PhotoMeta: Codable {
-    let file: String
-    let timestamp: Double            // wall clock, seconds since 1970
-    let transform: [[Float]]         // camera-to-world, 4 columns, same world frame as the CapturedRoom
-    let intrinsics: [[Float]]        // 3 columns, for an image of `width` x `height`
-    let width: Int
-    let height: Int
-    let exposureDuration: Double
-    let exposureOffset: Float
-    let ambientIntensity: Float?
-    let ambientColorTemperature: Float?
-    let depthFile: String?           // raw little-endian Float32, row-major, metres; aligned with the image
-    let depthWidth: Int?
-    let depthHeight: Int?
-}
-
-/// Everything needed to put the photos back in the room: poses, intrinsics, depth, and the conventions.
-struct PhotoManifest: Codable {
-    var version = 2
-    var units = "metres"
-    var worldFrame = "ARKit session world: right-handed, +Y up. Same frame as the CapturedRoom surface transforms."
-    var cameraFrame = "ARKit camera: +X right, +Y up, looks down -Z. transform maps camera space to world."
-    var imageFrame = "Unrotated sensor image (landscape). Origin top-left, u right, v down. intrinsics columns: [fx,0,0],[0,fy,0],[cx,cy,1] for width x height; scale them for the depth map size."
-    var photos: [PhotoMeta]
-}
 
 final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, RoomCaptureSessionDelegate {
     let captureView = RoomCaptureView(frame: .zero)
@@ -50,15 +23,11 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     private var liveRoom: CapturedRoom?
     private var tooDark = false
     @Published var photosMetaURL: URL?
-    private var photoDir: URL?
-    private var photoMetas: [PhotoMeta] = []
-    private var lastPose: simd_float4x4?
+    private var recorder: PhotoRecorder?
     private var photoTimer: Timer?
-    private let ciContext = CIContext()
-    private let maxPhotos = 80
     private var result: CapturedRoom?
     private var lastLive = Date.distantPast
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @AppStorage("liveStream") private var liveStream = true
 
     override init() {
@@ -76,12 +45,11 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         quickEnd = quick ? Date().addingTimeInterval(TimeInterval(Self.quickSeconds)) : .distantFuture
         quickLeft = quick ? Self.quickSeconds : nil
         jsonURL = nil; usdzURL = nil; result = nil; status = ""
-        photoURLs = []; photosMetaURL = nil; photoMetas = []; lastPose = nil
+        photoURLs = []; photosMetaURL = nil
         live3D.reset()
         wallCount = 0; scanStarted = Date(); discarding = false
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("room-photos-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        photoDir = dir
+        recorder = PhotoRecorder()
+        recorder?.maxPhotos = 80
         photoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateHUD(); self?.capturePhoto() }
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         scanning = true
@@ -123,56 +91,8 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
 
     /// A real photo whenever the camera has moved ~25 cm or turned ~15 degrees, so every view of the room is covered.
     private func capturePhoto() {
-        guard let dir = photoDir, photoMetas.count < maxPhotos, !tooDark,
-              let frame = captureView.captureSession.arSession.currentFrame,
-              case .normal = frame.camera.trackingState else { return }
-        let t = frame.camera.transform
-        if let last = lastPose {
-            let moved = simd_length(t.columns.3 - last.columns.3) > 0.25
-            let turned = simd_dot(simd_normalize(t.columns.2), simd_normalize(last.columns.2)) < 0.966
-            if !moved && !turned { return }
-        }
-        let buf = frame.capturedImage
-        let w = CVPixelBufferGetWidth(buf), h = CVPixelBufferGetHeight(buf)
-        let k = min(1, 1280 / CGFloat(max(w, h)))
-        let img = CIImage(cvPixelBuffer: buf).transformed(by: CGAffineTransform(scaleX: k, y: k))
-        guard let jpeg = ciContext.jpegRepresentation(
-            of: img, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
-            options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.8]
-        ) else { return }
-        let name = String(format: "p%03d.jpg", photoMetas.count + 1)
-        let url = dir.appendingPathComponent(name)
-        guard (try? jpeg.write(to: url)) != nil else { return }
-        lastPose = t
-        let m = frame.camera.intrinsics
-        let sw = Int(CGFloat(w) * k), sh = Int(CGFloat(h) * k)
-        let scaled = simd_float3x3(columns: (m.columns.0 * Float(k), m.columns.1 * Float(k), SIMD3(m.columns.2.x * Float(k), m.columns.2.y * Float(k), 1)))
-        func cols4(_ a: simd_float4x4) -> [[Float]] { (0..<4).map { c in (0..<4).map { a[c][$0] } } }
-        func cols3(_ a: simd_float3x3) -> [[Float]] { (0..<3).map { c in (0..<3).map { a[c][$0] } } }
-        var depthName: String?, dw: Int?, dh: Int?
-        if let depth = frame.sceneDepth?.depthMap ?? frame.smoothedSceneDepth?.depthMap {
-            let dname = String(format: "p%03d.depth", photoMetas.count + 1)
-            let durl = dir.appendingPathComponent(dname)
-            if let (w2, h2) = Self.writeDepth(depth, to: durl) { depthName = dname; dw = w2; dh = h2; photoURLs.append(durl) }
-        }
-        photoMetas.append(PhotoMeta(
-            file: name, timestamp: Date().timeIntervalSince1970, transform: cols4(t), intrinsics: cols3(scaled), width: sw, height: sh,
-            exposureDuration: frame.camera.exposureDuration, exposureOffset: frame.camera.exposureOffset,
-            ambientIntensity: frame.lightEstimate.map { Float($0.ambientIntensity) },
-            ambientColorTemperature: frame.lightEstimate.map { Float($0.ambientColorTemperature) },
-            depthFile: depthName, depthWidth: dw, depthHeight: dh))
-        photoURLs.append(url)
-    }
-
-    private static func writeDepth(_ buf: CVPixelBuffer, to url: URL) -> (Int, Int)? {
-        CVPixelBufferLockBaseAddress(buf, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
-        guard CVPixelBufferGetPixelFormatType(buf) == kCVPixelFormatType_DepthFloat32,
-              let base = CVPixelBufferGetBaseAddress(buf) else { return nil }
-        let w = CVPixelBufferGetWidth(buf), h = CVPixelBufferGetHeight(buf), bpr = CVPixelBufferGetBytesPerRow(buf)
-        var data = Data(capacity: w * h * 4)
-        for y in 0..<h { data.append(Data(bytes: base + y * bpr, count: w * 4)) }
-        return (try? data.write(to: url)) != nil ? (w, h) : nil
+        guard !tooDark, let frame = captureView.captureSession.arSession.currentFrame else { return }
+        recorder?.consider(frame)
     }
 
     private var stopAsked = Date.distantPast
@@ -190,12 +110,8 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     func stop() {
         photoTimer?.invalidate(); photoTimer = nil
         quickLeft = nil
-        if let dir = photoDir, !photoMetas.isEmpty {
-            let meta = dir.appendingPathComponent("photos.json")
-            let enc = JSONEncoder()
-            enc.keyEncodingStrategy = .convertToSnakeCase
-            if (try? enc.encode(PhotoManifest(photos: photoMetas)).write(to: meta)) != nil { photosMetaURL = meta }
-        }
+        photoURLs = recorder?.urls ?? []
+        photosMetaURL = recorder?.writeManifest()
         captureView.captureSession.stop()
         scanning = false
         Screen.awake(false)
@@ -226,7 +142,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         scanning = false; quick = false; quickLeft = nil
         jsonURL = nil; usdzURL = nil; result = nil; liveRoom = nil
         status = ""; hud = ""; wallCount = 0
-        photoURLs = []; photosMetaURL = nil; photoMetas = []
+        photoURLs = []; photosMetaURL = nil; recorder = nil
         live3D.reset()
         Reporter.log("room: reset by user")
     }
@@ -297,7 +213,7 @@ struct CaptureViewRepresentable: UIViewRepresentable {
 
 struct ScanView: View {
     @StateObject private var model = ScanModel()
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var mode = 0   // 0 camera, 1 3D model
     @State private var zoom: CGFloat = 1
 

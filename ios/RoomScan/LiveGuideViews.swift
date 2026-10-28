@@ -75,6 +75,15 @@ struct LivePanel: View {
     }
 }
 
+/// What the live link is doing, mostly after Stop (sending the last frames, building, a server error). A separate view because
+/// MeshScanView does not redraw for changes inside the nested LiveLink.
+struct LiveNote: View {
+    @ObservedObject var live: LiveLink
+    var body: some View {
+        if !live.note.isEmpty { Text(live.note).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
+    }
+}
+
 /// The server's "capture here next" points, drawn on the camera picture; an arrow at the edge when one is out of view.
 struct LiveNeedLayer: View {
     @ObservedObject var live: LiveLink

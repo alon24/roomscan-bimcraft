@@ -4,7 +4,7 @@ import SwiftUI
 struct RoomScanApp: App {
     /// The measured ring sizes live on the server; keep a copy so ring scans can also be built on the phone with no network.
     static func syncRing() async {
-        guard let server = UserDefaults.standard.string(forKey: "serverURL"), let url = URL(string: server)?.appendingPathComponent("api/ring"),
+        guard let url = URL(string: ServerAddress.url)?.appendingPathComponent("api/ring"),
               let (data, _) = try? await URLSession.shared.data(from: url),
               let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let m = o["marker_size_mm"] as? Double, let r = o["centre_radius_mm"] as? Double else { return }

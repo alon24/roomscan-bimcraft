@@ -112,7 +112,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         guided.begin()
         sweep.reset()
         if liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true) {
-            live.begin(server: UserDefaults.standard.string(forKey: "serverURL") ?? "", kind: sweepMode ? "sweep" : "room",
+            live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
                        name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo)
         }
         if guided.ring { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
@@ -610,7 +610,7 @@ struct MeshScanView: View {
     var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
     var liveGuide = false       // Room tab: use the two-way link to the server when it can be reached
     @StateObject private var model = MeshScanModel()
-    @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
+    @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var mode = 0   // 0 AR overlay, 1 3D model
     @State private var zoom: CGFloat = 1
     @State private var didSetMode = false
@@ -689,6 +689,7 @@ struct MeshScanView: View {
                 }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
+                if liveGuide { LiveNote(live: model.live) }
                 HStack {
                     if model.scanning {
                         Button("Stop") { model.stop() }

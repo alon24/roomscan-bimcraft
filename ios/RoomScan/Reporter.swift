@@ -19,7 +19,7 @@ enum Reporter {
     /// Send a report now, with the recent log.
     static func report(tab: String, message: String, detail: String = "") {
         log("REPORT \(tab): \(message)")
-        let server = UserDefaults.standard.string(forKey: "serverURL") ?? ""
+        let server = ServerAddress.url
         let info = Bundle.main.infoDictionary
         queue.async {
             let payload: [String: Any] = [
@@ -39,7 +39,7 @@ enum Reporter {
 
     /// Try to deliver every saved report. Called at launch and after each new report.
     static func flush() async {
-        let server = UserDefaults.standard.string(forKey: "serverURL") ?? ""
+        let server = ServerAddress.url
         guard let url = URL(string: server)?.appendingPathComponent("api/issues") else { return }
         for b64 in UserDefaults.standard.stringArray(forKey: pendingKey) ?? [] {
             guard let body = Data(base64Encoded: b64) else { continue }
