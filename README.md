@@ -125,10 +125,36 @@ A 0 to 100 score for each ring scan (good 80+, fair 55+). It lists tips in plain
 Use it to decide whether to rescan before printing.
 
 ### Print preparation
-![Cut tool](docs/img/web-cut.png)
 
-- **Cut into parts**: pick an axis, slide the blue plane, **Add cut**, then **Make parts**. Parts join with
-  round holes plus loose pins or dowels; you set the size and clearance.
+#### The cut tool (like Orca Slicer's cut dialog)
+Click **Open the cut tool (big view)** under a scan's "Cut into parts". It opens a large panel (about 92% of the
+screen; **Full screen** and **Esc** to close). Open it straight from a link with `?scan=<id>&cut=1` (add `&rx=-18&ry=14&pos=62`
+to preset the plane).
+
+![The cut tool](docs/img/cut-tool.png)
+
+1. **Move the cut with the mouse.** Drag the blue plane (or its arrow) up and down. Drag the **orange dots** on its edges to
+   tilt it (it snaps to level or upright when you get close). Drag the background to turn the model, scroll to zoom,
+   double-click to reset the view. The **Where** boxes (position, tilt X, tilt Y) follow the mouse, and you can type in them;
+   **Level**, **Upright X**, **Upright Y** and **Reset** jump to the usual cuts.
+2. **See both parts.** The upper part (the side the arrow points to) is blue, the lower part orange. **Pull the parts apart**
+   moves them away from each other along the cut.
+3. **Upper part / Lower part**: **Keep** or **Discard** each, and **Flip** to print it with the cut face up instead of on the bed.
+4. **Connectors**: Dowel (a hole in each part plus a loose pin), Plug (a peg on one part), Key (a square plug) or None.
+   Pick the shape (circle, square, triangle, hexagon), size, depth and play (clearance). Connectors need both parts kept.
+5. **Cut face** (below the options; drag its bottom edge to make it bigger): the outline of the cut with the connectors drawn
+   to scale. **Click an empty spot** to add a connector, **click a connector** to remove it, **drag** one to move it.
+   Red means too close to the edge (it keeps 2 mm of material). **Auto place** goes back to automatic spots.
+   Moving or tilting the plane starts a new face, so the spots start automatic again.
+6. **Perform cut** makes the parts. The real parts then show in the view, pulled apart (**Back to editing** returns to the
+   plane), with the downloads (`model_parts.3mf`, each part, `dowels.stl`), a filament and time estimate, and a note about
+   supports. **Add to cut list** keeps a plane and lets you cut again somewhere else; all listed planes are cut together.
+
+![The two parts after the cut](docs/img/cut-tool-result.jpg)
+
+Limits: very dense meshes are thinned for the preview (the cut itself uses the full model); a connector needs a cut face
+at least size + 4 mm across; connectors on strongly curved or thin cuts can fail, and the message says so.
+
 - **Fit to my printer**: cuts the model automatically to your bed size and estimates grams of PLA,
   print time and whether supports are needed.
 - **Colour suggestions** and **Multi-colour 3MF**: groups the scan colours into a few filaments.
@@ -181,6 +207,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.40.0 | **Cut tool like Orca Slicer's**: big panel, move and tilt the cut plane with the mouse, two-colour preview with pull-apart, keep/discard/flip, connector shapes (circle, square, triangle, hexagon), click to add, move or remove connectors on the cut face, any-angle cuts. Server: `/cut/preview`, `/cut/plane`. |
 | 0.39.1 | Bullseye centred exactly on the pinned point, tap it for a menu (select, name, move to crosshair, link, delete), pin-at-crosshair button. |
 | 0.39.0 | **Pin management**: pins are independent, tap to select, measure between any selection (distance, floor and height parts, area, perimeter, angles), keep chosen links, name and delete pins, all remembered with the room map. |
 | 0.38.1 | Pinch to zoom on the Measure screen. |

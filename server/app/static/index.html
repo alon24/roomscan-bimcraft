@@ -60,6 +60,28 @@
   body.embed aside { border-right:0; border-bottom:1px solid var(--line); max-height:28vh; overflow:auto; padding:8px 12px; }
   body.embed h1 { display:none; }
   .hint { font-size:12px; color:var(--mute); margin:4px 0 0; }
+  /* the cut tool: a big panel over the page (about 92% of the screen), 3D view large, options docked on the right */
+  #cutStage { display:none; position:fixed; inset:4vh 4vw; z-index:50; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 60px #000a; flex-direction:column; overflow:hidden; }
+  #cutStage.open { display:flex; }
+  #cutStage.full { inset:0; border-radius:0; border:0; }
+  #cutScrim { display:none; position:fixed; inset:0; z-index:49; background:#0008; }
+  #cutScrim.open { display:block; }
+  .cutbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line); }
+  .cutbar b { font-size:1.05rem; }
+  .cutbody { flex:1; min-height:0; display:flex; gap:12px; padding:10px; }
+  #cutViewCol { flex:1 1 70%; min-width:0; display:flex; flex-direction:column; }
+  #cutView { flex:1; min-height:300px; border:1px solid var(--line); border-radius:6px; position:relative; touch-action:none; overflow:hidden; }
+  #cutView canvas { display:block; }
+  #cutPanel { flex:0 0 27%; min-width:300px; max-width:440px; overflow-y:auto; padding-right:4px; }
+  #faceWrap { resize:vertical; overflow:hidden; height:230px; min-height:120px; max-height:70vh; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  #faceView { width:100%; height:100%; display:block; touch-action:none; }
+  @media (max-width: 800px) {
+    #cutStage { inset:0; border-radius:0; }
+    .cutbody { flex-direction:column; overflow-y:auto; }
+    #cutViewCol { flex:0 0 62vh; }
+    #cutPanel { flex:none; max-width:none; min-width:0; overflow:visible; }
+    .cutbar .hint { display:none; }
+  }
 </style>
 </head>
 <body>
@@ -111,30 +133,86 @@
         </div>
         <div id="printBar" hidden style="margin:6px 0 14px;padding:10px;border:1px solid var(--line);border-radius:8px">
           <b>Cut into parts</b>
-          <p class="hint" style="margin:4px 0 8px">Pick an axis, move the slider (or click the model) until the blue plane sits where you want the cut, then <b>Add cut</b>. Add as many as you like, then <b>Make parts</b>: every part goes into one 3MF.</p>
+          <p class="hint" style="margin:4px 0 8px">Cut the model into parts like in Orca Slicer: open the cut tool, move and tilt the plane with the mouse, see both parts, choose connectors, then <b>Perform cut</b>.</p>
           <div class="row" style="align-items:center;margin:4px 0">
-            <select id="cutAxis"><option value="z">Height (Z)</option><option value="x">Width (X)</option><option value="y">Depth (Y)</option></select>
-            <input id="cutAt" type="range" min="0" max="100" step="0.5" value="50" style="flex:1;min-width:8em">
-            <input id="cutNum" type="number" step="0.5" min="0" style="width:5.5em"><span class="hint">mm</span>
-            <button class="btn" id="cutAdd">Add cut</button>
+            <button class="btn" id="cutOpen" style="font-weight:600">Open the cut tool (big view)</button>
+            <span class="hint">Move and tilt the cut with the mouse, see both parts, choose connectors.</span>
           </div>
-          <div class="row" id="cutChips" style="margin:4px 0"></div>
-          <div class="row" style="align-items:center;margin:4px 0">
-            <span>Join with</span>
-            <select id="connType">
-              <option value="dowel">Dowel holes + loose pins (prints flat)</option>
-              <option value="peg">Round pegs and sockets</option>
-              <option value="key">Square keys and sockets</option>
-              <option value="none">Nothing (glue only)</option>
-            </select>
-            <label class="hint">Ø <input id="connD" type="number" value="6" min="2" max="30" step="0.5" style="width:4.5em"> mm</label>
-            <label class="hint">depth <input id="connDepth" type="number" value="8" min="2" max="40" step="0.5" style="width:4.5em"> mm</label>
-            <label class="hint">per cut <input id="connN" type="number" value="2" min="1" max="6" style="width:3.5em"></label>
-            <label class="hint">play <input id="connClr" type="number" value="0.3" min="0" max="1" step="0.05" style="width:4.5em"> mm</label>
+          <div id="cutScrim"></div>
+          <div id="cutStage" role="dialog" aria-label="Cut tool">
+            <div class="cutbar">
+              <b>Cut tool</b>
+              <span class="hint" style="flex:1">Drag the <b>blue plane</b> or its arrow to move the cut · drag the <b>orange dots</b> to tilt it · drag the background to turn the model · scroll to zoom · double-click to reset the view</span>
+              <button class="btn" id="cutFull" title="Use the whole screen for the cut tool">Full screen</button>
+              <button class="btn" id="cutClose" title="Close the cut tool (Esc)">Close</button>
+            </div>
+            <div class="cutbody">
+              <div id="cutViewCol">
+                <div id="cutView"></div>
+                <div class="row" style="align-items:center;gap:8px;margin-top:6px">
+                  <span class="hint">Pull the parts apart</span><input id="cutExplode" type="range" min="0" max="100" value="0" style="flex:1;min-width:6em">
+                  <button class="btn" id="cutBack" hidden>Back to editing</button>
+                </div>
+              </div>
+              <div id="cutPanel">
+                <div><b>Where</b> <span class="hint">(follows the mouse)</span></div>
+                <div class="row" style="align-items:center;margin:4px 0">
+                  <label class="hint">Position <input id="cutNum" type="number" step="0.5" style="width:5.5em"> mm</label>
+                  <label class="hint">Tilt X <input id="cutRx" type="number" step="1" style="width:4.5em">°</label>
+                  <label class="hint">Tilt Y <input id="cutRy" type="number" step="1" style="width:4.5em">°</label>
+                </div>
+                <div class="row" style="margin:4px 0">
+                  <button class="btn" id="snapZ" title="A level cut across the height">Level</button>
+                  <button class="btn" id="snapX" title="An upright cut across the width">Upright X</button>
+                  <button class="btn" id="snapY" title="An upright cut across the depth">Upright Y</button>
+                  <button class="btn" id="cutReset" title="Back to a level cut through the middle">Reset</button>
+                </div>
+                <div style="margin-top:8px"><b>Upper part</b> <span class="hint">(blue, the arrow side)</span></div>
+                <div class="row" style="align-items:center;margin:2px 0">
+                  <label><input type="radio" name="keepU" value="1" checked> Keep</label>
+                  <label><input type="radio" name="keepU" value="0"> Discard</label>
+                  <label title="Print it with the cut face up instead of on the bed"><input type="checkbox" id="flipU"> Flip</label>
+                </div>
+                <div><b>Lower part</b> <span class="hint">(orange)</span></div>
+                <div class="row" style="align-items:center;margin:2px 0">
+                  <label><input type="radio" name="keepL" value="1" checked> Keep</label>
+                  <label><input type="radio" name="keepL" value="0"> Discard</label>
+                  <label title="Print it with the cut face up instead of on the bed"><input type="checkbox" id="flipL"> Flip</label>
+                </div>
+                <div style="margin-top:8px"><b>Connectors</b></div>
+                <div class="row" style="align-items:center;margin:4px 0">
+                  <select id="connType">
+                    <option value="dowel">Dowel: holes + loose pins</option>
+                    <option value="peg">Plug: peg on one part</option>
+                    <option value="key">Key: square plug</option>
+                    <option value="none">None (glue only)</option>
+                  </select>
+                  <select id="connShape" title="Shape of the connector">
+                    <option value="circle">Circle</option><option value="square">Square</option>
+                    <option value="triangle">Triangle</option><option value="hexagon">Hexagon</option>
+                  </select>
+                </div>
+                <div class="row" style="align-items:center;margin:4px 0">
+                  <label class="hint">Size <input id="connD" type="number" value="6" min="2" max="30" step="0.5" style="width:4.2em"> mm</label>
+                  <label class="hint">depth <input id="connDepth" type="number" value="8" min="2" max="40" step="0.5" style="width:4.2em"> mm</label>
+                  <label class="hint">play <input id="connClr" type="number" value="0.3" min="0" max="1" step="0.05" style="width:4em"> mm</label>
+                  <label class="hint">number <input id="connN" type="number" value="2" min="1" max="6" style="width:3.2em"></label>
+                </div>
+                <div class="hint" id="connHelp"></div>
+                <div class="hint" style="margin-top:6px"><b>Cut face</b>: click an empty spot to add a connector, click a connector to remove it, drag to move it. Drag the bottom edge of the box to make it bigger.</div>
+                <div id="faceWrap"><svg id="faceView"></svg></div>
+                <div class="row" style="align-items:center;margin:4px 0"><button class="btn" id="faceAuto">Auto place</button><span class="hint" id="faceInfo"></span></div>
+                <div class="row" style="margin:8px 0 4px">
+                  <button class="btn" id="cutBtn" style="font-weight:600">Perform cut</button>
+                  <button class="btn" id="cutAdd" title="Keep this plane in a list and cut again somewhere else: all planes are cut together">Add to cut list</button>
+                </div>
+                <div class="row" id="cutChips" style="margin:4px 0"></div>
+                <div class="hint" id="cutMsg"></div>
+                <div class="row" id="cutLinks" style="margin:4px 0"></div>
+              </div>
+            </div>
           </div>
-          <div class="hint" id="connHelp"></div>
           <div class="row" style="margin:8px 0 4px">
-            <button class="btn" id="cutBtn">Make parts</button>
             <button class="btn" id="fitBedBtn" title="Cuts the model into parts that fit the printer bed (BED_MM on the server), joined with the connector chosen above, and estimates filament and time">Fit to my printer</button>
             <button class="btn" id="colourBtn" title="Filament colours that match the scan">Colour suggestions</button>
             <a class="btn" id="colour3mf" href="#" title="One 3MF whose triangles carry the suggested filaments, for a multi-colour print (PrusaSlicer, Orca: map each colour to a filament)">Multi-colour 3MF</a>
@@ -150,10 +228,6 @@
           <div class="row" style="align-items:center;margin:4px 0"><span class="hint">or compare with another scan on this server:</span> <select id="fitAgainst"><option value="">choose…</option></select></div>
           <div id="fitOut" class="row" style="align-items:flex-start;gap:12px"></div>
           <div id="featOut" class="hint" style="margin:6px 0"></div>
-          <div class="row" style="align-items:flex-start;gap:12px">
-            <div id="cutView" style="flex:2;min-width:240px;height:340px;border:1px solid var(--line);border-radius:6px;position:relative"></div>
-            <div id="cutOut" style="flex:1;min-width:140px"></div>
-          </div>
           <div id="colourOut" class="row" style="margin-top:6px"></div>
         </div>
         <div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
@@ -841,93 +915,240 @@ function drawPoints(buf, r) {
   return new THREE.Points(g, new THREE.PointsMaterial({ size: 0.015, vertexColors: true }));
 }
 
-// ---- print prep: cut into parts, joined with connectors, cross-section, filament colours (server: printprep.py; model.stl is Z-up, mm)
-const PRINT = { id: null, size: [0, 0, 0], origin: [0, 0, 0], cuts: [], view: null };
-const AXIS_I = { x: 0, y: 1, z: 2 };
+// ---- print prep: cut into parts, joined with connectors, filament colours (server: printprep.py; model.stl is Z-up, mm)
+const PRINT = { id: null, size: [0, 0, 0], cuts: [], view: null };
+const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+document.addEventListener("keydown", e => { if (e.key === "Escape") PRINT.closeStage?.(); });
 const CONN_HELP = {
-  dowel: "A round hole goes into each side of the cut and a loose pin joins them (print dowels.stl, or use wooden dowels of the same Ø). Both parts lie flat on their cut face.",
-  peg: "A round peg grows out of one part into a socket in the other. The part with the pegs prints pegs-up and may need supports.",
-  key: "A square key instead of a round peg: it also stops the parts from twisting. The keyed part prints key-up and may need supports.",
+  dowel: "A hole goes into each side of the cut and a loose pin joins them (print dowels.stl, or use wooden dowels of the same size). Both parts lie flat on their cut face.",
+  peg: "A plug grows out of one part into a socket in the other. The part with the plug prints plug-up and may need supports.",
+  key: "A square plug instead of a round one: it also stops the parts from twisting. The plugged part prints plug-up and may need supports.",
   none: "No connector: glue the flat cut faces together.",
 };
 
-// A small viewer of model.stl in its own frame, with a plane for every cut. Click the model to put the cut there.
-async function cutViewer(id) {
+// Closest point on the line p0 + s*d to a ray: the s to move along the line so it follows the mouse.
+function axisParam(ray, p0, d) {
+  const w = p0.clone().sub(ray.origin), b = d.dot(ray.direction), dd = d.dot(w), ee = ray.direction.dot(w), den = 1 - b * b;
+  return Math.abs(den) < 1e-5 ? NaN : (b * ee - dd) / den;
+}
+
+// The cut dialog's 3D view: model.stl in its own frame, a plane you drag with the mouse, the two parts in two colours.
+// The plane is (S.o, S.n); 'upper' is the side S.n points to. hooks: changed(), dragStart(), dragEnd().
+async function cutViewer(id, hooks) {
   const holder = $("cutView");
   PRINT.view?.dispose();
   holder.replaceChildren();
   const r = await fetch(`/api/scans/${id}/print/mesh.json`);
-  if (!r.ok || current !== id) return;
+  if (!r.ok || current !== id) return null;
   const m = await r.json();
-  PRINT.origin = m.origin_mm;
-  const W = holder.clientWidth || 400, H = holder.clientHeight || 340;
+  const verts = new Float32Array(m.vertices);
+  const W = holder.clientWidth || 800, H = holder.clientHeight || 520;   // hidden until the tool is opened: resize() fixes it then
   const rend = new THREE.WebGLRenderer({ antialias: true });
-  rend.setSize(W, H); holder.append(rend.domElement);
+  rend.setSize(W, H); rend.localClippingEnabled = true; holder.append(rend.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(300, -400, 500); scene.add(sun);
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(m.vertices, 3));
-  g.setIndex(m.faces); g.computeVertexNormals();
-  const model = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xc9a46c, roughness: 0.7, side: THREE.DoubleSide }));
-  scene.add(model);
-  const box = new THREE.Box3().setFromObject(model), c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
-  const R = size.length();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(m.vertices, 3));
+  geo.setIndex(m.faces); geo.computeVertexNormals(); geo.computeBoundingBox();
+  const c = geo.boundingBox.getCenter(V3()), R = geo.boundingBox.getSize(V3()).length();
+  const S = { o: c.clone(), n: V3(0, 0, 1), explode: 0, keepU: true, keepL: true, editing: true, dragging: false };
+
+  const extent = n => {   // lowest and highest point of the model along n
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < verts.length; i += 3) { const d = verts[i] * n.x + verts[i + 1] * n.y + verts[i + 2] * n.z; if (d < lo) lo = d; if (d > hi) hi = d; }
+    return [lo, hi];
+  };
+  const pos = () => S.o.dot(S.n) - extent(S.n)[0];                 // mm from the lowest point along the normal
+  const keepInside = () => { const [lo, hi] = extent(S.n), d = S.o.dot(S.n); S.o.addScaledVector(S.n, Math.max(lo + 0.5, Math.min(hi - 0.5, d)) - d); };
+  const frame = () => {   // the gizmo's own axes: a = world X seen along the plane, b = n x a
+    let a = V3(1, 0, 0).addScaledVector(S.n, -S.n.x);
+    if (a.lengthSq() < 1e-4) a = V3(0, 1, 0).addScaledVector(S.n, -S.n.y);
+    a.normalize();
+    return [a, V3().crossVectors(S.n, a)];
+  };
+  const snapN = () => {   // within 2 degrees of an axis: land exactly on it
+    for (const ax of [V3(1, 0, 0), V3(0, 1, 0), V3(0, 0, 1)]) for (const s of [1, -1]) {
+      const t = ax.clone().multiplyScalar(s);
+      if (S.n.angleTo(t) < 0.035) { S.n.copy(t); return; }
+    }
+  };
+
+  // the two parts: the same mesh twice, each cut away on the other side of the plane
+  const planeU = new THREE.Plane(), planeL = new THREE.Plane();
+  const matU = new THREE.MeshStandardMaterial({ color: 0x4f8fd9, roughness: 0.7, side: THREE.DoubleSide, clippingPlanes: [planeU] });
+  const matL = new THREE.MeshStandardMaterial({ color: 0xe0914a, roughness: 0.7, side: THREE.DoubleSide, clippingPlanes: [planeL] });
+  const gU = new THREE.Group(), gL = new THREE.Group();
+  gU.add(new THREE.Mesh(geo, matU)); gL.add(new THREE.Mesh(geo, matL));
+  scene.add(gU, gL);
+  const capMatU = new THREE.MeshBasicMaterial({ color: 0x2f6db5, side: THREE.DoubleSide }), capMatL = new THREE.MeshBasicMaterial({ color: 0xc06f26, side: THREE.DoubleSide });
+  let caps = [];
+  const clearCaps = () => { for (const k of caps) { k.parent?.remove(k); k.geometry.dispose(); } caps = []; };
+
+  // the gizmo: the plane, an arrow to the upper side, four tilt handles
+  const gizmo = new THREE.Group(); scene.add(gizmo);
+  const half = R * 0.42;
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2 * half, 2 * half), new THREE.MeshBasicMaterial({ color: 0x2a7de1, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false }));
+  quad.add(new THREE.LineSegments(new THREE.EdgesGeometry(quad.geometry), new THREE.LineBasicMaterial({ color: 0x2a7de1 })));
+  quad.userData.kind = "plane";
+  const arrow = new THREE.Group(), L = R * 0.3, coneH = R * 0.09;
+  const along = (g, z) => { g.rotateX(Math.PI / 2); g.translate(0, 0, z); return g; };
+  const blue = new THREE.MeshBasicMaterial({ color: 0x2a7de1 });
+  arrow.add(new THREE.Mesh(along(new THREE.CylinderGeometry(R * 0.011, R * 0.011, L, 12), L / 2), blue));
+  arrow.add(new THREE.Mesh(along(new THREE.ConeGeometry(R * 0.035, coneH, 16), L + coneH / 2), blue));
+  const arrowHit = new THREE.Mesh(along(new THREE.CylinderGeometry(R * 0.05, R * 0.05, L + coneH, 8), (L + coneH) / 2),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
+  arrowHit.userData.kind = "arrow"; arrow.add(arrowHit);
+  gizmo.add(quad, arrow);
+  const handles = [];
+  for (const [kind, sign] of [["rotA", 1], ["rotA", -1], ["rotB", 1], ["rotB", -1]]) {
+    const h = new THREE.Mesh(new THREE.SphereGeometry(R * 0.024, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff8c1a }));
+    h.userData = { kind, sign }; gizmo.add(h); handles.push(h);
+  }
+  const listGroup = new THREE.Group(); scene.add(listGroup);     // planes already added to the cut list: orange
+  const resGroup = new THREE.Group(); scene.add(resGroup);       // the finished parts
+  let resParts = [], resN = V3(0, 0, 1);
+
   const cam = new THREE.PerspectiveCamera(45, W / H, R / 100, R * 20);
   cam.up.set(0, 0, 1);
-  let az = -0.8, el = 0.5, dist = R * 1.4;
-  const planes = new THREE.Group(); scene.add(planes);
-  const place = () => {
-    cam.position.set(c.x + dist * Math.cos(el) * Math.sin(az), c.y - dist * Math.cos(el) * Math.cos(az), c.z + dist * Math.sin(el));
-    cam.lookAt(c);
+  let az = -0.8, elv = 0.5, dist = R * 1.4;
+  const draw = () => {
+    cam.position.set(c.x + dist * Math.cos(elv) * Math.sin(az), c.y - dist * Math.cos(elv) * Math.cos(az), c.z + dist * Math.sin(elv));
+    cam.lookAt(c); rend.render(scene, cam);
   };
-  const draw = () => { place(); rend.render(scene, cam); };
-  const el_ = rend.domElement;
-  let drag = null;
-  el_.onpointerdown = e => { drag = { x: e.clientX, y: e.clientY, moved: 0 }; el_.setPointerCapture(e.pointerId); };
-  el_.onpointermove = e => {
-    if (!drag) return;
-    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    drag.moved += Math.abs(dx) + Math.abs(dy); drag.x = e.clientX; drag.y = e.clientY;
-    az -= dx * 0.01; el = Math.max(-1.5, Math.min(1.5, el + dy * 0.01)); draw();
-  };
-  el_.onpointerup = e => {
-    if (drag && drag.moved < 5) {   // a tap: the cut goes where the model was hit
-      const b = el_.getBoundingClientRect(), ray = new THREE.Raycaster();
-      ray.setFromCamera(new THREE.Vector2(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1), cam);
-      const hit = ray.intersectObject(model)[0];
-      if (hit) {
-        const i = AXIS_I[$("cutAxis").value];
-        const at = Math.max(0.5, Math.min(PRINT.size[i] - 0.5, [hit.point.x, hit.point.y, hit.point.z][i] - PRINT.origin[i]));
-        $("cutAt").value = at; $("cutAt").oninput();
-      }
+  const layout = () => {
+    const [a, b] = frame(), n = S.n, ex = (S.explode / 100) * R * 0.5, on = S.o.dot(n);
+    planeU.set(n.clone(), -(on + ex)); planeL.set(n.clone().negate(), on - ex);
+    gU.position.copy(n).multiplyScalar(ex); gL.position.copy(n).multiplyScalar(-ex);
+    matU.opacity = S.keepU ? 1 : 0.12; matU.transparent = !S.keepU; matL.opacity = S.keepL ? 1 : 0.12; matL.transparent = !S.keepL;
+    const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(a, b, n));
+    quad.position.copy(S.o); quad.quaternion.copy(q);
+    arrow.position.copy(S.o); arrow.quaternion.setFromUnitVectors(V3(0, 0, 1), n);
+    for (const h of handles) h.position.copy(S.o).addScaledVector(h.userData.kind === "rotA" ? a : b, h.userData.sign * half);
+    gU.visible = gL.visible = gizmo.visible = S.editing; listGroup.visible = S.editing; resGroup.visible = !S.editing;
+    for (const p of resParts) {   // the finished parts: along the cut normal for one cut, away from the middle for several
+      const d = p.side === "upper" ? resN : p.side === "lower" ? resN.clone().negate() : p.centre.clone().sub(c).setLength(1);
+      p.mesh.position.copy(d).multiplyScalar(ex);
     }
-    drag = null;
+    draw();
   };
-  el_.onwheel = e => { e.preventDefault(); dist = Math.max(R * 0.3, Math.min(R * 4, dist * (e.deltaY > 0 ? 1.1 : 0.9))); draw(); };
-  const quad = (axis, at, colour, opacity) => {   // a plane across the whole part at `at` mm from its low end
-    const i = AXIS_I[axis], pos = PRINT.origin[i] + at, k = 1.15;
-    const [u, v] = [0, 1, 2].filter(j => j !== i);
-    const sz = [size.x, size.y, size.z];
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(sz[u] * k, sz[v] * k),
-      new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }));
-    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: colour })));
-    // PlaneGeometry lies in XY facing +Z; turn it to face the axis
-    if (i === 0) mesh.rotation.y = Math.PI / 2; else if (i === 1) mesh.rotation.x = Math.PI / 2;
-    const cc = [c.x, c.y, c.z]; cc[i] = pos; mesh.position.set(...cc);
-    return mesh;
+  const changed = () => { for (const k of caps) k.visible = false; layout(); hooks.changed?.(); };
+
+  // mouse: handles and the plane first; anything else turns the model
+  const el = rend.domElement, ray = new THREE.Raycaster();
+  const setRay = e => {
+    const b = el.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1), cam);
   };
-  PRINT.view = {
-    draw, dispose() { rend.dispose(); },
-    setPlanes(cuts, current) {
-      planes.clear();
-      for (const k of cuts) planes.add(quad(k.axis, k.at, 0xe08a1e, 0.28));      // added cuts: orange
-      if (current) planes.add(quad(current.axis, current.at, 0x2a7de1, 0.4));    // the one being placed: blue
+  let drag = null;
+  el.onpointerdown = e => {
+    el.setPointerCapture(e.pointerId);
+    let hit = null;
+    if (e.button === 0 && S.editing) {
+      setRay(e); scene.updateMatrixWorld();
+      const hits = ray.intersectObjects([...handles, arrowHit, quad], false);
+      hit = hits.find(h => h.object.userData.kind !== "plane") || hits[0] || null;
+    }
+    if (hit) {
+      const k = hit.object.userData.kind;
+      if (k === "plane" || k === "arrow") drag = { mode: "move", o0: S.o.clone(), n0: S.n.clone(), s0: axisParam(ray.ray, S.o, S.n) };
+      else {
+        const [a, b] = frame();
+        drag = { mode: "rot", o: S.o.clone(), n0: S.n.clone(), k: (k === "rotA" ? b : a).clone(), h0: (k === "rotA" ? a : b).clone().multiplyScalar(hit.object.userData.sign) };
+      }
+      S.dragging = true; hooks.dragStart?.();
+    } else drag = { mode: "orbit", x: e.clientX, y: e.clientY };
+  };
+  el.onpointermove = e => {
+    if (!drag) return;
+    if (drag.mode === "orbit") {
+      az -= (e.clientX - drag.x) * 0.01; elv = Math.max(-1.5, Math.min(1.5, elv + (e.clientY - drag.y) * 0.01));
+      drag.x = e.clientX; drag.y = e.clientY; draw(); return;
+    }
+    setRay(e);
+    if (drag.mode === "move") {
+      const s = axisParam(ray.ray, drag.o0, drag.n0);
+      if (!Number.isFinite(s) || !Number.isFinite(drag.s0)) return;
+      S.o.copy(drag.o0).addScaledVector(drag.n0, s - drag.s0);
+    } else {
+      const q = V3();
+      if (!ray.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(drag.k, drag.o), q)) return;
+      q.sub(drag.o);
+      if (q.length() < 1e-3) return;
+      const ang = Math.atan2(drag.k.dot(V3().crossVectors(drag.h0, q)), drag.h0.dot(q));
+      S.n.copy(drag.n0).applyAxisAngle(drag.k, ang).normalize(); snapN();
+    }
+    keepInside(); changed();
+  };
+  el.onpointerup = () => { const was = drag && drag.mode !== "orbit"; drag = null; if (was) { S.dragging = false; hooks.dragEnd?.(); } };
+  el.onwheel = e => { e.preventDefault(); dist = Math.max(R * 0.3, Math.min(R * 4, dist * (e.deltaY > 0 ? 1.1 : 0.9))); draw(); };
+  el.ondblclick = () => { az = -0.8; elv = 0.5; dist = R * 1.4; draw(); };
+  el.oncontextmenu = e => e.preventDefault();
+
+  const view = {
+    S, extent, pos, draw, angles: () => [-Math.asin(Math.max(-1, Math.min(1, S.n.y))) * 180 / Math.PI, Math.atan2(S.n.x, S.n.z) * 180 / Math.PI],
+    dispose() { rend.dispose(); },
+    setN(n) { S.n.copy(n).normalize(); keepInside(); this.leaveResult(); changed(); },
+    setAngles(rxDeg, ryDeg) {
+      const p = rxDeg * Math.PI / 180, t = ryDeg * Math.PI / 180;
+      this.setN(V3(Math.cos(p) * Math.sin(t), -Math.sin(p), Math.cos(p) * Math.cos(t)));
+    },
+    setPos(mm) { const [lo, hi] = extent(S.n); const d = lo + Math.max(0.5, Math.min(hi - lo - 0.5, mm)); S.o.addScaledVector(S.n, d - S.o.dot(S.n)); this.leaveResult(); changed(); },
+    reset() { S.o.copy(c); S.n.set(0, 0, 1); this.leaveResult(); changed(); },
+    setExplode(v) { S.explode = v; layout(); },
+    setKeep(u, l) { S.keepU = u; S.keepL = l; layout(); },
+    setCap(pv) {   // the cut face drawn on both parts, from the server's outline of it
+      clearCaps();
+      const shapes = pv.polygons.map(p => {
+        const sh = new THREE.Shape(p.outer.map(q => new THREE.Vector2(q[0], q[1])));
+        for (const h of p.holes) sh.holes.push(new THREE.Path(h.map(q => new THREE.Vector2(q[0], q[1]))));
+        return sh;
+      });
+      const g = new THREE.ShapeGeometry(shapes);
+      const mat4 = new THREE.Matrix4().makeBasis(V3(...pv.u), V3(...pv.v), V3(...pv.normal)).setPosition(V3(...pv.origin));
+      for (const [grp, mat] of [[gU, capMatU], [gL, capMatL]]) {
+        const k = new THREE.Mesh(g.clone(), mat); k.matrixAutoUpdate = false; k.matrix.copy(mat4); k.matrixWorldNeedsUpdate = true;
+        grp.add(k); caps.push(k);
+      }
+      g.dispose(); draw();
+    },
+    clearCaps() { clearCaps(); draw(); },
+    setCuts(list) {   // planes in the cut list
+      listGroup.clear();
+      for (const k of list) {
+        const q = new THREE.Mesh(new THREE.PlaneGeometry(2 * half, 2 * half), new THREE.MeshBasicMaterial({ color: 0xe08a1e, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }));
+        q.add(new THREE.LineSegments(new THREE.EdgesGeometry(q.geometry), new THREE.LineBasicMaterial({ color: 0xe08a1e })));
+        q.position.set(...k.origin); q.quaternion.setFromUnitVectors(V3(0, 0, 1), V3(...k.normal).normalize());
+        listGroup.add(q);
+      }
       draw();
     },
+    showResult(views) {   // the real parts the server made, drawn where they came from
+      resGroup.clear(); resParts = []; resN = S.n.clone();
+      for (const v of views) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute(v.vertices, 3)); g.setIndex(v.faces); g.computeVertexNormals(); g.computeBoundingBox();
+        const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: v.side === "upper" ? 0x4f8fd9 : v.side === "lower" ? 0xe0914a : 0x8fb86a, roughness: 0.7, side: THREE.DoubleSide }));
+        resGroup.add(mesh); resParts.push({ mesh, side: v.side, centre: g.boundingBox.getCenter(V3()) });
+      }
+      S.editing = false; if (S.explode < 15) { S.explode = 25; $("cutExplode").value = 25; }
+      dist = Math.max(dist, R * 2.0);   // room for the parts to move apart
+      layout();
+    },
+    leaveResult() { if (!S.editing) { S.editing = true; $("cutBack").hidden = true; } },
   };
-  draw();
+  const resize = () => {   // the canvas and the camera follow the box (opening the tool, full screen, a resized window)
+    const w = holder.clientWidth, h = holder.clientHeight;
+    if (w < 20 || h < 20) return;
+    rend.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); draw();
+  };
+  const ro = new ResizeObserver(resize); ro.observe(holder);
+  view.resize = resize;
+  const dispose0 = view.dispose;
+  view.dispose = () => { ro.disconnect(); dispose0.call(view); };
+  layout();
+  return view;
 }
 
 async function setupQuality(id, meta) {
@@ -1000,7 +1221,7 @@ async function fitCheck(id, file, against) {
 async function setupPrint(id) {
   const bar = $("printBar");
   bar.hidden = true;
-  $("cutOut").replaceChildren(); $("colourOut").replaceChildren(); $("cutChips").replaceChildren();
+  $("colourOut").replaceChildren(); $("cutChips").replaceChildren();
   PRINT.cuts = []; PRINT.view?.dispose(); PRINT.view = null;
   const r = await fetch(`/api/scans/${id}/print`);
   if (!r.ok || current !== id) return;
@@ -1029,82 +1250,194 @@ async function setupPrint(id) {
   try { const v = localStorage.getItem("connClr"); if (v) $("connClr").value = v; } catch {}
   $("connClr").onchange = () => { try { localStorage.setItem("connClr", $("connClr").value); } catch {} };
   const sug = info.suggested_cut;
-  const axisI = () => AXIS_I[$("cutAxis").value];
-  const here = () => ({ axis: $("cutAxis").value, at: +$("cutAt").value });
-  const syncAxis = () => { const s = PRINT.size[axisI()]; $("cutAt").max = s; $("cutNum").max = s; $("cutAt").value = s / 2; };
-  let timer = 0;
-  const update = () => {
-    const cur = here();
-    $("cutNum").value = cur.at.toFixed(1);
-    PRINT.view?.setPlanes(PRINT.cuts, cur);
-    clearTimeout(timer);
-    timer = setTimeout(() => {              // the outline of the cut face is drawn on the server; ask once the slider stops
-      const img = new Image(); img.alt = "Cross-section at the blue plane"; img.style.cssText = "max-width:100%;max-height:200px;background:#fff;border:1px solid #888";
-      img.src = `/api/scans/${id}/section.svg?axis=${cur.axis}&at=${cur.at}`;
-      img.onload = () => { $("cutOut").replaceChildren(img, Object.assign(document.createElement("div"), { className: "hint", textContent: "What the blue cut shows (the cut face)" })); };
-    }, 250);
+  const hint = { set textContent(t) { $("cutHint").textContent = t; $("cutMsg").textContent = t; } };   // the message shows in the tool and under the page's buttons
+  const connSpec = () => ({ type: $("connType").value, shape: $("connShape").value, size: Math.max(2, +$("connD").value || 6), depth: Math.max(2, +$("connDepth").value || 8),
+                            clearance: Math.min(1, Math.max(0, +$("connClr").value || 0)), count: Math.min(6, Math.max(1, Math.round(+$("connN").value) || 1)) });
+  const jsonHdr = { "Content-Type": "application/json" };
+  const arr = (v, k) => [+v.x.toFixed(k), +v.y.toFixed(k), +v.z.toFixed(k)];
+  let view = null;
+  const planeNow = () => ({ origin: arr(view.S.o, 3), normal: arr(view.S.n, 6) });   // the same numbers go to the preview and to the cut
+  const FACE = { data: null, manual: null, seq: 0 };   // the cut face from the server; manual = connector spots the user chose ([u, v] mm), or null for automatic
+
+  // ---- the cut face: outline, connectors; click adds, click on one removes, drag moves
+  const NS = "http://www.w3.org/2000/svg", mk = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const inRing = (ring, u, v) => { let ins = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > v) !== (yj > v) && u < (xj - xi) * (v - yi) / (yj - yi) + xi) ins = !ins; } return ins; };
+  const segDist = (u, v, [x1, y1], [x2, y2]) => { const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy, t = l2 ? Math.max(0, Math.min(1, ((u - x1) * dx + (v - y1) * dy) / l2)) : 0; return Math.hypot(u - x1 - t * dx, v - y1 - t * dy); };
+  const validSpot = (u, v, size) => {   // on the face, with 2 mm of material round the connector (the server's rule)
+    for (const poly of FACE.data.polygons) {
+      if (!inRing(poly.outer, u, v) || poly.holes.some(h => inRing(h, u, v))) continue;
+      let d = Infinity;
+      for (const ring of [poly.outer, ...poly.holes]) for (let i = 0; i < ring.length; i++) d = Math.min(d, segDist(u, v, ring[i], ring[(i + 1) % ring.length]));
+      if (d >= size / 2 + 2) return true;
+    }
+    return false;
   };
+  const spots = () => FACE.manual || (FACE.data?.points ?? []);
+  const shapeEl = (shape, u, v, s, extra) => {   // svg y points down, so v is flipped
+    if (shape === "circle") return mk("circle", { cx: u, cy: -v, r: s / 2, ...extra });
+    if (shape === "square") return mk("rect", { x: u - s / 2, y: -v - s / 2, width: s, height: s, ...extra });
+    const n = shape === "triangle" ? 3 : 6, pts = [];
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; pts.push(`${u + (s / 2) * Math.cos(a)},${-v - (s / 2) * Math.sin(a)}`); }
+    return mk("polygon", { points: pts.join(" "), ...extra });
+  };
+  const drawFace = () => {
+    const svg = $("faceView"), d = FACE.data, c = connSpec();
+    svg.replaceChildren();
+    if (!d) return;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (const p of d.polygons) for (const [x, y] of p.outer) { u0 = Math.min(u0, x); u1 = Math.max(u1, x); v0 = Math.min(v0, y); v1 = Math.max(v1, y); }
+    const big = Math.max(u1 - u0, v1 - v0), pad = big * 0.06 + 2, lw = big / 250;
+    svg.setAttribute("viewBox", `${u0 - pad} ${-v1 - pad} ${u1 - u0 + 2 * pad} ${v1 - v0 + 2 * pad}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.append(mk("path", { d: d.polygons.map(p => [p.outer, ...p.holes].map(r => "M" + r.map(([x, y]) => `${x},${-y}`).join(" L") + " Z").join(" ")).join(" "),
+      fill: "#c9a46c", "fill-opacity": ".55", "fill-rule": "evenodd", stroke: "#333", "stroke-width": lw * 1.5 }));
+    const both = view.S.keepU && view.S.keepL;   // connectors join two parts: with one discarded there is nothing to join
+    if (c.type !== "none" && both) spots().forEach(([u, v], i) => {
+      const ok = validSpot(u, v, c.size);
+      svg.append(shapeEl(c.shape, u, v, c.size, { fill: ok ? "#2a7de1" : "#d64545", "fill-opacity": ".6", stroke: ok ? "#1b57a6" : "#a02020", "stroke-width": lw * 2, "data-i": i, style: "cursor:grab" }));
+    });
+    $("faceInfo").textContent = c.type === "none" || !both ? `Cut face ${Math.round(d.area_mm2)} mm², no connectors${both ? ": glue it" : " (a part is discarded)"}.`
+      : !FACE.manual && !d.fits ? `A ${c.size} mm connector does not fit here (up to ${d.max_size_mm} mm fits). Make it smaller or move the cut.`
+      : `${spots().length} connector${spots().length === 1 ? "" : "s"} (${FACE.manual ? "your choice" : "automatic"}) · cut face ${Math.round(d.area_mm2)} mm²`;
+  };
+  const svgPt = e => { const svg = $("faceView"), p = svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY; const q = p.matrixTransform(svg.getScreenCTM().inverse()); return [q.x, -q.y]; };
+  let fdrag = null;
+  $("faceView").onpointerdown = e => {
+    if (!FACE.data || connSpec().type === "none") { $("faceInfo").textContent = FACE.data ? "Pick a connector type first." : $("faceInfo").textContent; return; }
+    $("faceView").setPointerCapture(e.pointerId);
+    const i = e.target.getAttribute?.("data-i");
+    fdrag = { i: i == null ? null : +i, start: svgPt(e), moved: false, orig: null };
+    if (fdrag.i != null) { if (!FACE.manual) FACE.manual = FACE.data.points.map(p => [...p]); fdrag.orig = [...FACE.manual[fdrag.i]]; }
+  };
+  $("faceView").onpointermove = e => {
+    if (!fdrag || fdrag.i == null) return;
+    const [u, v] = svgPt(e);
+    if (!fdrag.moved && Math.hypot(u - fdrag.start[0], v - fdrag.start[1]) < 1) return;   // under 1 mm is a click, not a drag
+    fdrag.moved = true; FACE.manual[fdrag.i] = [u, v]; drawFace();
+  };
+  $("faceView").onpointerup = e => {
+    if (!fdrag) return;
+    const f = fdrag; fdrag = null;
+    const size = connSpec().size, [u, v] = svgPt(e);
+    if (f.i != null) {
+      if (!f.moved) FACE.manual.splice(f.i, 1);                                   // a click removes it
+      else if (!validSpot(u, v, size)) { FACE.manual[f.i] = f.orig; drawFace(); $("faceInfo").textContent = "Too close to the edge: put back."; return; }
+      drawFace(); return;
+    }
+    if (validSpot(u, v, size)) { if (!FACE.manual) FACE.manual = FACE.data.points.map(p => [...p]); FACE.manual.push([u, v]); drawFace(); }   // a click on the bare face adds one
+    else $("faceInfo").textContent = `Outside the face or too close to its edge (keep ${size / 2 + 2} mm of material round a ${size} mm connector).`;
+  };
+  $("faceAuto").onclick = () => { FACE.manual = null; drawFace(); };
+
+  // ---- ask the server for the cut face whenever the plane settles
+  let ptimer = 0;
+  const runPreview = async () => {
+    if (!view) return;
+    const seq = ++FACE.seq, c = connSpec();
+    const res = await fetch(`/api/scans/${id}/cut/preview`, { method: "POST", headers: jsonHdr,
+      body: JSON.stringify({ plane: planeNow(), connector: { type: c.type, shape: c.shape, size: c.size, count: c.count } }) });
+    const j = await res.json().catch(() => ({}));
+    if (seq !== FACE.seq || current !== id) return;
+    if (!res.ok) { FACE.data = null; view.clearCaps(); drawFace(); $("faceInfo").textContent = typeof j.detail === "string" ? j.detail : "No preview"; return; }
+    FACE.data = j; drawFace();
+    if (!view.S.dragging) view.setCap(j);
+  };
+  const schedulePreview = now => { clearTimeout(ptimer); ptimer = setTimeout(runPreview, now ? 0 : 180); };
+  const syncFields = () => {
+    const [rx, ry] = view.angles();
+    $("cutNum").value = view.pos().toFixed(1); $("cutRx").value = rx.toFixed(1); $("cutRy").value = ry.toFixed(1);
+  };
+  const hooks = {
+    changed: () => { FACE.manual = null; syncFields(); schedulePreview(false); },   // a new plane is a new face: spots start automatic again
+    dragEnd: () => schedulePreview(true),
+  };
+
   const chips = () => {
     const out = $("cutChips"); out.replaceChildren();
     PRINT.cuts.forEach((k, n) => {
       const x = document.createElement("span");
       x.style.cssText = "display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid #e08a1e;border-radius:12px";
-      x.textContent = `${k.axis.toUpperCase()} = ${k.at.toFixed(1)} mm`;
+      x.textContent = k.label;
       const del = Object.assign(document.createElement("button"), { textContent: "✕", title: "Remove this cut" });
       del.style.cssText = "all:unset;cursor:pointer;color:var(--mute)";
-      del.onclick = () => { PRINT.cuts.splice(n, 1); chips(); update(); };
+      del.onclick = () => { PRINT.cuts.splice(n, 1); chips(); view.setCuts(PRINT.cuts); };
       x.append(del); out.append(x);
     });
-    $("cutBtn").textContent = PRINT.cuts.length > 1 ? `Make parts (${PRINT.cuts.length} cuts)` : "Make parts";
+    $("cutBtn").textContent = PRINT.cuts.length ? `Perform cut (${PRINT.cuts.length} plane${PRINT.cuts.length > 1 ? "s" : ""})` : "Perform cut";
   };
   const conn = () => {
     const t = $("connType").value;
-    for (const e of ["connD", "connDepth", "connN", "connClr"]) $(e).disabled = t === "none";
-    $("connClr").disabled = t === "none";
-    $("connHelp").textContent = CONN_HELP[t];
+    for (const e of ["connShape", "connD", "connDepth", "connN", "connClr"]) $(e).disabled = t === "none";
+    $("connHelp").textContent = CONN_HELP[t] + (view && !(view.S.keepU && view.S.keepL) && t !== "none" ? " (Connectors need both parts kept, so none will be added.)" : "");
   };
-  $("cutHint").textContent = sug
+  $("connType").onchange = () => { if ($("connType").value === "key") $("connShape").value = "square"; conn(); FACE.manual = null; schedulePreview(true); };
+  $("connShape").onchange = drawFace;
+  $("connD").onchange = $("connN").onchange = () => { if (FACE.manual) drawFace(); else schedulePreview(true); };
+  const sidesChanged = () => {
+    view.setKeep(document.querySelector("input[name=keepU]:checked").value === "1", document.querySelector("input[name=keepL]:checked").value === "1");
+    conn();
+    drawFace();
+  };
+  for (const e of document.querySelectorAll("input[name=keepU],input[name=keepL]")) e.onchange = sidesChanged;
+  $("cutNum").onchange = () => view.setPos(+$("cutNum").value || 0);
+  $("cutRx").onchange = $("cutRy").onchange = () => view.setAngles(+$("cutRx").value || 0, +$("cutRy").value || 0);
+  $("snapZ").onclick = () => view.setN(V3(0, 0, 1));
+  $("snapX").onclick = () => view.setN(V3(1, 0, 0));
+  $("snapY").onclick = () => view.setN(V3(0, 1, 0));
+  $("cutReset").onclick = () => view.reset();
+  $("cutExplode").oninput = () => view.setExplode(+$("cutExplode").value);
+  $("cutBack").onclick = () => { view.leaveResult(); view.draw(); $("cutBack").hidden = true; view.setKeep(view.S.keepU, view.S.keepL); };
+  $("cutAdd").onclick = () => {
+    const [rx, ry] = view.angles();
+    const label = Math.abs(rx) < 0.5 && Math.abs(ry) < 0.5 ? `Level at ${view.pos().toFixed(1)} mm` : `Tilted (${rx.toFixed(0)}°, ${ry.toFixed(0)}°) at ${view.pos().toFixed(1)} mm`;
+    PRINT.cuts.push({ ...planeNow(), connectors: FACE.manual ? FACE.manual.map(p => [...p]) : null, label });
+    chips(); view.setCuts(PRINT.cuts);
+  };
+  hint.textContent = sug
     ? `Too big for a ${info.bed_mm.join(" × ")} mm bed: try a cut across ${sug.axis.toUpperCase()} at ${sug.at} mm.`
     : `Fits a ${info.bed_mm.join(" × ")} mm bed.`;
   if (sug) {
     const b = document.createElement("button"); b.className = "btn"; b.textContent = "Use that cut";
-    b.onclick = () => { $("cutAxis").value = sug.axis; syncAxis(); $("cutAt").value = sug.at; update(); };
+    b.onclick = () => { view.setN(V3(sug.axis === "x" ? 1 : 0, sug.axis === "y" ? 1 : 0, sug.axis === "z" ? 1 : 0)); view.setPos(sug.at); };
     $("cutHint").append(" ", b);
+    const b2 = b.cloneNode(true); b2.onclick = b.onclick; $("cutMsg").append(" ", b2);
   }
-  $("cutAxis").onchange = () => { syncAxis(); update(); };
-  $("cutAt").oninput = update;
-  $("cutNum").onchange = () => { $("cutAt").value = Math.max(0.5, Math.min(PRINT.size[axisI()] - 0.5, +$("cutNum").value || 0)); update(); };
-  $("cutAdd").onclick = () => { PRINT.cuts.push(here()); chips(); update(); };
-  $("connType").onchange = conn;
   const showCut = j => {
     const sup = (j.estimates || []).filter(e => e.supports !== "none").length;
-    $("cutHint").textContent = `${j.parts} part${j.parts === 1 ? "" : "s"}${j.pins ? ` and ${j.pins} dowel pins` : ""}${j.files.length ? ", all in model_parts.3mf" : ""}. ` + j.log.join(". ") + "."
+    hint.textContent = `${j.parts} part${j.parts === 1 ? "" : "s"}${j.pins ? ` and ${j.pins} dowel pins` : ""}${j.files.length ? ", all in model_parts.3mf" : ""}. ` + j.log.join(". ") + "."
       + (j.estimates?.length ? ` Rough estimate: about ${j.total.grams} g of PLA and ${j.total.hours} h (15% infill)${j.fits_bed === false ? ", but a part is still bigger than the bed" : ""}; supports: ${sup ? sup + " of " + j.parts + " parts need them" : "none needed"}.` : "");
     for (const a of [...$("actions").querySelectorAll("a")]) if (/^(model_part|dowels)/.test(a.download)) a.remove();
+    $("cutLinks").replaceChildren();
     for (const f of j.files) {
       const a = document.createElement("a"); a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}?t=${Date.now()}`; a.download = f;
-      $("actions").append(a);
+      $("actions").append(a); $("cutLinks").append(a.cloneNode(true));
     }
   };
   $("fitBedBtn").onclick = async () => {
-    $("fitBedBtn").disabled = true; $("cutHint").textContent = "Fitting to the printer…";
+    $("fitBedBtn").disabled = true; hint.textContent = "Fitting to the printer…";
     const res = await fetch(`/api/scans/${id}/autofit`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ connector: { type: $("connType").value, diameter: +$("connD").value, depth: +$("connDepth").value, count: +$("connN").value, clearance: +$("connClr").value } }) });
     $("fitBedBtn").disabled = false;
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) { $("cutHint").textContent = "Could not fit: " + (typeof j.detail === "string" ? j.detail : res.status); return; }
+    if (!res.ok) { hint.textContent = "Could not fit: " + (typeof j.detail === "string" ? j.detail : res.status); return; }
     showCut(j);
   };
   $("cutBtn").onclick = async () => {
-    const cuts = PRINT.cuts.length ? PRINT.cuts : [here()];   // nothing added yet: use the blue plane
-    $("cutBtn").disabled = true; $("cutHint").textContent = "Cutting…";
-    const type = $("connType").value;
-    const res = await fetch(`/api/scans/${id}/cut`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cuts, connector: { type, diameter: +$("connD").value, depth: +$("connDepth").value, count: +$("connN").value, clearance: +$("connClr").value } }) });
+    const S = view.S, list = PRINT.cuts, single = !list.length, c = connSpec();
+    const planes = single
+      ? [{ ...planeNow(), ...(FACE.manual ? { connectors: FACE.manual.map(p => [+p[0].toFixed(3), +p[1].toFixed(3)]) } : {}) }]
+      : list.map(k => ({ origin: k.origin, normal: k.normal, ...(k.connectors ? { connectors: k.connectors } : {}) }));
+    const noSpots = single && FACE.manual && !FACE.manual.length;   // the user removed every connector: that is a plain cut
+    const body = { planes, connector: { ...c, type: noSpots ? "none" : c.type },
+      keep: single ? { upper: S.keepU, lower: S.keepL } : { upper: true, lower: true },
+      flip: single ? { upper: $("flipU").checked, lower: $("flipL").checked } : { upper: false, lower: false } };
+    $("cutBtn").disabled = true; hint.textContent = "Cutting…";
+    const res = await fetch(`/api/scans/${id}/cut/plane`, { method: "POST", headers: jsonHdr, body: JSON.stringify(body) });
     $("cutBtn").disabled = false;
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) { $("cutHint").textContent = "Cut failed: " + (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || res.status)); return; }
+    if (!res.ok) { hint.textContent = "Cut failed: " + (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || res.status)); return; }
     showCut(j);
+    view.showResult(j.views || []); $("cutBack").hidden = false;
   };
   $("colourBtn").onclick = async () => {
     const res = await fetch(`/api/scans/${id}/colours`);
@@ -1120,9 +1453,34 @@ async function setupPrint(id) {
     const n = document.createElement("div"); n.className = "hint"; n.style.flexBasis = "100%";
     n.textContent = `From the ${j.source}. ${j.note}`; out.append(n);
   };
-  syncAxis(); conn(); chips();
-  await cutViewer(id);
-  update();
+  const stage = $("cutStage"), scrim = $("cutScrim");
+  const openStage = on => {
+    stage.classList.toggle("open", on); scrim.classList.toggle("open", on); document.body.style.overflow = on ? "hidden" : "";
+    if (!on) { stage.classList.remove("full"); if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); }
+    $("cutFull").textContent = "Full screen";
+    requestAnimationFrame(() => view?.resize?.());
+  };
+  PRINT.closeStage = () => openStage(false);
+  $("cutOpen").onclick = () => openStage(true);
+  $("cutClose").onclick = scrim.onclick = () => openStage(false);
+  $("cutFull").onclick = () => {
+    const on = !stage.classList.contains("full");
+    stage.classList.toggle("full", on); $("cutFull").textContent = on ? "Exit full screen" : "Full screen";
+    if (on) stage.requestFullscreen?.().catch(() => {}); else if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    requestAnimationFrame(() => view?.resize?.());
+  };
+  view = await cutViewer(id, hooks);
+  if (!view || current !== id) return;
+  const q0 = new URLSearchParams(location.search);   // ?cut=1 opens the tool; &rx=..&ry=..&pos=.. set the plane (for links and screenshots)
+  if (q0.get("cut")) {
+    openStage(true);
+    if (q0.get("rx") || q0.get("ry")) view.setAngles(+q0.get("rx") || 0, +q0.get("ry") || 0);
+    if (q0.get("pos")) view.setPos(+q0.get("pos"));
+  }
+  PRINT.view = view;
+  for (const e of document.querySelectorAll("input[name=keepU][value='1'],input[name=keepL][value='1']")) e.checked = true;
+  $("flipU").checked = $("flipL").checked = false; $("cutExplode").value = 0; $("cutBack").hidden = true; FACE.data = null; $("faceView").replaceChildren(); $("faceInfo").textContent = "";
+  conn(); chips(); hooks.changed();
 }
 
 function drawMesh(m) {
