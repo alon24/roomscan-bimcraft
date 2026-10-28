@@ -37,14 +37,15 @@ def trace(origin: np.ndarray, dirs: np.ndarray):
     return dist, axis, sign
 
 
-def render(M: np.ndarray, w: int, h: int, fx: float):
+def render(M: np.ndarray, w: int, h: int, fx: float, tracer=trace):
+    """Photo and depth (along the optical axis) seen by camera M. Pixels `tracer` gives no wall (axis -1) are grey."""
     u, v = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
     cam = np.stack([(u - w / 2) / fx, -(v - h / 2) / fx, -np.ones_like(u)], axis=-1)
     dirs = cam @ M[:3, :3].T
     dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True)
-    dist, axis, sign = trace(M[:3, 3], dirs)
+    dist, axis, sign = tracer(M[:3, 3], dirs)
     zdepth = dist * (-(cam[..., 2])) / np.linalg.norm(cam, axis=-1)          # depth along the optical axis, as LiDAR reports
-    img = np.zeros((h, w, 3), np.uint8)
+    img = np.full((h, w, 3), 150, np.uint8)
     for (a, s), c in COLOURS.items():
         img[(axis == a) & (sign == s)] = c
     return img, zdepth.astype(np.float32)

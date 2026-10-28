@@ -10,9 +10,11 @@ instead of guessed."""
 import math
 
 import numpy as np
+from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
 
 from . import frames
+from .meshscan import _depth_map
 from .photos import _mat
 
 STEP_DEG = 3
@@ -22,19 +24,17 @@ MIN_INLIERS = 0.35    # share of points within 10 cm of the other cloud
 AMBIGUOUS = 1.10      # another clearly different turn that fits within 10% as well as the best one: do not guess
 
 
-def cloud(d, photos: list[dict], pre: np.ndarray | None = None, max_frames: int = 60, per_frame: int = 600, seed: int = 0) -> np.ndarray:
-    """World points (N, 3) from the depth of up to `max_frames` frames spread over the list, optionally moved by `pre`."""
+def cloud(d, photos: list[dict], max_frames: int = 60, per_frame: int = 600, seed: int = 0) -> np.ndarray:
+    """World points (N, 3) from the depth of up to `max_frames` frames spread over the list."""
     rng = np.random.default_rng(seed)
     use = [p for p in photos if p.get("depth_file") and (d / "photos" / p["depth_file"]).exists()]
     if len(use) > max_frames:
         use = [use[i] for i in np.linspace(0, len(use) - 1, max_frames).astype(int)]
     out = []
     for p in use:
-        w, h = p.get("depth_width"), p.get("depth_height")
-        a = np.fromfile(d / "photos" / p["depth_file"], dtype="<f4")
-        if not (w and h) or a.size != w * h:
+        depth = _depth_map(d, p)
+        if depth is None:
             continue
-        depth = a.reshape(h, w)
         P = frames.world_points(p, depth).reshape(-1, 3)
         dd = depth.reshape(-1)
         ok = np.isfinite(dd) & (dd > 0.2) & (dd < 5.0) & np.isfinite(P).all(axis=1)
@@ -42,10 +42,7 @@ def cloud(d, photos: list[dict], pre: np.ndarray | None = None, max_frames: int 
         if len(P) > per_frame:
             P = P[rng.choice(len(P), per_frame, replace=False)]
         out.append(P)
-    P = np.concatenate(out) if out else np.zeros((0, 3))
-    if pre is not None and len(P):
-        P = P @ pre[:3, :3].T + pre[:3, 3]
-    return P
+    return np.concatenate(out) if out else np.zeros((0, 3))
 
 
 def _levels(P: np.ndarray) -> tuple[float, float]:
@@ -58,7 +55,6 @@ def _raster(xz: np.ndarray, lo: np.ndarray, shape: tuple[int, int]) -> np.ndarra
     ok = (ix >= 0) & (ix < shape[1]) & (iz >= 0) & (iz < shape[0])
     img = np.zeros(shape)
     np.add.at(img, (iz[ok], ix[ok]), 1.0)
-    from scipy.ndimage import gaussian_filter
     img = gaussian_filter(img, 2.0)
     return img / (np.linalg.norm(img) + 1e-9)
 
@@ -79,7 +75,7 @@ def _candidates(old: np.ndarray, new: np.ndarray, top: int = 6):
     A, B = _wall_band(old), _wall_band(new)
     ca = A[:, [0, 2]].mean(axis=0)
     pad = 2.5
-    lo = np.minimum(A[:, [0, 2]].min(axis=0), A[:, [0, 2]].min(axis=0)) - pad
+    lo = A[:, [0, 2]].min(axis=0) - pad             # the new points are moved onto the old middle, so the old bounds serve both
     hi = A[:, [0, 2]].max(axis=0) + pad
     shape = (int(math.ceil((hi[1] - lo[1]) / GRID)), int(math.ceil((hi[0] - lo[0]) / GRID)))
     shape = (min(shape[0], 600), min(shape[1], 600))
@@ -133,11 +129,9 @@ def _icp(old_tree: cKDTree, old: np.ndarray, new: np.ndarray, T: np.ndarray, ite
         b = q[:, [0, 2]] - qc[[0, 2]]
         H = a.T @ b
         ang = math.atan2(H[0, 1] - H[1, 0], H[0, 0] + H[1, 1])      # rotation taking a to b in the (x, z) plane
-        c, s = math.cos(ang), math.sin(ang)
         # (x, z) rotation by ang corresponds to a Y-rotation of -ang with R_y(a) = [[c,0,s],[0,1,0],[-s,0,c]]
         dR = _rot_y(-ang)
-        pcm = pc.copy()
-        shift = qc - dR @ pcm
+        shift = qc - dR @ pc
         step = np.eye(4)
         step[:3, :3] = dR
         step[:3, 3] = shift
@@ -151,10 +145,10 @@ def _icp(old_tree: cKDTree, old: np.ndarray, new: np.ndarray, T: np.ndarray, ite
     return T, rms, inl
 
 
-def register(d, old_photos: list[dict], new_photos: list[dict], new_pre: np.ndarray | None = None) -> dict:
+def register(d, old_photos: list[dict], new_photos: list[dict]) -> dict:
     """Find T (old <- new). Returns {ok, T (4x4), rms_mm, inliers, message}. The new photos' own transforms are in the new session frame."""
     old = cloud(d, old_photos, seed=1)
-    new = cloud(d, new_photos, pre=new_pre, seed=2)
+    new = cloud(d, new_photos, seed=2)
     if len(old) < 2000 or len(new) < 1000:
         return {"ok": False, "message": "Not enough depth yet to recognise the room: film a wall and a corner you already scanned, slowly.", "rms_mm": None}
     lo_o, _ = _levels(old)

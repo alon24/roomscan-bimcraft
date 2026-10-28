@@ -116,6 +116,7 @@ class CoverageEngine:
     def __init__(self, kind: str = "room"):
         self.kind = kind                      # "room" | "sweep"
         self.lock = threading.RLock()
+        self.map_lock = threading.Lock()      # one map at a time: the tracker, seq and hash are shared by the ticker and a hello
         self.index: dict[int, int] = {}
         self.keys: list[int] = []
         self.views: list[int] = []
@@ -237,7 +238,6 @@ class CoverageEngine:
             return None
         M = to_view if to_view is not None else np.eye(4)
         R, t = M[:3, :3], M[:3, 3]
-        yaw_shift = math.atan2(R[0, 2], R[2, 2])         # how far the view frame is turned about Y
         cells = (_unpack(keys) + 0.5) * CELL if n else np.zeros((0, 3))
         cells = cells @ R.T + t
         cams_v = cams @ R.T + t if len(cams) else cams
@@ -267,12 +267,12 @@ class CoverageEngine:
         allxz = np.concatenate(pts_xz) if pts_xz else np.zeros((1, 2))
         lo, hi = allxz.min(axis=0) - 0.3, allxz.max(axis=0) + 0.3
         span = hi - lo
-        w = int(min(MAX_GRID, math.ceil(span[0] / MAP_CELL)))
-        h = int(min(MAX_GRID, math.ceil(span[1] / MAP_CELL)))
-        if span[0] / MAP_CELL > MAX_GRID or span[1] / MAP_CELL > MAX_GRID:
+        size = np.minimum(MAX_GRID, np.ceil(span / MAP_CELL)).astype(int)
+        big = span / MAP_CELL > MAX_GRID
+        if big.any():                    # too big for the map: centre the capped axis on where the phone mostly was
             c = np.median(cams_v[:, [0, 2]], axis=0) if len(cams_v) else allxz.mean(axis=0)
-            lo = c - np.array([w, h]) * MAP_CELL / 2
-        w, h = max(w, 8), max(h, 8)
+            lo = np.where(big, c - size * MAP_CELL / 2, lo)
+        w, h = max(int(size[0]), 8), max(int(size[1]), 8)
         x0, z0 = float(round(lo[0], 2)), float(round(lo[1], 2))
 
         def col(xz: np.ndarray):
@@ -336,7 +336,9 @@ class CoverageEngine:
         cands: list[dict] = []
         cam_y = float(np.median(cams_v[:, 1])) if len(cams_v) else (floor_y or 0) + 1.4
         stand0 = np.median(cams_v, axis=0) if len(cams_v) else np.zeros(3)
-        heading0 = (self.heading0 or 0.0) + yaw_shift
+        h0 = self.heading0 or 0.0
+        hv = R @ np.array([math.sin(h0), 0.0, -math.cos(h0)])              # the first frame's heading, in the view frame
+        heading0 = math.atan2(hv[0], -hv[2])
         you_xz = pose_v[[0, 2]] if pose_v is not None else stand0[[0, 2]]
 
         def xz_of(ix: float, iz: float) -> np.ndarray:
@@ -440,15 +442,16 @@ class CoverageEngine:
         """A `map` message if something changed since the last one, else None."""
         if not force and not self.dirty:
             return None
-        with self.lock:
-            self.dirty = False
-        body = self.build_map(to_view)
-        if body is None:
-            return None
-        sig = hashlib.md5(repr((body["percent"], body["grid"]["data"], [n["id"] for n in body["needs"]], [n["text"] for n in body["needs"]],
-                                None if body["you"] is None else [round(v, 1) for v in body["you"]])).encode()).hexdigest()
-        if sig == self.last_hash and not force:
-            return None
-        self.last_hash = sig
-        self.seq += 1
-        return {"type": "map", "seq": self.seq, **body}
+        with self.map_lock:
+            with self.lock:
+                self.dirty = False
+            body = self.build_map(to_view)
+            if body is None:
+                return None
+            sig = hashlib.md5(repr((body["percent"], body["grid"]["data"], [n["id"] for n in body["needs"]], [n["text"] for n in body["needs"]],
+                                    None if body["you"] is None else [round(v, 1) for v in body["you"]])).encode()).hexdigest()
+            if sig == self.last_hash and not force:
+                return None
+            self.last_hash = sig
+            self.seq += 1
+            return {"type": "map", "seq": self.seq, **body}

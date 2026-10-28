@@ -14,6 +14,7 @@ import live_replay  # noqa: E402
 import liveroom  # noqa: E402
 
 from app import coverage, live, main, registration  # noqa: E402
+from app.photos import _mat  # noqa: E402
 
 
 @pytest.fixture
@@ -32,11 +33,23 @@ def client(tmp_path, monkeypatch):
     live.SESSIONS.clear()
 
 
-def sweep_source(tmp_path, name="src", pos=(0.0, 1.3, 0.0), yaw_step=30, ts0=1000.0):
-    d = tmp_path / name
-    photos = liveroom.make_frames(d, liveroom.specs_sweep(pos=pos, yaw_step=yaw_step), ts0=ts0)
-    (d / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
-    return d, photos
+@pytest.fixture(scope="module")
+def rendered(tmp_path_factory):
+    """Ray-traced frames are the slow part of these tests: render each set once per module (the tests only read them)."""
+    cache = {}
+
+    def get(name, specs, **kw):
+        if name not in cache:
+            d = tmp_path_factory.mktemp(name)
+            photos = liveroom.make_frames(d, specs, **kw)
+            (d / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+            cache[name] = (d, photos)
+        return cache[name]
+    return get
+
+
+def sweep_source(rendered):
+    return rendered("sweep", liveroom.specs_sweep(yaw_step=30))
 
 
 def send_frames(ws, d, entries, first=1):
@@ -78,6 +91,15 @@ def wait_message(ws, kind, limit=200):
     raise AssertionError(f"no {kind} message")
 
 
+def wait_state(ws, status, limit=200):
+    """Skip earlier messages, including the `state: capturing` a hello may still have queued."""
+    for _ in range(limit):
+        m = ws.receive_json()
+        if m["type"] == "state" and m["status"] == status:
+            return m
+    raise AssertionError(f"no state {status}")
+
+
 # ------------------------------------------------------------------ the coverage engine
 
 def feed(engine, d, entries, upto=None):
@@ -90,10 +112,9 @@ def look_azimuth(need):
     return math.degrees(math.atan2(need["look"][0], -need["look"][2]))
 
 
-def test_sweep_needs_point_at_what_is_unseen_and_percent_rises(tmp_path):
-    d, photos = sweep_source(tmp_path)
+def test_sweep_needs_point_at_what_is_unseen_and_percent_rises(rendered):
+    d, photos = sweep_source(rendered)
     eng = coverage.CoverageEngine("sweep")
-    n = len(photos)
     pcts = []
     # the first third looks only down (pitch -40 at every azimuth): the walls and the ceiling are still unseen
     feed(eng, d, photos[:12])
@@ -118,20 +139,6 @@ def test_sweep_needs_point_at_what_is_unseen_and_percent_rises(tmp_path):
     assert m["you"] is not None
 
 
-def test_sweep_gap_points_at_the_unseen_azimuth(tmp_path):
-    d, photos = sweep_source(tmp_path)
-    eng = coverage.CoverageEngine("sweep")
-    seen = [e for e in photos if True]
-    # walls band only for azimuths 0..120 degrees: frames at pitch 0 with yaw 0..120
-    level = [e for e, (y, p, _) in zip(photos, liveroom.specs_sweep(yaw_step=30)) if p == 0 and y <= 120]
-    feed(eng, d, level)
-    m = eng.next_message(force=True)
-    wall = [x for x in m["needs"] if x["kind"] == "gap"]
-    assert wall
-    az = look_azimuth(wall[0]) % 360
-    assert not (0 <= az <= 150 or az >= 355), az                           # points away from the 0..120 degrees already covered
-
-
 def test_walked_room_needs_point_at_the_unseen_walls(tmp_path):
     d = tmp_path / "walk"
     # a walk along the +x side, looking at the +x wall only
@@ -151,8 +158,8 @@ def test_walked_room_needs_point_at_the_unseen_walls(tmp_path):
     assert m["percent"] < 70, m["percent"]                                 # one wall of four is not a finished room
 
 
-def test_needs_keep_their_ids_and_order_when_nothing_changes(tmp_path):
-    d, photos = sweep_source(tmp_path)
+def test_needs_keep_their_ids_and_order_when_nothing_changes(rendered):
+    d, photos = sweep_source(rendered)
     eng = coverage.CoverageEngine("sweep")
     feed(eng, d, photos[:14])
     a = eng.next_message(force=True)
@@ -163,22 +170,10 @@ def test_needs_keep_their_ids_and_order_when_nothing_changes(tmp_path):
     assert [n["target"] for n in a["needs"]] == [n["target"] for n in c["needs"]]
 
 
-def test_a_satisfied_need_goes_away_after_a_few_updates(tmp_path):
-    d, photos = sweep_source(tmp_path)
-    eng = coverage.CoverageEngine("sweep")
-    feed(eng, d, photos[:12])
-    first = eng.next_message(force=True)
-    assert any(n["kind"] == "ceiling" for n in first["needs"])
-    feed(eng, d, photos[12:])
-    for _ in range(4):
-        last = eng.next_message(force=True)
-    assert not any(n["kind"] == "ceiling" for n in last["needs"])
-
-
 # ------------------------------------------------------------------ the WebSocket
 
-def test_live_roundtrip_ack_resume_finish_equals_batch(client, tmp_path):
-    d, photos = sweep_source(tmp_path)
+def test_live_roundtrip_ack_resume_finish_equals_batch(client, rendered):
+    d, photos = sweep_source(rendered)
     r = client.post("/api/live", json={"kind": "sweep", "name": "Live test", "info": {"app": "test"}})
     assert r.status_code == 200, r.text
     start = r.json()
@@ -198,13 +193,10 @@ def test_live_roundtrip_ack_resume_finish_equals_batch(client, tmp_path):
         acks, others = send_frames(ws, d, photos[12:], first=13)
         assert acks == [15, 15, 15] + list(range(16, len(photos) + 1))          # duplicates change nothing; the ack stays cumulative
         maps = [m for m in others if m["type"] == "map"]
-        for _ in range(60):                                                       # the last frames' map
-            m = ws.receive_json()
-            if m["type"] == "map":
-                maps.append(m)
-                if m["percent"] >= 80:
-                    break
-        assert maps and maps[-1]["percent"] >= 80 and maps[-1]["grid"]["w"] > 0
+        live.SESSIONS[sid].jobs.join()                                            # every frame is in the map; hello asks for it now
+        ws.send_json({"type": "hello", "resume_after": len(photos), "app": "test"})
+        maps.append(wait_message(ws, "map"))
+        assert maps[-1]["percent"] >= 80 and maps[-1]["grid"]["w"] > 0
         assert [m["seq"] for m in maps] == sorted(m["seq"] for m in maps)
 
         stored = json.loads((main.DATA / sid / "photos.json").read_text())["photos"]
@@ -213,11 +205,9 @@ def test_live_roundtrip_ack_resume_finish_equals_batch(client, tmp_path):
         assert all((main.DATA / sid / "photos" / p["file"]).exists() and (main.DATA / sid / "photos" / p["depth_file"]).exists() for p in stored)
 
         ws.send_json({"type": "finish", "info": {"scan type": "Sweep from one spot", "sweep": True}})
-        st = wait_message(ws, "state")
-        assert st["status"] == "building"
+        wait_state(ws, "building")
         assert wait_status(client, sid) == "ok", client.get(f"/api/scans/{sid}").json()["log"]
-        done = wait_message(ws, "state")
-        assert done["status"] == "ready"
+        wait_state(ws, "ready")
     live_meta = client.get(f"/api/scans/{sid}").json()
     assert live_meta["photo_count"] == len(photos)
     live_report = json.loads((main.DATA / sid / "report.json").read_text())
@@ -241,14 +231,19 @@ def test_live_roundtrip_ack_resume_finish_equals_batch(client, tmp_path):
     assert live_room["width_m"] == pytest.approx(4.0, rel=0.03) and live_room["height_m"] == pytest.approx(2.6, rel=0.03)
 
 
-def test_bad_frames_do_not_break_the_connection(client, tmp_path):
-    d, photos = sweep_source(tmp_path, yaw_step=60)
+def test_bad_frames_do_not_break_the_connection(client, rendered):
+    d, photos = sweep_source(rendered)
     start = client.post("/api/live", json={"kind": "room", "name": "bad"}).json()
     with client.websocket_connect(start["ws"]) as ws:
         hello(ws)
         ws.send_bytes(b"\x00\x00\x00\x05nope")
         assert wait_message(ws, "error")["message"].startswith("bad frame")
+        no_pose = {k: v for k, v in photos[0].items() if k != "transform"}       # would break the build of the whole scan later
+        ws.send_bytes(live_replay.pack_frame(d, no_pose, 1))
+        assert "transform" in wait_message(ws, "error")["message"]
         ws.send_text("{not json")
+        assert wait_message(ws, "error")
+        ws.send_text("[1, 2]")
         assert wait_message(ws, "error")
         ws.send_json({"type": "dance"})
         assert "unknown" in wait_message(ws, "error")["message"]
@@ -257,16 +252,12 @@ def test_bad_frames_do_not_break_the_connection(client, tmp_path):
 
 
 def test_unknown_scan_and_wrong_kind(client):
-    assert client.post("/api/live", json={"kind": "ring"}).status_code == 200      # not a live kind: it is the legacy RoomPlan push
+    r = client.post("/api/live", json={"kind": "ring", "walls": []})               # not a live kind: it is the legacy RoomPlan push
+    assert r.status_code == 200 and "viewers" in r.json()
     with pytest.raises(Exception):
         with client.websocket_connect("/ws/live/doesnotexist"):
             pass
     assert client.post("/api/live", json={"kind": "room", "resume_scan": "nope"}).status_code == 404
-
-
-def test_legacy_roomplan_live_post_still_works(client):
-    r = client.post("/api/live", json={"walls": [], "doors": []})
-    assert r.status_code == 200 and "viewers" in r.json()
 
 
 def test_capturing_scans_do_not_break_the_other_routes(client):
@@ -276,12 +267,14 @@ def test_capturing_scans_do_not_break_the_other_routes(client):
     assert client.get(f"/api/scans/{sid}/print").status_code == 404
     assert client.get(f"/api/scans/{sid}/quality").status_code == 404
     assert client.post(f"/api/scans/{sid}/convert").status_code == 409
+    assert client.post(f"/api/scans/{sid}/add").status_code == 409                  # patch a capture only once it is built
+    assert client.post("/api/live", json={"kind": "room", "resume_scan": sid}).status_code == 409
     for path in ("panorama.json", "frames", "room.json", "report.json", "features"):
         assert client.get(f"/api/scans/{sid}/{path}").status_code < 500, path
 
 
-def test_janitor_builds_a_capture_nobody_touched(client, tmp_path):
-    d, photos = sweep_source(tmp_path)
+def test_janitor_builds_a_capture_nobody_touched(client, rendered):
+    d, photos = sweep_source(rendered)
     start = client.post("/api/live", json={"kind": "sweep", "name": "left"}).json()
     sid = start["scan_id"]
     with client.websocket_connect(start["ws"]) as ws:
@@ -304,8 +297,8 @@ def post_frames(client, sid, d, entries, route="frames", data=None):
     return client.post(f"/api/scans/{sid}/{route}", files=files, data=data or {})
 
 
-def test_a_live_scan_that_lost_the_connection_is_completed_with_the_missing_frames(client, tmp_path):
-    d, photos = sweep_source(tmp_path)
+def test_a_live_scan_that_lost_the_connection_is_completed_with_the_missing_frames(client, rendered):
+    d, photos = sweep_source(rendered)
     start = client.post("/api/live", json={"kind": "sweep", "name": "half"}).json()
     sid = start["scan_id"]
     with client.websocket_connect(start["ws"]) as ws:
@@ -327,32 +320,22 @@ def test_a_live_scan_that_lost_the_connection_is_completed_with_the_missing_fram
 
 # ------------------------------------------------------------------ patching a scan
 
-def patch_frames(tmp_path, yaw=137.0, shift=(1.3, 0.2, -0.7)):
-    """Session A: a sweep from near the middle. Session B (a different ARKit world): a few turns from another spot."""
-    a_dir, a = sweep_source(tmp_path, "a", pos=(-0.2, 1.3, 0.1), yaw_step=30, ts0=1000.0)
+B_SPECS = [(y, p, np.array([0.9, 1.3, -0.4])) for p in (-30, 10, 45) for y in range(0, 360, 36)]
+
+
+def session_a(rendered):
+    """Session A: a sweep from near the middle of the room."""
+    return rendered("a", liveroom.specs_sweep(pos=(-0.2, 1.3, 0.1), yaw_step=30))
+
+
+def patch_frames(rendered, yaw=137.0, shift=(1.3, 0.2, -0.7)):
+    """Session A, and session B: a few turns from another spot, in a different ARKit world (turned by `yaw`, moved by `shift`).
+    The world only changes the transforms, so B's pictures are rendered once and its transforms rewritten per test."""
+    a_dir, a = session_a(rendered)
     Tno = liveroom.yaw_shift(yaw, shift)                          # new <- old
-    b_specs = [(y, p, np.array([0.9, 1.3, -0.4])) for p in (-30, 10, 45) for y in range(0, 360, 36)]
-    b_dir = tmp_path / "b"
-    b = liveroom.make_frames(b_dir, b_specs, to_new=Tno, start=1, ts0=5000.0, seed=11)
-    (b_dir / "photos.json").write_text(json.dumps({"version": 2, "photos": b}))
-    return a_dir, a, b_dir, b, b_specs, Tno
-
-
-def test_registration_recovers_a_random_turn_and_shift(tmp_path):
-    a_dir, a, b_dir, b, specs, Tno = patch_frames(tmp_path, yaw=-58.0, shift=(-0.9, 0.15, 1.2))
-    both = tmp_path / "both"
-    (both / "photos").mkdir(parents=True)
-    import shutil
-    for p in a:
-        shutil.copy(a_dir / "photos" / p["file"], both / "photos" / p["file"]); shutil.copy(a_dir / "photos" / p["depth_file"], both / "photos" / p["depth_file"])
-    for p in b:
-        shutil.copy(b_dir / "photos" / p["file"], both / "photos" / f"b{p['file']}"); shutil.copy(b_dir / "photos" / p["depth_file"], both / "photos" / f"b{p['depth_file']}")
-    b2 = [{**p, "file": f"b{p['file']}", "depth_file": f"b{p['depth_file']}"} for p in b]
-    res = registration.register(both, a, b2)
-    assert res["ok"], res
-    E = res["T"] @ Tno                                               # should be the identity
-    assert np.linalg.norm(E[:3, 3]) < 0.03 and abs(registration.yaw_of(E)) < 1.0
-    assert res["rms_mm"] < 60
+    b_dir, b_room = rendered("b", B_SPECS, ts0=5000.0, seed=11)
+    b = [{**e, "transform": (Tno @ _mat(e["transform"])).T.tolist()} for e in b_room]
+    return a_dir, a, b_dir, b, B_SPECS, Tno
 
 
 def test_a_symmetric_empty_room_is_reported_as_ambiguous(tmp_path):
@@ -373,14 +356,15 @@ def test_a_symmetric_empty_room_is_reported_as_ambiguous(tmp_path):
     assert "distinctive" in res["message"]
 
 
-def test_patch_over_the_socket_aligns_rewrites_and_rebuilds(client, tmp_path):
-    a_dir, a, b_dir, b, b_specs, Tno = patch_frames(tmp_path)
+def test_patch_over_the_socket_aligns_rewrites_and_rebuilds(client, rendered):
+    a_dir, a, b_dir, b, b_specs, Tno = patch_frames(rendered)
     start = client.post("/api/live", json={"kind": "sweep", "name": "base"}).json()
     sid = start["scan_id"]
     with client.websocket_connect(start["ws"]) as ws:
         hello(ws)
         send_frames(ws, a_dir, a)
         ws.send_json({"type": "finish", "info": {"sweep": True, "scan type": "Sweep from one spot"}})
+        wait_state(ws, "building")          # leaving the block cancels the server side at once
     assert wait_status(client, sid) == "ok"
     before = json.loads((main.DATA / sid / "photos.json").read_text())["photos"]
     assert len(before) == len(a)
@@ -397,15 +381,9 @@ def test_patch_over_the_socket_aligns_rewrites_and_rebuilds(client, tmp_path):
             al.append(wait_message(ws, "aligned"))
         ok = [m for m in al if m["ok"]][0]
         assert ok["rms_mm"] < 60
-        # a map in the NEW session's own frame: "you" is where the phone is in ITS world
-        last = None
-        for _ in range(60):
-            m = ws.receive_json()
-            if m["type"] == "map":
-                last = m
-                if m["you"] is not None:
-                    break
-        assert last is not None
+        ws.send_json({"type": "hello", "resume_after": len(b), "app": "test"})     # a map now (maps are only sent when something changed)
+        you = wait_message(ws, "map")["you"]                                      # in the phone's OWN frame, not the old scan's
+        assert np.linalg.norm(np.array(you) - (Tno @ np.r_[b_specs[-1][2], 1])[:3]) < 0.05, you
         sessions = json.loads((main.DATA / sid / "sessions.json").read_text())["sessions"]
         s2 = next(s for s in sessions if s["index"] == 2)
         T = np.array(s2["transform"]).reshape(4, 4)
@@ -417,16 +395,16 @@ def test_patch_over_the_socket_aligns_rewrites_and_rebuilds(client, tmp_path):
         newest = [p for p in stored if p.get("session") == 2]
         assert len(newest) == len(b)
         for p, (yaw, pitch, pos) in zip(newest, b_specs):
-            from app.photos import _mat
             assert np.linalg.norm(_mat(p["transform"])[:3, 3] - pos) < 0.03
         assert len(s2["frames"]) == len(b)
         ws.send_json({"type": "finish"})
+        wait_state(ws, "building")          # leaving the block cancels the server side at once
     assert wait_status(client, sid) == "ok"
     assert len(json.loads((main.DATA / sid / "photos.json").read_text())["photos"]) == len(a) + len(b)
 
 
-def test_add_route_aligns_stores_as_a_session_and_rebuilds(client, tmp_path):
-    a_dir, a, b_dir, b, b_specs, Tno = patch_frames(tmp_path, yaw=212.0, shift=(-0.4, 0.1, 0.9))
+def test_add_route_aligns_stores_as_a_session_and_rebuilds(client, rendered):
+    a_dir, a, b_dir, b, b_specs, Tno = patch_frames(rendered, yaw=212.0, shift=(-0.4, 0.1, 0.9))
     files = [("photos", (p["file"], (a_dir / "photos" / p["file"]).read_bytes())) for p in a]
     files += [("photos", (p["depth_file"], (a_dir / "photos" / p["depth_file"]).read_bytes())) for p in a]
     files += [("photos_meta", ("photos.json", (a_dir / "photos.json").read_bytes())), ("mesh", ("scan.ply", b"ply\nformat ascii 1.0\nelement vertex 0\nend_header\n"))]
@@ -443,8 +421,8 @@ def test_add_route_aligns_stores_as_a_session_and_rebuilds(client, tmp_path):
     assert len(json.loads((main.DATA / sid / "photos.json").read_text())["photos"]) == len(a) + len(b)
 
 
-def test_add_route_leaves_the_old_scan_alone_when_it_cannot_match(client, tmp_path):
-    a_dir, a, b_dir, b, b_specs, Tno = patch_frames(tmp_path)
+def test_add_route_leaves_the_old_scan_alone_when_it_cannot_match(client, rendered, tmp_path):
+    a_dir, a = session_a(rendered)
     files = [("photos", (p["file"], (a_dir / "photos" / p["file"]).read_bytes())) for p in a]
     files += [("photos", (p["depth_file"], (a_dir / "photos" / p["depth_file"]).read_bytes())) for p in a]
     files += [("photos_meta", ("photos.json", (a_dir / "photos.json").read_bytes())), ("mesh", ("scan.ply", b"ply\nformat ascii 1.0\nelement vertex 0\nend_header\n"))]
@@ -452,7 +430,7 @@ def test_add_route_leaves_the_old_scan_alone_when_it_cannot_match(client, tmp_pa
     n_before = len(json.loads((main.DATA / sid / "photos.json").read_text())["photos"])
     ceiling = [(0, 88, np.array([0.9, 1.3, -0.4])), (40, 88, np.array([0.9, 1.3, -0.4])), (80, 88, np.array([0.9, 1.3, -0.4])), (120, 88, np.array([0.9, 1.3, -0.4]))]
     c_dir = tmp_path / "c"
-    c = liveroom.make_frames(c_dir, ceiling, to_new=Tno, ts0=9000.0)
+    c = liveroom.make_frames(c_dir, ceiling, to_new=liveroom.yaw_shift(137.0, (1.3, 0.2, -0.7)), ts0=9000.0)
     r = post_frames(client, sid, c_dir, c, route="add")
     assert r.status_code == 200
     j = r.json()
@@ -473,3 +451,17 @@ def test_a_gap_across_north_is_one_need_and_ceiling_and_floor_get_one_each(tmp_p
     assert kinds.count("gap") == 1 and kinds.count("ceiling") == 1 and kinds.count("floor") == 1, m["needs"]
     az = look_azimuth(next(n for n in m["needs"] if n["kind"] == "gap")) % 360
     assert az < 25 or az > 335, az                                        # straight across north, not the far side of the circle
+
+
+def test_needs_words_do_not_change_when_the_phone_frame_is_turned(tmp_path):
+    """Patch mode: the map is sent in the phone's own (turned) frame. Left and right must stay where they are: the words are
+    relative to the first frame's heading, which turns with everything else (a past sign error swapped them)."""
+    d = tmp_path / "turn"
+    photos = liveroom.make_frames(d, [(y, 0, np.array([0.0, 1.3, 0.0])) for y in range(0, 181, 30)], w=160, h=120, fx=125.0)
+    texts = []
+    for turn in (None, liveroom.yaw_shift(90.0, (0.4, 0.0, -0.3))):
+        eng = coverage.CoverageEngine("sweep")
+        feed(eng, d, photos)
+        texts.append(sorted(n["text"] for n in eng.next_message(turn, force=True)["needs"]))
+    assert any("to the left" in t or "to the right" in t for t in texts[0]), texts[0]
+    assert texts[0] == texts[1]

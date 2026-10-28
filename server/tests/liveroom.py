@@ -1,6 +1,5 @@
 """Synthetic rooms for the live-capture tests: the box of boxroom.py plus a pillar (so the room is not symmetric and a second
 capture can be lined up with the first), and a way to render any list of camera poses, also in a turned and shifted world."""
-import json
 import math
 from pathlib import Path
 
@@ -11,31 +10,21 @@ import boxroom
 
 PILLAR_LO = np.array([0.9, 0.0, 0.4])
 PILLAR_HI = np.array([1.5, 2.6, 1.0])
-GREY = (150, 150, 150)
 
 
 def trace(origin: np.ndarray, dirs: np.ndarray):
+    """The box, and the pillar in front of it (pillar pixels get axis -1, painted grey)."""
     dist, axis, sign = boxroom.trace(origin, dirs)
     inv = 1.0 / np.where(np.abs(dirs) < 1e-9, 1e-9, dirs)
     t1, t2 = (PILLAR_LO - origin) * inv, (PILLAR_HI - origin) * inv
     tmin = np.max(np.minimum(t1, t2), axis=-1)
     tmax = np.min(np.maximum(t1, t2), axis=-1)
     hit = (tmax >= tmin) & (tmin > 0) & (tmin < dist)
-    return np.where(hit, tmin, dist), axis, sign, hit
+    return np.where(hit, tmin, dist), np.where(hit, -1, axis), sign
 
 
 def render(M: np.ndarray, w: int, h: int, fx: float):
-    u, v = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
-    cam = np.stack([(u - w / 2) / fx, -(v - h / 2) / fx, -np.ones_like(u)], axis=-1)
-    dirs = cam @ M[:3, :3].T
-    dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True)
-    dist, axis, sign, hit = trace(M[:3, 3], dirs)
-    zdepth = dist * (-(cam[..., 2])) / np.linalg.norm(cam, axis=-1)
-    img = np.zeros((h, w, 3), np.uint8)
-    for (a, s), c in boxroom.COLOURS.items():
-        img[(axis == a) & (sign == s)] = c
-    img[hit] = GREY
-    return img, zdepth.astype(np.float32)
+    return boxroom.render(M, w, h, fx, tracer=trace)
 
 
 def specs_sweep(pos=(0.0, 1.3, 0.0), yaw_step: int = 24, pitches=(-40, 0, 40), yaw_range=(0, 360)):
