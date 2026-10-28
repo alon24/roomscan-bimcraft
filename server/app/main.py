@@ -1,3 +1,4 @@
+import contextlib
 import os
 import io
 import json
@@ -21,7 +22,7 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import formlimits, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import live as live_mod, formlimits, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -40,7 +41,13 @@ SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a mode
 PHOTO_NAME = re.compile(r"^[\w-]+\.(jpg|depth)$")
 MASK_NAME = re.compile(r"^([\w-]+\.png|edited\.json)$")
 
-app = FastAPI(title="roomscan-bimcraft")
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    await live_mod.startup()     # the live-capture janitor: finishes captures nobody has touched for 10 minutes
+    yield
+
+
+app = FastAPI(title="roomscan-bimcraft", lifespan=_lifespan)
 
 
 @app.get("/api/version")
@@ -348,6 +355,8 @@ def get_scan(scan_id: str):
 @app.post("/api/scans/{scan_id}/convert")
 def reconvert(scan_id: str, scale: float | None = None):
     d = _dir(scan_id)
+    if _meta(d).get("status") in ("capturing", "building"):
+        raise HTTPException(409, "this scan is still being captured or built: use Build what I have, or wait")
     if scale is not None:
         meta = _meta(d)
         meta["scale"] = scale
@@ -360,7 +369,10 @@ def reconvert(scan_id: str, scale: float | None = None):
 
 @app.post("/api/live")
 async def live(room: dict = Body(...)):
-    """Partial CapturedRoom from a scan in progress; shown live in the web UI, never stored."""
+    """Two uses of one path. A body with kind room|sweep starts a live guided capture (docs/live-guide.md, WS /ws/live/{id});
+    anything else is the partial CapturedRoom of a RoomPlan scan in progress, shown live in the web UI and never stored."""
+    if room.get("kind") in live_mod.LIVE_KINDS:
+        return await anyio.to_thread.run_sync(live_mod.create, room)
     hub.live = room
     await hub.broadcast({"type": "live", "room": room})
     return {"viewers": len(hub.viewers)}
@@ -372,6 +384,8 @@ async def events(ws: WebSocket):
     hub.viewers.add(ws)
     if hub.live is not None:
         await ws.send_json({"type": "live", "room": hub.live})
+    for m in list(getattr(hub, "live_maps", {}).values()):   # a guided capture in progress: its latest map
+        await ws.send_json(m)
     try:
         while True:
             await ws.receive_text()  # viewers send nothing; this notices disconnects
@@ -1091,6 +1105,8 @@ class NoCacheStatic(StaticFiles):
         return r
 
 
+live_mod.setup(lambda: DATA, hub, _convert)
+app.include_router(live_mod.router)   # live guided capture: WS /ws/live/{id}, finish, append frames, add a session
 app.include_router(apps.router)   # the Android APK and iPhone IPA, from data/apps
 app.include_router(photomeasure.router)   # measure from a photo with a card or paper as the ruler
 app.mount("/", NoCacheStatic(directory=STATIC, html=True), name="ui")
