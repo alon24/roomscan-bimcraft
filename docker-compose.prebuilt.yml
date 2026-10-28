@@ -1,0 +1,12 @@
+# Run the ready-made server image (built by GitHub Actions for Intel and Apple Silicon), nothing to compile:
+#   docker compose -f docker-compose.prebuilt.yml pull
+#   PORT=8010 docker compose -f docker-compose.prebuilt.yml up -d
+# If the image is private: docker login ghcr.io (user name + a token with read:packages), or make the package public on GitHub.
+services:
+  server:
+    image: ghcr.io/alon24/roomscan-bimcraft-server:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
