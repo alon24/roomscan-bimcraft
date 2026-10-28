@@ -27,9 +27,14 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    (**red = near, blue = far**, up to about 4 m).
 2. Aim the crosshair at a wall. The big number is the distance in m, cm and mm.
    - Green dot: steady, trust it. Orange: hold still. Red: too close (under 25 cm) or too far (over 5 m).
-3. **Tap anywhere** on the picture to pin that spot. Tap a second spot: a dashed line shows the
-   distance between the two pins ("pin to pin"), e.g. the width of a wall.
-4. **Mark A** then move: shows the distance from A to wherever the crosshair points.
+3. **Tap anywhere** on the picture to pin that spot. The pin is drawn exactly under your finger and
+   **stays fixed on that spot in the room** while you move the phone. Add as many as you like (numbered 1, 2, 3...).
+   - Each pin shows its distance from the camera right now; dashed lines show the length of each leg.
+   - A pin that is out of view gets an **arrow at the screen edge** pointing the way to turn.
+   - With one pin the big number is pin 1 to the crosshair, live. With two or more it is the last two pins.
+4. **Pins are remembered.** The phone saves a map of the room with the pins in it when you leave the Measure tab or
+   close the app. Come back to the same room and move slowly: "Looking for your saved place…" turns green and the
+   pins reappear. The undo button removes the last pin, the bin removes all pins and forgets the saved room.
 5. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
 6. The **eye** button hides or shows the depth colours.
 
@@ -147,6 +152,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.37.1 | Measure pins are drawn where you tap, stay fixed in the room, are numbered, have edge arrows, and are saved with a room map. Mark A replaced by this. |
 | 0.37.0 | Each build now photographs the app tabs in the Simulator. **Measure tab**: live LiDAR distance, depth colours over the camera, tap-to-pin, pin to pin, Mark A, Hold and Save. This README. |
 | 0.36.0 | Ring coverage dial and hints, View in AR, Fit to my printer, multi-colour 3MF, Detect features, Compare scans, Share links, design refresh, model-ready banner |
 | 0.3x | Live tray speed warning, quality score, cut parts with connectors, tolerance test, saved-scan 3D preview, screen stays on |
