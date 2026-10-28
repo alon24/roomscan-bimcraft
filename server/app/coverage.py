@@ -54,6 +54,21 @@ def _dial_dirs() -> np.ndarray:
 DIAL = _dial_dirs()
 
 
+def _circular_runs(miss: np.ndarray) -> list[tuple[int, int]]:
+    """Stretches of True round a circle as (first index, length); one run if everything is True."""
+    n = len(miss)
+    if miss.all():
+        return [(0, n)]
+    out = []
+    for i in range(n):
+        if miss[i] and not miss[i - 1]:
+            length = 0
+            while miss[(i + length) % n]:
+                length += 1
+            out.append((i, length))
+    return out
+
+
 class NeedTracker:
     """Keeps the list of needs steady: a need keeps its id and place until it is satisfied (gone for 3 updates in a row)."""
     GONE_AFTER = 3
@@ -347,32 +362,22 @@ class CoverageEngine:
             for b in bands:
                 if dial[b].mean() >= (0.95 if self.kind == "sweep" else 0.85):
                     continue
-                miss = ~dial[b]
-                labels, k = ndi.label(np.concatenate([miss, miss]))      # doubled so a run across the 0 / 360 seam stays whole
-                seenrun = set()
-                for lab in range(1, k + 1):
-                    idx = np.nonzero(labels == lab)[0]
-                    if len(idx) < 1:
-                        continue
-                    key = tuple(sorted(set(int(i) % SECTORS for i in idx)))
-                    if key in seenrun:
-                        continue
-                    seenrun.add(key)
-                    mid = float(np.mean([i for i in idx]))
-                    if len(idx) >= SECTORS:                       # nothing at all in this band
-                        mid = 0.0
-                    sectors = np.array(sorted(set(int(i) % SECTORS for i in idx)))
-                    az = ((float(np.mean(np.unwrap(sectors * 2 * math.pi / SECTORS))) + math.pi / SECTORS) % (2 * math.pi))
+                runs = _circular_runs(~dial[b])                      # (first sector, how many) of every stretch not seen, seam included
+                if b > 0:                                            # one need for the ceiling and one for the floor: the biggest stretch
+                    runs = [max(runs, key=lambda r: r[1])]
+                for start, length in runs:
+                    az = ((start + length / 2) * 360 / SECTORS % 360) * math.pi / 180
                     el = math.radians(DIAL_PITCH[b])
                     look_w = np.array([math.sin(az) * math.cos(el), math.sin(el), -math.cos(az) * math.cos(el)])
                     look_v = R @ look_w
                     rel = rel_word(look_v[0], look_v[2])
+                    whole = length >= SECTORS * 0.6
                     if b == 0:
                         txt = f"The walls {rel} are not seen yet. Turn that way slowly and film them."
                     elif b == 1:
-                        txt = f"The ceiling {rel} is not seen yet. Tilt up and film it." if len(sectors) < SECTORS * 0.6 else "The ceiling is not seen yet. Tilt up and sweep it."
+                        txt = "The ceiling is not seen yet. Tilt up and sweep it." if whole else f"The ceiling {rel} is not seen yet. Tilt up and film it."
                     else:
-                        txt = f"The floor {rel} is not seen yet. Tilt down and film it." if len(sectors) < SECTORS * 0.6 else "The floor is not seen yet. Tilt down and sweep it."
+                        txt = "The floor is not seen yet. Tilt down and sweep it." if whole else f"The floor {rel} is not seen yet. Tilt down and film it."
                     mk("gap" if b == 0 else ("ceiling" if b == 1 else "floor"), txt, here + look_v * 2.0, here, 3 if b == 0 else 2)
         if self.kind != "sweep":
             # holes inside the room outline

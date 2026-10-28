@@ -459,3 +459,17 @@ def test_add_route_leaves_the_old_scan_alone_when_it_cannot_match(client, tmp_pa
     assert j["aligned"] is False and j["message"]
     assert len(json.loads((main.DATA / sid / "photos.json").read_text())["photos"]) == n_before
     assert client.get(f"/api/scans/{sid}").json()["status"] == "ok"
+
+
+def test_a_gap_across_north_is_one_need_and_ceiling_and_floor_get_one_each(tmp_path):
+    d = tmp_path / "seam"
+    # level views from azimuth 60 to 300 only: the walls across 300..360..60 (through north) are missing; nothing up or down
+    specs = [(y, 0, np.array([0.0, 1.3, 0.0])) for y in range(60, 301, 20)]
+    photos = liveroom.make_frames(d, specs)
+    eng = coverage.CoverageEngine("sweep")
+    feed(eng, d, photos)
+    m = eng.next_message(force=True)
+    kinds = [n["kind"] for n in m["needs"]]
+    assert kinds.count("gap") == 1 and kinds.count("ceiling") == 1 and kinds.count("floor") == 1, m["needs"]
+    az = look_azimuth(next(n for n in m["needs"] if n["kind"] == "gap")) % 360
+    assert az < 25 or az > 335, az                                        # straight across north, not the far side of the circle
