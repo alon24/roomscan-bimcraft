@@ -19,7 +19,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - name: Build debug APK (signed with the debug key: installs by sideloading)
+      - name: Build debug APK (signed with the debug key, installs by sideloading)
         run: |
           cd android
           gradle assembleDebug -PappVersion=$(cat ../VERSION) -PappBuild=$(git rev-list --count HEAD)
