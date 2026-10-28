@@ -80,7 +80,7 @@ Frames are written to a temp folder first and sent in order; if the socket drops
 **Offline is the default-safe path.** The phone captures with no network exactly as before (frames on the phone, the batch `POST /api/scans` later). Live is an optional extra: capture never waits for it.
 
 - A live scan that loses the connection **continues on the phone**. Frames the server has not acknowledged are sent after a reconnect (`hello.resume_after`).
-- If the phone stops while offline, the missing frames complete the live scan with **`POST /api/scans/{id}/frames`** (multipart: `photos` = the jpg and `.depth` files, `photos_meta` = the photos.json manifest). The server matches by `timestamp`, skips frames it already stored, names the new ones itself, does **not** start a build, and answers `{added, skipped, total}`. Only for a scan whose status is `capturing` (else 409). Then finish with `POST /api/scans/{id}/finish` (answers `{status:"building"}`).
+- If the phone stops while offline, the missing frames complete the live scan with **`POST /api/scans/{id}/frames`** (multipart: `photos` = the jpg and `.depth` files, `photos_meta` = the photos.json manifest). The server matches by `timestamp`, skips frames it already stored, names the new ones itself, does **not** start a build, and answers `{added, skipped, total}`. Only for a scan whose status is `capturing` (else 409). Then finish with `POST /api/scans/{id}/finish` (answers `{status:"building"}`). **The iPhone app does not use this route:** if it cannot send the missing frames within 2 minutes (or the build fails), it deletes the draft and uploads the whole scan with the batch `POST /api/scans`. `/frames` is there for other clients and `tools/live_replay.py --offline-after`.
 - **Patching offline: `POST /api/scans/{id}/add`** (multipart, the same fields as the batch upload: `photos`, `photos_meta`, optional `info`). The frames are stored as session N, registered to the old scan with the same code the live patch mode uses, rewritten into the old frame, and the scan is rebuilt. Answer: `{aligned, rms_mm, message, added, skipped, status?}`. If the frames cannot be matched (`aligned:false`) nothing in `photos.json` changes and the old model stays; the frames are kept in `sessions.json`.
 
 **What the implementation does where the doc was open**
@@ -94,3 +94,8 @@ Frames are written to a temp folder first and sent in order; if the socket drops
 - `meta.status` values for a live scan: `capturing` -> `building` -> `ok` | `error`. A patch session sets the old scan to `capturing` and puts the old status back if nothing new could be added.
 - Browser viewers get `{type:"live_map", id, name, map}` on `/ws/events` (and the latest one when a page opens), then `{type:"live_end_map", id}`.
 - Auto-finish: a capture with no socket and no news for 10 minutes (`LIVE_IDLE_S` seconds) is built by the server.
+
+### 2026-10-29 Review fixes (small protocol tightening)
+- `POST /api/scans/{id}/add` and `POST /api/live` with `resume_scan` answer **409** while the scan is still `capturing` (two sessions writing the same folder corrupted it). Finish it first (`POST /api/scans/{id}/finish`).
+- A frame whose `photo` has no usable `transform` (4x4), `intrinsics` (3x3), `width`, `height` or a non-numeric `timestamp` is answered with `error` and is neither stored nor acknowledged (it used to be stored and then broke the build of the whole scan).
+- The `state` after `hello` is the scan's real state: `capturing`, `building`, `ready` or `error` (it used to stay `building` after the build had finished).
