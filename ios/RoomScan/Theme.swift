@@ -23,7 +23,7 @@ extension View {
 struct CaptureButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { Body(configuration: configuration) }
 
-    private struct Body: View {
+    struct Body: View {
         let configuration: ButtonStyleConfiguration
         @Environment(\.isEnabled) private var enabled
 
