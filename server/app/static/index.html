@@ -137,6 +137,8 @@
             <button class="btn" id="cutBtn">Make parts</button>
             <button class="btn" id="fitBedBtn" title="Cuts the model into parts that fit the printer bed (BED_MM on the server), joined with the connector chosen above, and estimates filament and time">Fit to my printer</button>
             <button class="btn" id="colourBtn" title="Filament colours that match the scan">Colour suggestions</button>
+            <a class="btn" id="colour3mf" href="#" title="One 3MF whose triangles carry the suggested filaments, for a multi-colour print (PrusaSlicer, Orca: map each colour to a filament)">Multi-colour 3MF</a>
+            <button class="btn" id="featBtn" title="Flat faces, round bosses and holes with their real sizes">Detect features</button>
           </div>
           <div class="hint" id="cutHint"></div>
           <div class="row" style="align-items:center;margin:4px 0">
@@ -145,7 +147,9 @@
             <label class="btn" style="cursor:pointer">Compare with a reference…<input id="fitFile" type="file" accept=".stl,.3mf,.obj,.ply,.glb,.off" hidden></label>
           </div>
           <div class="hint" id="fitHint"></div>
+          <div class="row" style="align-items:center;margin:4px 0"><span class="hint">or compare with another scan on this server:</span> <select id="fitAgainst"><option value="">choose…</option></select></div>
           <div id="fitOut" class="row" style="align-items:flex-start;gap:12px"></div>
+          <div id="featOut" class="hint" style="margin:6px 0"></div>
           <div class="row" style="align-items:flex-start;gap:12px">
             <div id="cutView" style="flex:2;min-width:240px;height:340px;border:1px solid var(--line);border-radius:6px;position:relative"></div>
             <div id="cutOut" style="flex:1;min-width:140px"></div>
@@ -418,6 +422,17 @@ async function show(id) {
     if (v) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
   });
   mk("Save as zip", () => { location.href = `/api/scans/${id}/bundle.zip`; });
+  if (meta.kind !== "room") {
+    mk(meta.share ? "Stop sharing" : "Share link…", async () => {
+      if (meta.share) { await api(`/api/scans/${id}/share`, { method: "DELETE" }); show(id); return; }
+      const r = await fetch(`/api/scans/${id}/share`, { method: "POST" });
+      const j = await r.json();
+      if (!r.ok) { $("log").textContent = "Cannot share this scan: " + (j.detail || r.status); return; }
+      try { await navigator.clipboard.writeText(j.url); } catch {}
+      await ask("Share link (copied if the browser allowed it)", [{ key: "url", label: "Anyone who can reach this server and has this link can look at the model and download its STL. Stop sharing revokes it.", value: j.url }], "Done");
+      show(id);
+    });
+  }
   mk("Delete", async () => {
     if (await ask(`Delete “${meta.name}”? This cannot be undone.`, [], "Delete", true)) {
       await api(`/api/scans/${id}`, { method: "DELETE" }); clearDetail(); loadList();
@@ -944,10 +959,10 @@ const heat = (d, lim, signed) => {   // blue = inside the reference, red = outsi
   return t >= 0 ? [1, 1 - t, 1 - t] : [1 + t, 1 + t, 1];
 };
 
-async function fitCheck(id, file) {
+async function fitCheck(id, file, against) {
   const out = $("fitOut"), hint = $("fitHint");
   out.replaceChildren(); hint.textContent = "Lining the reference up and measuring (about 10 seconds)…";
-  const f = new FormData(); f.append("reference", file);
+  const f = new FormData(); if (against) f.append("against", against); else f.append("reference", file);
   const r = await fetch(`/api/scans/${id}/fit`, { method: "POST", body: f });
   if (current !== id) return;
   if (!r.ok) { hint.textContent = "Could not compare: " + ((await r.json().catch(() => ({}))).detail || r.status); return; }
@@ -994,6 +1009,22 @@ async function setupPrint(id) {
   bar.hidden = false;                      // the viewer needs a visible box to measure
   $("fitOut").replaceChildren(); $("fitHint").textContent = "";
   $("fitFile").value = ""; $("fitFile").onchange = () => { const f = $("fitFile").files[0]; if (f) fitCheck(id, f); };
+  $("featOut").replaceChildren(); $("colour3mf").href = `/api/scans/${id}/model_colour.3mf`;
+  const sel = $("fitAgainst"); sel.replaceChildren(Object.assign(document.createElement("option"), { value: "", textContent: "choose…" }));
+  api("/api/scans").then(all => { for (const x of all) if (x.id !== id && x.status === "ok" && (x.kind === "mesh" || x.kind === "object"))
+    sel.append(Object.assign(document.createElement("option"), { value: x.id, textContent: `${x.name} (${new Date(x.created_at * 1000).toLocaleDateString()})` })); }).catch(() => {});
+  sel.onchange = () => { if (sel.value) fitCheck(id, null, sel.value); };
+  $("featBtn").onclick = async () => {
+    const out = $("featOut"); out.textContent = "Looking for flat faces and round features…";
+    const r = await fetch(`/api/scans/${id}/features`);
+    if (!r.ok || current !== id) { out.textContent = "Could not analyse this model."; return; }
+    const f = await r.json(), L = [];
+    for (const c of f.cylinders) L.push(`${c.kind === "hole" ? "Hole" : "Round boss"} Ø ${c.diameter_mm} mm, ${c.length_mm} mm long, at (${c.centre_mm.join(", ")}) mm`);
+    for (const p of f.planes) L.push(`Flat face ${p.facing}, ${Math.round(p.share * 100)}% of the surface, ${p.offset_mm} mm from the origin`);
+    out.replaceChildren(Object.assign(document.createElement("b"), { textContent: `${f.size_mm.join(" × ")} mm overall` }),
+      ...L.map(t => Object.assign(document.createElement("div"), { textContent: "· " + t })),
+      Object.assign(document.createElement("div"), { textContent: L.length ? "Sizes are measured on the scan, so allow about 0.5 mm. These are numbers for a CAD sketch; no CAD file is made." : "No flat faces or round features found." }));
+  };
   $("tolBtn").onclick = e => { e.preventDefault(); location.href = `/api/print/tolerance.3mf?size=${+$("connD").value || 6}&depth=${+$("connDepth").value || 8}`; };
   try { const v = localStorage.getItem("connClr"); if (v) $("connClr").value = v; } catch {}
   $("connClr").onchange = () => { try { localStorage.setItem("connClr", $("connClr").value); } catch {} };
