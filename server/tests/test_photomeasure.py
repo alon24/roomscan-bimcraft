@@ -30,7 +30,7 @@ def project(M, mm):
     return v[:2] / v[2]
 
 
-@pytest.mark.parametrize("tilt", [0.0, 0.5, 1.0])
+@pytest.mark.parametrize("tilt", [0.0, 1.0])   # 0.5 is the API test
 def test_bar_measures_100mm_from_the_card(tilt):
     img, M = scene(tilt)
     quad = pm.detect_reference(img, *pm.REFS["card"])
@@ -79,6 +79,8 @@ def test_api_detect_homography_and_rectify():
 
     r2 = c.post("/api/photo/homography", json={"corners": j["corners"], "ref": "card"})
     assert r2.status_code == 200 and len(r2.json()["H"]) == 9
+    line = [[0, 0], [10, 0], [20, 0], [30, 0]]                  # OpenCV gives a matrix for this too: it must be refused
+    assert c.post("/api/photo/homography", json={"corners": line}).status_code == 400
 
     r3 = c.post("/api/photo/rectify", files={"file": ("p.jpg", jpg.tobytes(), "image/jpeg")},
                 data={"corners": json.dumps(j["corners"]), "ref": "card"})

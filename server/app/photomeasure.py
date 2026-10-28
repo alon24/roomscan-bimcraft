@@ -1,6 +1,9 @@
 """Measure from a photo. Put an object of known size (a bank card, a sheet of paper) on the same flat surface as the thing to
 measure and photograph both. The reference's four corners give the plane's perspective, so any two points on that plane can
 then be turned into millimetres. No LiDAR needed: any phone camera works, so this is also the route for Android."""
+import json
+from typing import Annotated
+
 import cv2
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
@@ -92,8 +95,11 @@ def detect_reference(img: np.ndarray, long_mm: float, short_mm: float) -> np.nda
 def homography(corners: np.ndarray, long_mm: float, short_mm: float) -> np.ndarray:
     """3x3 matrix taking image pixels to millimetres on the reference's plane (x along its long side)."""
     quad = _long_side_first(_order(np.asarray(corners, dtype=float).reshape(4, 2)))
+    q32 = quad.astype(np.float32)
+    if cv2.contourArea(q32) < 1 or not cv2.isContourConvex(q32):   # OpenCV returns a meaningless matrix for these, it does not refuse
+        raise ValueError("those four points do not make a four-sided shape")
     dst = np.array([[0, 0], [long_mm, 0], [long_mm, short_mm], [0, short_mm]], dtype=np.float32)
-    return cv2.getPerspectiveTransform(quad.astype(np.float32), dst)
+    return cv2.getPerspectiveTransform(q32, dst)
 
 
 def to_mm(H: np.ndarray, p) -> np.ndarray:
@@ -160,7 +166,7 @@ async def detect(file: UploadFile = File(...), ref: str = Form("card"), w_mm: fl
 
 
 class Corners(BaseModel):
-    corners: list[list[float]] = Field(min_length=4, max_length=4)
+    corners: list[Annotated[list[float], Field(min_length=2, max_length=2)]] = Field(min_length=4, max_length=4)
     ref: str = "card"
     w_mm: float | None = None
     h_mm: float | None = None
@@ -172,8 +178,8 @@ def homography_for(req: Corners):
     long_mm, short_mm = _ref(req.ref, req.w_mm, req.h_mm)
     try:
         H = homography(np.array(req.corners), long_mm, short_mm)
-    except cv2.error:
-        raise HTTPException(400, "those four points do not make a four-sided shape")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"H": H.ravel().tolist(), "ref_mm": [long_mm, short_mm], "warning": tilt_warning(np.array(req.corners))}
 
 
@@ -181,14 +187,16 @@ def homography_for(req: Corners):
 async def rectify_photo(file: UploadFile = File(...), corners: str = Form(...), ref: str = Form("card"),
                         w_mm: float | None = Form(None), h_mm: float | None = Form(None)):
     """The photo straightened into a top-down, to-scale picture (PNG). `corners` is JSON [[x,y] x4] in the photo's pixels."""
-    import json
     long_mm, short_mm = _ref(ref, w_mm, h_mm)
     try:
         pts = np.array(json.loads(corners), dtype=float).reshape(4, 2)
     except (ValueError, TypeError):
         raise HTTPException(400, "corners must be JSON [[x,y],[x,y],[x,y],[x,y]]")
+    try:
+        H = homography(pts, long_mm, short_mm)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     img = _decode(await file.read())
-    H = homography(pts, long_mm, short_mm)
     out, s = rectify(img, H, long_mm, short_mm)
-    ok, png = cv2.imencode(".png", out)
+    _, png = cv2.imencode(".png", out)
     return Response(png.tobytes(), media_type="image/png", headers={"X-Px-Per-Mm": f"{s:.4f}"})
