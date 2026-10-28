@@ -9,13 +9,16 @@ struct RoomTab: View {
             Picker("Room scan", selection: $kind) {
                 Text("Floor plan").tag(0)
                 Text("3D room").tag(1)
+                Text("From one spot").tag(2)
             }
             .pickerStyle(.segmented).padding(.horizontal).padding(.top, 6)
             Text(kind == 0
                  ? "Walls, doors and windows, measured by Apple RoomPlan. Gives a floor plan and a BIM model (.bimcraft, .ifc)."
-                 : "A coloured 3D copy of the room and everything in it, from the LiDAR and the photos. To look at and measure.")
+                 : kind == 1
+                 ? "A coloured 3D copy of the room and everything in it, from the LiDAR and the photos. To look at and measure."
+                 : "Stand in one place and turn the phone round (a small or cluttered room). Gives a 360° picture and a measured model of the room.")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal)
-            if kind == 0 { ScanView() } else { MeshScanView(fixedMode: 0) }
+            if kind == 0 { ScanView() } else if kind == 1 { MeshScanView(fixedMode: 0) } else { MeshScanView(fixedMode: 0, sweepMode: true) }
         }
     }
 }

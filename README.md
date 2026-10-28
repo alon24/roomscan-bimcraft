@@ -74,6 +74,14 @@ mirrors and black shiny surfaces read badly. Saved readings stay on the phone fo
 Apple RoomPlan. Walk round the room slowly pointing at walls, corners, doors. Tap Stop, then upload.
 The server turns it into a BIMCraft model and plan. **Quick test (30 s)** is a short scan to check things work.
 
+#### Room from one spot: sweep the phone (small or cluttered rooms)
+Room tab, **From one spot**. You don't walk round the room: stand in the middle, tap **Start scan**, and turn slowly on the spot.
+- A dial shows where the camera has looked: **outer ring = the walls** all the way round, **middle = the ceiling**, **inner = the floor**.
+  Fill the outer ring first (turn slowly), then tilt up, then tilt down. The hint under the dial tells you what's next.
+- It warns "You are 40 cm from where you started" if you wander off. Small steps are fine.
+- The phone keeps a photo, the LiDAR depth and the camera's direction twice a second. The server turns them into a 360° picture of
+  the room and a model of it seen from that spot, with its measurements.
+
 ### Object tab: scan a part
 Two ways, both produce a coloured 3D mesh:
 
@@ -86,12 +94,14 @@ Two ways, both produce a coloured 3D mesh:
 Live help while you scan the ring:
 - **Speed pill**: green "Good speed" (about 5 to 20°/s), orange "a little fast", red "too fast" (over 30°/s),
   plus "too slow", "too close", "too far", "ring lost". Red also buzzes.
-- **Coverage dial**: three rings, outer = low camera angle, middle = mid, inner = high. Fill all three.
+- **Coverage dial**: three rings, outer = low camera angle (**under 32°**), middle = mid (32° to 50°), inner = high (over 50°). Fill all three.
+  A live **"Camera angle 38° (middle)"** label tells you which ring you are filling right now: to fill the outer ring, lower the phone
+  until it reads under 32°. (The old edge was 25°, which real scans never reached, so the outer ring stayed empty.)
   The hint under it tells you what to do next ("Now hold the phone lower and turn again").
 - The camera is live before you press start. The screen stays on and bright while filming.
 - **Reset** returns to the start point. **Pinch** to zoom.
 
-Tip from the real scans: every scan so far only had the middle angle. Do a low pass and a high pass too.
+Tip from the real scans: every scan so far only had angles between 33° and 44°. Watch the angle label and go clearly lower (and higher) on the other passes.
 
 ### Photo Measure (any phone, no LiDAR, installable web app)
 Open `http://<server>:8010/photo.html` on **any** phone or computer (Android, iPhone, laptop). No app to install.
@@ -235,6 +245,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.42.2 | Ring dial bands now low <32° / mid 32-50° / high >50° with a live camera-angle label; Room tab **From one spot** sweep mode with its own coverage dial (walls, ceiling, floor); uploads over 1000 files accepted (server). |
 | 0.42.1 | Measure: only the bullseye in the middle creates a pin (tap it), taps elsewhere do nothing; tap a pin to open its menu. |
 | 0.42.0 | **Android app** (APK built in CI, thin shell for Photo Measure) and a **Get the app** page on the server (`/apps.html`) that hands out the APK and IPA. |
 | 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |

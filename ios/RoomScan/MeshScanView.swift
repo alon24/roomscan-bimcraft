@@ -38,6 +38,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var lastCount = 0
     private var stalled = 0
     let guided = CoverageTracker()
+    let sweep = SweepCoverage()      // "Sweep from one spot": where the camera has looked
+    var sweepMode = false
     @Published var guidedActive = false
     private var coverageTimer: Timer?
     // Depth point cloud, built from the LiDAR depth map of every camera frame. This does not depend on ARKit's mesh
@@ -109,6 +111,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         guided.begin()
+        sweep.reset()
         if guided.ring { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
         guidedActive = guided.isActive
         overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
@@ -116,6 +119,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         coverageTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.guided.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
+            if self.sweepMode, let f = self.sceneView.session.currentFrame { self.sweep.update(f) }
         }
         ticks = 0
         cloud = []; cloudColours = []; occupied = []; shownPoints = 0; cloudNode.geometry = nil
@@ -239,12 +243,14 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var scanInfo: [String: Any] {
         let names = ["Free scan", "Guided object", "LiDAR turntable (no ring)", "LiDAR + ring"]
         let mode = lastMode
-        return ["scan type": names[min(max(mode, 0), 3)], "app": AppVersion.text,
+        var info: [String: Any] = ["scan type": sweepMode ? "Sweep from one spot" : names[min(max(mode, 0), 3)], "app": AppVersion.text,
                 "device": Reporter.deviceModel(), "ios": UIDevice.current.systemVersion,
                 "keep every frame": UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true,
                 "photo longest side px": mode == 3 ? 1920 : 1280, "frames sent": photoURLs.filter { $0.pathExtension == "jpg" }.count,
                 "lidar depth": photoURLs.contains { $0.pathExtension == "depth" },
                 "traced outline": footprintURL != nil, "part outlines": maskURLs.count]
+        if sweepMode { info["sweep"] = true; info["sweep max movement m"] = (sweep.maxMoved * 100).rounded() / 100 }
+        return info
     }
 
     /// Ring scans: the part's outline in every photo (Vision, on the phone). The server carves the shape from these, which is far
@@ -590,6 +596,7 @@ struct OrbitSceneView: UIViewRepresentable {
 struct MeshScanView: View {
     var initialMode = 0     // 0 free scan, 1 guided object, 2 turntable, 3 ring
     var fixedMode: Int? = nil   // the Room and Object tabs each use one kind of scan, without the picker
+    var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = "http://192.168.1.10:8000"
     @State private var mode = 0   // 0 AR overlay, 1 3D model
@@ -598,6 +605,9 @@ struct MeshScanView: View {
 
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
+        if sweepMode && !model.scanning && model.plyURL == nil {
+            return "For a small or cluttered room: stand in the middle, tap Start scan and turn slowly on the spot until the outer ring fills (the walls), then tilt up for the ceiling and down for the floor. You get a 360° picture of the room and a model with its measurements. Keep your feet in one place."
+        }
         if model.scanning {
             return "The LiDAR is measuring the surfaces in front of the camera. Each coloured dot is a point it measured. Move slowly: dots appear on everything you have seen, and gaps with no dots are not captured yet. Tap Stop when it covers what you need, or Reset to start over."
         }
@@ -645,10 +655,10 @@ struct MeshScanView: View {
                         .accessibilityLabel(model.previewOn ? "Turn the camera off" : "Turn the camera on")
                     }
                 }
-                if !model.guidedActive {
+                if !model.guidedActive && !(sweepMode && model.scanning) {
                     HelpCard(text: guide)
                 }
-                if model.scanning && !model.guidedActive {
+                if model.scanning && !model.guidedActive && !sweepMode {
                     VStack(spacing: 2) {
                         Text("\(model.pointCount) points · \(model.framesSoFar) photos").font(.title3.weight(.bold))
                         if model.framesSoFar < 120 { Text("Keep going: a room needs about 120 photos (1 to 2 minutes)").font(.caption) }
@@ -656,6 +666,7 @@ struct MeshScanView: View {
                     .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
                 Spacer()
+                if sweepMode && model.scanning { SweepPanel(sweep: model.sweep, frames: model.framesSoFar) }
                 if model.guidedActive && model.scanning {
                     GuidedPanel(tracker: model.guided) { model.guided.setObject(model.sceneView) }
                 }
@@ -683,7 +694,7 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
-        .onAppear { if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
+        .onAppear { model.sweepMode = sweepMode; if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
         .onDisappear { model.pausePreview() }
     }
 }
