@@ -1,4 +1,5 @@
 import ARKit
+import SceneKit
 import SwiftUI
 
 /// A saved distance, kept on the phone. `span` is point A to point B; `point` is camera to the wall.
@@ -21,6 +22,21 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     @Published var frozen: Double?
     @Published var saved: [Measurement] = []
     @Published var hasLiDAR = true
+    @Published var overlay: UIImage?     // live depth, colour coded, drawn over the camera picture
+    @Published var showDepth = true
+    @Published var pins: [SIMD3<Float>] = []
+    var camPos = SIMD3<Float>(0, 0, 0)
+    private var frameCount = 0
+    private static let ramp: [UInt8] = {   // near = red, far = blue
+        var r = [UInt8]()
+        for i in 0..<256 {
+            let c = UIColor(hue: CGFloat(i) / 255 * 0.66, saturation: 1, brightness: 1, alpha: 1)
+            var R: CGFloat = 0, G: CGFloat = 0, B: CGFloat = 0
+            c.getRed(&R, green: &G, blue: &B, alpha: nil)
+            r += [UInt8(R * 255), UInt8(G * 255), UInt8(B * 255)]
+        }
+        return r
+    }()
 
     private var recent: [Double] = []
     private var lastPoint: SIMD3<Float>?
@@ -51,16 +67,20 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Median of the 3x3 depth pixels around the centre, ignoring zeros, so one noisy pixel cannot move the reading.
-    private func centreDepth(_ frame: ARFrame) -> Double? {
+    private func centreDepth(_ frame: ARFrame) -> Double? { depth(frame, nx: 0.5, ny: 0.5) }
+
+    /// Depth in metres at a point given in normalised camera-image coordinates (0...1, sensor orientation).
+    private func depth(_ frame: ARFrame, nx: Double, ny: Double) -> Double? {
         guard let map = (frame.smoothedSceneDepth ?? frame.sceneDepth)?.depthMap else { return nil }
         CVPixelBufferLockBaseAddress(map, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
         let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
+        let cx = min(max(Int(nx * Double(w)), 1), w - 2), cy = min(max(Int(ny * Double(h)), 1), h - 2)
         var v = [Float]()
         for dy in -1...1 { for dx in -1...1 {
-            let row = base.advanced(by: (h / 2 + dy) * rb).assumingMemoryBound(to: Float32.self)
-            let d = row[w / 2 + dx]
+            let row = base.advanced(by: (cy + dy) * rb).assumingMemoryBound(to: Float32.self)
+            let d = row[cx + dx]
             if d.isFinite, d > 0 { v.append(d) }
         } }
         guard v.count >= 4 else { return nil }
@@ -87,13 +107,62 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         distance = med
         steady = recent.count >= 8 && spread < 0.006 && med >= Self.minRange && med <= Self.maxRange
 
+        frameCount += 1
+        if showDepth, frameCount % 3 == 0 { overlay = depthImage(frame) }
         let t = frame.camera.transform
         let cam = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         let fwd = -SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)
         let point = cam + fwd * Float(med)
         lastPoint = point
+        camPos = cam
         if let a = markA { span = Double(simd_length(point - a)) } else { span = nil }
     }
+
+    /// Colour-codes the depth map (0.3 m red ... 4 m blue) as a translucent picture; shown rotated for portrait.
+    private func depthImage(_ frame: ARFrame) -> UIImage? {
+        guard let map = (frame.smoothedSceneDepth ?? frame.sceneDepth)?.depthMap else { return nil }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h {
+            let row = base.advanced(by: y * rb).assumingMemoryBound(to: Float32.self)
+            for x in 0..<w {
+                let d = row[x]
+                guard d.isFinite, d > 0 else { continue }
+                let i = Int(min(max((d - 0.3) / 3.7, 0), 1) * 255)
+                let o = (y * w + x) * 4
+                px[o] = Self.ramp[i * 3] / 2; px[o + 1] = Self.ramp[i * 3 + 1] / 2; px[o + 2] = Self.ramp[i * 3 + 2] / 2; px[o + 3] = 120
+            }
+        }
+        guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let cg = ctx.makeImage() else { return nil }
+        return UIImage(cgImage: cg, scale: 1, orientation: .right)
+    }
+
+    /// Pin the point under a tap: read the depth there and keep it as a fixed spot in the room.
+    func tap(_ p: CGPoint) {
+        guard let frame = sceneView.session.currentFrame else { return }
+        let size = sceneView.bounds.size
+        guard size.width > 0 else { return }
+        let toView = frame.displayTransform(for: .portrait, viewportSize: size)
+        let img = CGPoint(x: p.x / size.width, y: p.y / size.height).applying(toView.inverted())
+        guard let d = depth(frame, nx: Double(img.x), ny: Double(img.y)), d >= Self.minRange, d <= Self.maxRange else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error); return
+        }
+        let k = frame.camera.intrinsics, res = frame.camera.imageResolution
+        let u = Float(img.x) * Float(res.width), v = Float(img.y) * Float(res.height)
+        let z = Float(d)
+        let cam4 = SIMD4((u - k[2][0]) / k[0][0] * z, -(v - k[2][1]) / k[1][1] * z, -z, 1)
+        let w = frame.camera.transform * cam4
+        if pins.count >= 2 { pins = [] }
+        pins.append(SIMD3(w.x, w.y, w.z))
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    var pinSpan: Double? { pins.count == 2 ? Double(simd_length(pins[1] - pins[0])) : nil }
 
     func mark() {
         if markA == nil { markA = lastPoint } else { markA = nil; span = nil }
@@ -101,14 +170,14 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func freeze() {
-        guard let v = span ?? distance else { return }
+        guard let v = pinSpan ?? span ?? distance else { return }
         frozen = v
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     func save() {
         guard let v = frozen else { return }
-        saved.insert(Measurement(kind: span != nil ? "span" : "point", metres: v), at: 0)
+        saved.insert(Measurement(kind: (span != nil || pinSpan != nil) ? "span" : "point", metres: v), at: 0)
         persist()
         frozen = nil
     }
@@ -138,6 +207,11 @@ struct MeasureView: View {
     var body: some View {
         ZStack {
             ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
+            if model.showDepth, let img = model.overlay {
+                Image(uiImage: img).resizable().scaledToFill().ignoresSafeArea().allowsHitTesting(false)
+            }
+            Color.clear.contentShape(Rectangle()).ignoresSafeArea().onTapGesture(coordinateSpace: .local) { model.tap($0) }
+            pinLabels.allowsHitTesting(false)
             Crosshair(colour: status.1).allowsHitTesting(false)
 
             VStack(spacing: 8) {
@@ -156,9 +230,39 @@ struct MeasureView: View {
         .sheet(isPresented: $showList) { MeasurementList(model: model) }
     }
 
+    /// Pins stay on their spot in the room; the label shows how far each is from the camera right now, and A to B between two.
+    private var pinLabels: some View {
+        let _ = model.distance   // redraw every frame
+        let pts = model.pins.map { model.sceneView.projectPoint(SCNVector3($0.x, $0.y, $0.z)) }
+        return ZStack {
+            if pts.count == 2 {
+                Path { p in p.move(to: CGPoint(x: CGFloat(pts[0].x), y: CGFloat(pts[0].y))); p.addLine(to: CGPoint(x: CGFloat(pts[1].x), y: CGFloat(pts[1].y))) }
+                    .stroke(.white, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                if let s = model.pinSpan {
+                    Text(Self.text(s).big).font(.headline).padding(4).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
+                        .position(x: CGFloat(pts[0].x + pts[1].x) / 2, y: CGFloat(pts[0].y + pts[1].y) / 2 - 18)
+                }
+            }
+            ForEach(Array(pts.enumerated()), id: \.offset) { i, p in
+                if p.z > 0 && p.z < 1 {
+                    VStack(spacing: 2) {
+                        Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(Theme.accent, lineWidth: 3))
+                        Text(Self.text(Double(simd_length(model.pins[i] - model.camPos))).big).font(.caption2.bold())
+                            .padding(3).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
+                    }.position(x: CGFloat(p.x), y: CGFloat(p.y))
+                }
+            }
+        }.ignoresSafeArea()
+    }
+
     private var readout: some View {
         VStack(spacing: 4) {
-            if let s = model.span {
+            if let s = model.pinSpan {
+                let t = Self.text(s)
+                Text("pin to pin").font(.caption).foregroundStyle(.secondary)
+                Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
+                Text(t.small).font(.footnote).foregroundStyle(.secondary)
+            } else if let s = model.span {
                 let t = Self.text(s)
                 Text("A → here").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
@@ -188,6 +292,8 @@ struct MeasureView: View {
             Button { model.mark() } label: {
                 Label(model.markA == nil ? "Mark A" : "Clear A", systemImage: model.markA == nil ? "mappin" : "xmark")
             }.buttonStyle(CaptureButtonStyle())
+            Button { model.showDepth.toggle(); if !model.showDepth { model.overlay = nil } } label: { Image(systemName: model.showDepth ? "eye.fill" : "eye.slash") }
+                .buttonStyle(CaptureButtonStyle())
             Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised") }
                 .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil)
             Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet") }
@@ -231,7 +337,7 @@ struct MeasurementList: View {
                 }
                 .onDelete { model.remove($0.map { model.saved[$0].id }) }
             }
-            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nTap Hold, then Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
+            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nTap a spot to pin it, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
             .navigationTitle("Measurements")
             .toolbar { Button("Done") { dismiss() } }
         }
