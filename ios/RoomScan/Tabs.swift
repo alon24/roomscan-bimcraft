@@ -38,7 +38,7 @@ struct ObjectTab: View {
                  ? "Part in the middle of the printed marker ring. Real size in mm, sharp shape from the photos, STL to print."
                  : "Apple's object capture: walk around the part on a table. Needs a matte part with some detail; size is estimated.")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal)
-            if kind == 0 { MeshScanView(fixedMode: 3) } else { ObjectScanView(walkOnly: true) }
+            if kind == 0 { MeshScanView(fixedMode: 3) } else { ObjectScanView() }
         }
     }
 }
