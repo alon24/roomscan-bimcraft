@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Photo Measure</title>
+<link rel="manifest" href="/photo.webmanifest">
+<meta name="theme-color" content="#14b8a6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Photo Measure">
+<link rel="icon" href="/icons/photo-192.png">
+<link rel="apple-touch-icon" href="/icons/photo-192.png">
+<style>
+  :root { --bg:#f6f7f8; --card:#fff; --ink:#15191c; --mute:#66707a; --line:#d9dee2; --acc:#0f9d8f; --warn:#c2410c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111416; --card:#1b1f22; --ink:#eef1f3; --mute:#9aa4ad; --line:#2d343a; --acc:#2dd4bf; --warn:#fb923c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui,sans-serif; padding:0 16px max(24px, env(safe-area-inset-bottom)); }
+  main { max-width:900px; margin:0 auto; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 0 6px; }
+  h1 { font-size:1.25rem; margin:0; flex:1; }
+  a { color:var(--acc); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin:10px 0; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button, select, input { font:inherit; }
+  .btn { background:var(--acc); color:#fff; border:0; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
+  .btn.alt { background:transparent; color:var(--acc); border:1px solid var(--acc); }
+  .btn:disabled { opacity:.4; }
+  select, input[type=number] { background:var(--card); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px; }
+  input[type=number] { width:6em; }
+  .hint { color:var(--mute); font-size:.88rem; }
+  .warn { color:var(--warn); font-size:.9rem; }
+  #stage { position:relative; touch-action:none; line-height:0; }
+  #cv { width:100%; height:auto; border-radius:8px; background:#222; touch-action:none; }
+  #loupe { position:absolute; top:8px; right:8px; width:120px; height:120px; border:3px solid #fff; border-radius:50%; box-shadow:0 2px 8px #0008; display:none; pointer-events:none; background:#000; }
+  ol { margin:6px 0 0 20px; padding:0; }
+  li { margin:2px 0; font-variant-numeric:tabular-nums; }
+  img#flat { max-width:100%; border-radius:8px; border:1px solid var(--line); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Photo Measure</h1><a href="/">← scans</a></header>
+
+  <div class="card">
+    <b>1. Put a known object on the same flat surface</b>
+    <div class="hint">A bank card works well. Lay it flat next to the thing you want to measure and take the photo from straight above.</div>
+    <div class="row" style="margin-top:8px">
+      <label>Reference
+        <select id="ref">
+          <option value="card">Bank card (85.6 × 54 mm)</option>
+          <option value="a4">A4 paper (297 × 210)</option>
+          <option value="a5">A5 paper (210 × 148)</option>
+          <option value="letter">US Letter (279 × 216)</option>
+          <option value="custom">Something else…</option>
+        </select>
+      </label>
+      <span id="custom" hidden><input id="cw" type="number" min="1" step="any" placeholder="long mm"> × <input id="ch" type="number" min="1" step="any" placeholder="short mm"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="btn">Take a photo<input id="cam" type="file" accept="image/*" capture="environment" hidden></label>
+      <label class="btn alt">Choose a photo<input id="pick" type="file" accept="image/*" hidden></label>
+    </div>
+  </div>
+
+  <div class="card" id="work" hidden>
+    <b>2. Check the green corners are on the reference</b>
+    <div class="hint" id="status"></div>
+    <div class="warn" id="warn"></div>
+    <div id="stage"><canvas id="cv"></canvas><canvas id="loupe" width="240" height="240"></canvas></div>
+    <div class="hint" style="margin-top:6px">Drag a green corner to fix it. Then <b>tap two points</b> to measure between them: slide your finger to place it exactly, lift to set it. Only things lying flat on the same surface as the reference are measured correctly.</div>
+  </div>
+
+  <div class="card" id="results" hidden>
+    <b>3. Measurements</b>
+    <ol id="list"></ol>
+    <div class="row" style="margin-top:8px">
+      <button class="btn alt" id="undo">Undo last</button>
+      <button class="btn alt" id="clear">Clear all</button>
+      <button class="btn alt" id="flatBtn">Straighten photo (top-down view)</button>
+    </div>
+    <div id="flatOut" style="margin-top:10px"></div>
+  </div>
+  <p class="hint">Typical accuracy is about 1% when the photo is taken straight above. Everything runs on your own server; nothing leaves it.</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let img = null, blob = null, W = 0, H = 0;
+let corners = null, Hm = null, meas = [], pending = null, drag = null;   // drag: {kind:'corner',i} | {kind:'point'}
+const cv = $("cv"), ctx = cv.getContext("2d"), loupe = $("loupe"), lctx = loupe.getContext("2d");
+
+try { const r = localStorage.getItem("photoRef"); if (r) $("ref").value = r; } catch {}
+const refBody = () => {
+  const f = new FormData(); f.append("ref", $("ref").value);
+  if ($("ref").value === "custom") { f.append("w_mm", $("cw").value || 0); f.append("h_mm", $("ch").value || 0); }
+  return f;
+};
+const refJson = () => ({ ref: $("ref").value, w_mm: +$("cw").value || null, h_mm: +$("ch").value || null });
+$("ref").onchange = () => {
+  $("custom").hidden = $("ref").value !== "custom";
+  try { localStorage.setItem("photoRef", $("ref").value); } catch {}
+  if (img) detect();
+};
+$("custom").hidden = $("ref").value !== "custom";
+$("cw").onchange = $("ch").onchange = () => { if (img && corners) newH(); };
+
+async function load(file) {
+  if (!file) return;
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch { alert("That picture could not be opened."); return; }
+  const k = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+  W = Math.round(bmp.width * k); H = Math.round(bmp.height * k);
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  c.getContext("2d").drawImage(bmp, 0, 0, W, H);
+  img = c; cv.width = W; cv.height = H;
+  blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.92));
+  meas = []; pending = null; $("flatOut").replaceChildren();
+  $("work").hidden = false; $("results").hidden = false;
+  await detect();
+}
+$("cam").onchange = e => load(e.target.files[0]);
+$("pick").onchange = e => load(e.target.files[0]);
+
+async function detect() {
+  $("status").textContent = "Looking for the reference…"; $("warn").textContent = "";
+  const f = refBody(); f.append("file", blob, "photo.jpg");
+  const r = await fetch("/api/photo/detect", { method: "POST", body: f });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $("status").textContent = "Problem: " + (j.detail || r.status); return; }
+  if (j.found) {
+    corners = j.corners; Hm = j.H;
+    $("status").textContent = "Reference found. Check the green corners sit on its corners.";
+    $("warn").textContent = j.warning || "";
+  } else {
+    const x0 = W * 0.3, x1 = W * 0.7, y0 = H * 0.35, y1 = H * 0.65;
+    corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]; Hm = null;
+    $("status").textContent = "Could not find it by itself. Drag the four green corners onto the corners of the reference.";
+  }
+  draw(); list();
+}
+
+let hTimer = 0;
+function newH() {
+  clearTimeout(hTimer);
+  hTimer = setTimeout(async () => {
+    const r = await fetch("/api/photo/homography", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ corners, ...refJson() }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { $("status").textContent = "Problem: " + (j.detail || r.status); return; }
+    Hm = j.H; $("warn").textContent = j.warning || ""; $("status").textContent = "Reference set. Tap two points to measure.";
+    meas.forEach(m => m.mm = dist(m.a, m.b)); draw(); list();
+  }, 150);
+}
+
+const toMm = p => { const h = Hm, w = h[6] * p[0] + h[7] * p[1] + h[8]; return [(h[0] * p[0] + h[1] * p[1] + h[2]) / w, (h[3] * p[0] + h[4] * p[1] + h[5]) / w]; };
+const dist = (a, b) => { const p = toMm(a), q = toMm(b); return Math.hypot(p[0] - q[0], p[1] - q[1]); };
+const fmt = mm => mm >= 100 ? `${(mm / 10).toFixed(1)} cm` : `${mm.toFixed(1)} mm`;
+
+function draw(cursor) {
+  if (!img) return;
+  const u = W / cv.getBoundingClientRect().width || 1;        // image px per css px
+  ctx.drawImage(img, 0, 0);
+  ctx.lineWidth = 2 * u; ctx.strokeStyle = "#22c55e"; ctx.fillStyle = "#22c55e";
+  if (corners) {
+    ctx.beginPath(); corners.forEach((c, i) => i ? ctx.lineTo(c[0], c[1]) : ctx.moveTo(c[0], c[1])); ctx.closePath(); ctx.stroke();
+    corners.forEach(c => { ctx.beginPath(); ctx.arc(c[0], c[1], 9 * u, 0, 7); ctx.fill(); });
+  }
+  const dot = (p, col) => { ctx.fillStyle = col; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 * u; ctx.beginPath(); ctx.arc(p[0], p[1], 7 * u, 0, 7); ctx.fill(); ctx.stroke(); };
+  for (const m of meas) {
+    ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 3 * u; ctx.beginPath(); ctx.moveTo(...m.a); ctx.lineTo(...m.b); ctx.stroke();
+    dot(m.a, "#f59e0b"); dot(m.b, "#f59e0b");
+    const t = fmt(m.mm), mx = (m.a[0] + m.b[0]) / 2, my = (m.a[1] + m.b[1]) / 2;
+    ctx.font = `bold ${16 * u}px system-ui`; const tw = ctx.measureText(t).width;
+    ctx.fillStyle = "#000c"; ctx.fillRect(mx - tw / 2 - 5 * u, my - 26 * u, tw + 10 * u, 22 * u);
+    ctx.fillStyle = "#fff"; ctx.fillText(t, mx - tw / 2, my - 9 * u);
+  }
+  if (pending) dot(pending, "#ef4444");
+  if (cursor) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5 * u; ctx.beginPath(); ctx.arc(cursor[0], cursor[1], 14 * u, 0, 7); ctx.stroke(); }
+}
+
+function list() {
+  $("list").replaceChildren(...meas.map((m, i) => Object.assign(document.createElement("li"), { textContent: `${fmt(m.mm)}  (${m.mm.toFixed(1)} mm)` })));
+  $("undo").disabled = !meas.length && !pending; $("clear").disabled = !meas.length && !pending;
+  $("flatBtn").disabled = !corners;
+}
+
+const where = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
+function showLoupe(p) {
+  loupe.style.display = "block";
+  const z = 4, s = 240 / z;
+  lctx.drawImage(img, p[0] - s / 2, p[1] - s / 2, s, s, 0, 0, 240, 240);
+  lctx.strokeStyle = "#ef4444"; lctx.lineWidth = 2; lctx.beginPath(); lctx.moveTo(120, 100); lctx.lineTo(120, 140); lctx.moveTo(100, 120); lctx.lineTo(140, 120); lctx.stroke();
+}
+cv.onpointerdown = e => {
+  if (!img) return;
+  e.preventDefault(); cv.setPointerCapture(e.pointerId);
+  const p = where(e), reach = 28 * W / cv.getBoundingClientRect().width;
+  const i = corners ? corners.findIndex(c => Math.hypot(c[0] - p[0], c[1] - p[1]) < reach) : -1;
+  drag = i >= 0 ? { kind: "corner", i } : { kind: "point" };
+  if (drag.kind === "point") { if (!Hm) { drag = null; $("status").textContent = "Set the reference corners first."; return; } drag.p = p; }
+  showLoupe(p); draw(p);
+};
+cv.onpointermove = e => {
+  if (!drag) return;
+  const p = where(e);
+  if (drag.kind === "corner") corners[drag.i] = p; else drag.p = p;
+  showLoupe(p); draw(p);
+};
+cv.onpointerup = e => {
+  if (!drag) return;
+  loupe.style.display = "none";
+  if (drag.kind === "corner") { draw(); newH(); }
+  else {
+    const p = drag.p;
+    if (pending) { meas.push({ a: pending, b: p, mm: dist(pending, p) }); pending = null; } else pending = p;
+    draw(); list();
+  }
+  drag = null;
+};
+cv.onpointercancel = () => { drag = null; loupe.style.display = "none"; draw(); };
+window.onresize = () => draw();
+
+$("undo").onclick = () => { if (pending) pending = null; else meas.pop(); draw(); list(); };
+$("clear").onclick = () => { meas = []; pending = null; draw(); list(); };
+$("flatBtn").onclick = async () => {
+  const out = $("flatOut"); out.textContent = "Straightening…";
+  const f = refBody(); f.append("file", blob, "photo.jpg"); f.append("corners", JSON.stringify(corners));
+  const r = await fetch("/api/photo/rectify", { method: "POST", body: f });
+  if (!r.ok) { out.textContent = "Could not straighten: " + ((await r.json().catch(() => ({}))).detail || r.status); return; }
+  const ppm = r.headers.get("X-Px-Per-Mm"), url = URL.createObjectURL(await r.blob());
+  const im = Object.assign(document.createElement("img"), { id: "flat", src: url, alt: "Top-down view" });
+  const a = Object.assign(document.createElement("a"), { href: url, download: "straightened.png", textContent: "Download" });
+  const n = Object.assign(document.createElement("div"), { className: "hint", textContent: `Top-down and to scale: ${(+ppm).toFixed(2)} pixels per mm. ` });
+  n.append(a); out.replaceChildren(im, n);
+};
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+list();
+</script>
+</body>
+</html>

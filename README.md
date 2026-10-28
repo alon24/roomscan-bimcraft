@@ -93,6 +93,21 @@ Live help while you scan the ring:
 
 Tip from the real scans: every scan so far only had the middle angle. Do a low pass and a high pass too.
 
+### Photo Measure (any phone, no LiDAR, installable web app)
+Open `http://<server>:8010/photo.html` on **any** phone or computer (Android, iPhone, laptop). No app to install.
+1. Lay a **bank card** (or A4 / A5 / Letter paper, or any object whose size you know) flat on the same surface as the thing
+   you want to measure. Photograph both from straight above.
+2. **Take a photo** (or choose one). The server finds the card by its four corners and draws them in green. If it can't, drag
+   the four green corners onto the card's corners yourself.
+3. **Tap two points** on the photo: slide your finger to place each one exactly (a magnifier shows), lift to set it. The
+   distance appears in mm and cm. Make as many as you like; **Undo last** / **Clear all**.
+4. **Straighten photo** gives a top-down picture to scale that you can download.
+Only things lying flat on the same surface as the card are measured correctly, and about 1% accuracy needs the photo taken
+straight above (it warns if the angle is steep). Good for glass, mirrors, shiny things and anything LiDAR can't read.
+**Install it:** over HTTPS (or `localhost`) your browser offers "Install app" / "Add to Home screen", and it then opens like an
+app. On a plain `http://192.168...` address it works in the browser but the browser won't offer the install button.
+Everything runs on your own server (OpenCV finds the card); nothing leaves it.
+
 ### Models tab: everything you scanned
 - Tap a scan to see it. **Not uploaded yet? You still get a 3D preview** of what the phone captured.
 - **Upload** sends it to the server. You get a "Model ready" banner when conversion finishes.
@@ -207,6 +222,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |
 | 0.40.0 | **Cut tool like Orca Slicer's**: big panel, move and tilt the cut plane with the mouse, two-colour preview with pull-apart, keep/discard/flip, connector shapes (circle, square, triangle, hexagon), click to add, move or remove connectors on the cut face, any-angle cuts. Server: `/cut/preview`, `/cut/plane`. |
 | 0.39.1 | Bullseye centred exactly on the pinned point, tap it for a menu (select, name, move to crosshair, link, delete), pin-at-crosshair button. |
 | 0.39.0 | **Pin management**: pins are independent, tap to select, measure between any selection (distance, floor and height parts, area, perimeter, angles), keep chosen links, name and delete pins, all remembered with the room map. |
