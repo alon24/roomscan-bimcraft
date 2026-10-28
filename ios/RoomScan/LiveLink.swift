@@ -162,7 +162,8 @@ final class LiveLink: NSObject, ObservableObject {
     private func handle(_ o: [String: Any], raw: Data) {
         switch o["type"] as? String {
         case "ack":
-            if let n = o["n"] as? Int { acked = max(acked, n) }
+            // Cumulative. After a reconnect the first ack says how many frames the server already holds: do not send those again.
+            if let n = o["n"] as? Int { acked = max(acked, n); sent = max(sent, acked) }
         case "map":
             guard let m = try? JSONDecoder().decode(MapMessage.self, from: raw) else { return }
             if let p = m.percent { percent = p }
@@ -176,6 +177,9 @@ final class LiveLink: NSObject, ObservableObject {
             let s = o["status"] as? String ?? ""
             if s == "ready" { serverReady = true }
             if let msg = o["message"] as? String, !msg.isEmpty { note = msg } else if s == "building" { note = "The server is building the model…" }
+        case "error":
+            note = o["message"] as? String ?? "The server reported a problem."
+            Reporter.log("live: server error: \(note)")
         case "aligned":
             note = o["message"] as? String ?? note
         default: break
