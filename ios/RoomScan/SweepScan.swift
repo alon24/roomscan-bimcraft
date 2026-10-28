@@ -18,7 +18,8 @@ final class SweepCoverage: ObservableObject {
     @Published var hint = "Stand in the middle and turn slowly on the spot."
     @Published var moved = 0.0                // metres from the start, now
     @Published var maxMoved = 0.0             // the most it wandered during this scan
-    @Published var yaw = 0.0, pitch = 0.0     // where the camera points now, degrees
+    @Published var yaw = 0.0                 // where the camera points now, degrees round
+    @Published var pitch = 0.0               // and degrees up
     private var origin: SIMD3<Float>?
 
     func reset() {
