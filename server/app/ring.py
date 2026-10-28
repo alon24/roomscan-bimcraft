@@ -5,7 +5,6 @@ points can be written in the ring's own frame, whatever the phone or the spool d
 millimetres, with no assumption about turning speed or a steady phone.
 """
 import json
-import os
 from pathlib import Path
 
 import cv2
@@ -148,15 +147,12 @@ def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     from scipy.spatial import ConvexHull
     hull = yup[:, [0, 2]][ConvexHull(yup[:, [0, 2]]).vertices]
     fp = {"polygon": hull.tolist(), "base_y": 0.0, "height": float(yup[:, 1].max()) + 0.005}
-    carved = None
+    carved, surface_note = None, ""
     try:                                   # the part's outline in the photos, if the phone sent one: much sharper than the LiDAR
         from . import hull as hull_mod
         carved = hull_mod.carve(d, scale)
     except Exception as e:
-        carved = None
         surface_note = f"outline carving failed ({type(e).__name__}: {e}); "
-    else:
-        surface_note = ""
     if carved:
         mesh, col, surface, nviews = carved
         mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.c_[col, np.full(len(col), 255, dtype=np.uint8)])

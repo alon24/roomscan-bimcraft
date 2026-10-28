@@ -39,7 +39,7 @@ def select_frames(d: Path, photos: list[dict], max_frames: int = 70) -> list[dic
     hundreds of near-identical frames, and blur from a moving phone would soften the panorama."""
     rows = []
     for ph in photos:
-        g = cv2.imread(str(d / "photos" / ph["file"]), cv2.IMREAD_GRAYSCALE)
+        g = cv2.imread(str(d / "photos" / ph["file"]), cv2.IMREAD_REDUCED_GRAYSCALE_4)     # decoded at 1/4 size: only compared with each other
         if g is None:
             continue
         sharp = float(cv2.Laplacian(cv2.resize(g, (320, 240), interpolation=cv2.INTER_AREA), cv2.CV_32F).var())
@@ -134,7 +134,6 @@ def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | 
     chosen = select_frames(d, photos, max_frames)
     if not chosen:
         raise ValueError("no usable photos")
-    imgs = {}
 
     def load(ph):
         return np.asarray(Image.open(d / "photos" / ph["file"]).convert("RGB"))

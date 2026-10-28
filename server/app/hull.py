@@ -13,7 +13,7 @@ import trimesh
 from PIL import Image
 from scipy import ndimage as ndi
 
-from . import frames, meshscan
+from . import frames
 
 
 def trusted_masks(d: Path) -> set[str]:
@@ -57,7 +57,7 @@ def choose_instances(labels: np.ndarray, ph: dict, R: np.ndarray, t: np.ndarray,
 
 
 def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = None, height: float = 320.0):
-    """Returns (mesh in metres with Y up, colours, log) or None if there are too few outlined photos."""
+    """Returns (mesh in metres with Y up, colours, log, number of photos used) or None if there are too few outlined photos."""
     from skimage.measure import marching_cubes
     from .ring import _detector, config, ring_pose
     cfg = config(d)
@@ -122,7 +122,7 @@ def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = 
     else:
         top = ""
     vol = np.pad(ndi.gaussian_filter(occ.astype(float), 0.8), 1)
-    verts, faces, normals, _ = marching_cubes(vol, 0.5, spacing=(voxel, voxel, voxel))
+    verts, faces, _, _ = marching_cubes(vol, 0.5, spacing=(voxel, voxel, voxel))
     verts = verts - voxel + np.array([xs[0], xs[0], zs[0]])           # undo the padding, back to ring millimetres
     mm = trimesh.Trimesh(verts, faces[:, ::-1], process=True)          # outward-facing triangles, duplicates merged
     mm.update_faces(mm.nondegenerate_faces())

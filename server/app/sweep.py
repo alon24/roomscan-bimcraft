@@ -243,7 +243,6 @@ def depth_mesh(D: np.ndarray, centre: np.ndarray, colours: np.ndarray | None = N
     """The spherical depth image as a surface seen from the middle: a grid of vertices, with the triangles left out where the depth
     jumps (an object's edge against the wall behind it), so the two are not joined by a stretched sheet."""
     h, w = D.shape
-    valid = np.isfinite(D)
     P, dirs = points_of(D, centre)
     vid = np.arange(h * w).reshape(h, w)
     a, b = vid[:-1, :], np.roll(vid, -1, axis=1)[:-1, :]

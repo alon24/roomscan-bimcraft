@@ -11,7 +11,7 @@ import numpy as np
 import trimesh
 from PIL import Image
 
-from .photos import project
+from .photos import _mat, project
 
 GREY = np.array([150, 150, 150], dtype=np.uint8)
 
@@ -23,6 +23,13 @@ def _depth_map(d: Path, photo: dict) -> np.ndarray | None:
         return None
     a = np.fromfile(p, dtype="<f4")
     return a.reshape(h, w) if a.size == w * h else None
+
+
+def _photos_with_files(d: Path) -> list[dict]:
+    """The photos.json entries whose photo arrived."""
+    mf = d / "photos.json"
+    m = json.loads(mf.read_text()) if mf.exists() else []
+    return [p for p in (m.get("photos", []) if isinstance(m, dict) else m) if (d / "photos" / p["file"]).exists()]
 
 
 def colour_vertices(mesh: trimesh.Trimesh, d: Path, photos: list[dict], with_mask: bool = False):
@@ -38,7 +45,7 @@ def colour_vertices(mesh: trimesh.Trimesh, d: Path, photos: list[dict], with_mas
         img = np.asarray(Image.open(path).convert("RGB"))
         h, w = img.shape[:2]
         uv, depth = project(ph, pts)
-        cam = np.array(ph["transform"], dtype=float)[3, :3]  # column 3 = camera position
+        cam = _mat(ph["transform"])[:3, 3]
         to_cam = cam - pts
         dist = np.linalg.norm(to_cam, axis=1)
         facing = np.einsum("ij,ij->i", nrm, to_cam) / np.maximum(dist, 1e-6)
@@ -96,7 +103,6 @@ def polish(mesh: trimesh.Trimesh, smooth: int = 15, max_faces: int = 200_000) ->
     Vertex colours are kept."""
     notes = []
     m = mesh.copy()
-    colours = np.asarray(m.visual.vertex_colors)[:, :3].copy() if m.visual.kind == "vertex" else None
     m.merge_vertices()
     m.update_faces(m.nondegenerate_faces())
     m.remove_unreferenced_vertices()
@@ -190,19 +196,15 @@ def plan_texture(mesh: trimesh.Trimesh, d: Path, layers: int = 24, probe: int = 
     """Choose, for every triangle, the photo that should be drawn on it, and keep the `layers` photos that matter most.
     The web viewer then projects those photos onto the surface pixel by pixel, so the picture is as sharp as the photos,
     not as coarse as the mesh. Writes tri_photo.bin (one signed byte per triangle: layer number, -1 = none) and texturing.json."""
-    mf = d / "photos.json"
-    if not mf.exists() or len(mesh.faces) == 0:
-        return None
-    m = json.loads(mf.read_text())
-    photos = [p for p in (m.get("photos", []) if isinstance(m, dict) else m) if (d / "photos" / p["file"]).exists()]
-    if not photos:
+    photos = _photos_with_files(d)
+    if not photos or len(mesh.faces) == 0:
         return None
     cen = mesh.triangles_center
     nrm = mesh.face_normals
 
     def scores(ph: dict) -> np.ndarray:
         uv, depth = project(ph, cen)
-        cam = np.array(ph["transform"], dtype=float)[3, :3]
+        cam = _mat(ph["transform"])[:3, 3]
         to_cam = cam - cen
         dist = np.maximum(np.linalg.norm(to_cam, axis=1), 1e-6)
         facing = np.einsum("ij,ij->i", nrm, to_cam) / dist
@@ -255,7 +257,7 @@ def colour_blended(mesh: trimesh.Trimesh, d: Path, photos: list[dict]) -> tuple[
         img = np.asarray(Image.open(path).convert("RGB"))
         h, w = img.shape[:2]
         uv, depth = project(ph, pts)
-        cam = np.array(ph["transform"], dtype=float)[3, :3]
+        cam = _mat(ph["transform"])[:3, 3]
         to_cam = cam - pts
         dist = np.linalg.norm(to_cam, axis=1)
         facing = np.einsum("ij,ij->i", nrm, to_cam) / np.maximum(dist, 1e-6)
@@ -295,11 +297,7 @@ def recolour_from_photos(mesh: trimesh.Trimesh, d: Path, rgb: np.ndarray, limit:
     """Take the colour of each surface point from the full-size photos (the one that sees it head-on, not blocked by something
     nearer) instead of the small image the phone sampled while scanning. Points no photo sees keep their old colour.
     `blend` mixes several brightness-matched photos instead of taking only the best one."""
-    mf = d / "photos.json"
-    if not mf.exists():
-        return rgb, 0.0
-    m = json.loads(mf.read_text())
-    photos = [p for p in (m.get("photos", []) if isinstance(m, dict) else m) if (d / "photos" / p["file"]).exists()]
+    photos = _photos_with_files(d)
     if not photos:
         return rgb, 0.0
     step = max(1, len(photos) // limit)
