@@ -1,8 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from app import photos
 
 SCAN = json.loads((Path(__file__).parent / "fixtures" / "synthetic_room.json").read_text())

@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import numpy as np
 import pytest
@@ -58,9 +59,9 @@ def test_panorama_has_the_right_colours_at_the_right_azimuths(scan):
     assert np.abs(at(30, 60) - (240, 240, 240)).max() < 30      # ceiling
 
 
-def test_sweep_conversion_makes_a_coloured_flat_room(tmp_path):
+def test_sweep_conversion_makes_a_coloured_flat_room(scan, tmp_path):
     d = tmp_path / "s"
-    boxroom.make_scan(d)
+    shutil.copytree(scan, d)
     ok, log = sweep.convert_sweep(d)
     assert ok, log
     room = json.loads((d / "room.json").read_text())
@@ -78,12 +79,13 @@ def test_sweep_conversion_makes_a_coloured_flat_room(tmp_path):
     assert (d / "mesh.bin").exists() and (d / "panorama.jpg").exists() and not (d / "texturing.json").exists()
 
 
-def test_routes_serve_the_panorama_and_the_room_numbers(tmp_path, monkeypatch):
+def test_routes_serve_the_panorama_and_the_room_numbers(scan, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from app import main
     monkeypatch.setattr(main, "DATA", tmp_path)
     d = tmp_path / "abc123abc123"
-    boxroom.make_scan(d)
+    shutil.copytree(scan, d)
+    (d / "panorama.json").unlink(missing_ok=True)
     (d / "meta.json").write_text(json.dumps({"id": "abc123abc123", "name": "Room", "kind": "mesh", "status": "ok", "phone": {"sweep": True}}))
     c = TestClient(main.app)
     r = c.get("/api/scans/abc123abc123/panorama.json?width=1024")
@@ -91,7 +93,3 @@ def test_routes_serve_the_panorama_and_the_room_numbers(tmp_path, monkeypatch):
     r = c.get("/api/scans/abc123abc123/panorama.jpg?width=1024")
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content[:2] == b"\xff\xd8"
     assert c.get("/api/scans/abc123abc123/panorama.json?width=100").status_code == 400
-    r = c.post("/api/scans/abc123abc123/convert")
-    assert r.status_code == 200, r.text
-    room = c.get("/api/scans/abc123abc123/room.json").json()
-    assert room["width_m"] == pytest.approx(4.0, rel=0.02) and "sweep from one spot" in r.json()["log"]

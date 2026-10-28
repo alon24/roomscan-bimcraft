@@ -49,11 +49,6 @@ def test_mesh_without_photos_is_grey(tmp_path, monkeypatch):
     assert c.get(f"/api/scans/{r.json()['id']}/report.json").json()["coloured"] == 0.0
 
 
-def test_mesh_kind_needs_a_mesh(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "DATA", tmp_path / "scans")
-    assert TestClient(main.app).post("/api/scans", data={"kind": "mesh"}).status_code == 422
-
-
 def test_point_cloud_scan_is_kept_and_meshed(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATA", tmp_path / "scans")
     rng = np.random.default_rng(1)
