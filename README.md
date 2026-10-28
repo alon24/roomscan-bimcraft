@@ -64,6 +64,11 @@ Tip from the real scans: every scan so far only had the middle angle. Do a low p
 - **Upload** sends it to the server. You get a "Model ready" banner when conversion finishes.
 - **View in AR (real size)** shows the model at 1:1 on your table using Apple's AR viewer.
 
+### What the app looks like
+Taken automatically in the iOS Simulator on every build (no camera or LiDAR there, so scan screens have an empty picture area).
+
+<img src="docs/img/app-object.png" width="230"> <img src="docs/img/app-measure.png" width="230"> <img src="docs/img/app-models.png" width="230">
+
 ---
 
 ## 2. The web page (the server)
@@ -142,7 +147,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
-| 0.37.0 | **Measure tab**: live LiDAR distance, depth colours over the camera, tap-to-pin, pin to pin, Mark A, Hold and Save. This README. |
+| 0.37.0 | Each build now photographs the app tabs in the Simulator. **Measure tab**: live LiDAR distance, depth colours over the camera, tap-to-pin, pin to pin, Mark A, Hold and Save. This README. |
 | 0.36.0 | Ring coverage dial and hints, View in AR, Fit to my printer, multi-colour 3MF, Detect features, Compare scans, Share links, design refresh, model-ready banner |
 | 0.3x | Live tray speed warning, quality score, cut parts with connectors, tolerance test, saved-scan 3D preview, screen stays on |
 

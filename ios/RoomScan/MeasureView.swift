@@ -290,7 +290,7 @@ struct MeasureView: View {
     private var controls: some View {
         HStack(spacing: 12) {
             Button { model.mark() } label: {
-                Label(model.markA == nil ? "Mark A" : "Clear A", systemImage: model.markA == nil ? "mappin" : "xmark")
+                Label(model.markA == nil ? "Mark A" : "Clear A", systemImage: model.markA == nil ? "mappin" : "xmark").lineLimit(1).minimumScaleFactor(0.7)
             }.buttonStyle(CaptureButtonStyle())
             Button { model.showDepth.toggle(); if !model.showDepth { model.overlay = nil } } label: { Image(systemName: model.showDepth ? "eye.fill" : "eye.slash") }
                 .buttonStyle(CaptureButtonStyle())

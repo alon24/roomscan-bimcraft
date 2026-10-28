@@ -39,10 +39,10 @@ struct RoomScanApp: App {
                 .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gear") } }
                 .task { Reporter.log("app launched"); await Reporter.flush(); await Self.syncRing() }
                 .overlay(alignment: .bottom) { UploadProgressLine().padding(.bottom, 56).allowsHitTesting(false) }
-                .overlay(alignment: .topLeading) {
+                .overlay(alignment: .bottomLeading) {
                     Text(AppVersion.text).font(.system(size: 9)).foregroundStyle(.white)
                         .padding(.horizontal, 4).background(.black.opacity(0.5), in: Capsule())
-                        .padding(.leading, 6).allowsHitTesting(false)
+                        .padding(.leading, 6).padding(.bottom, 2).allowsHitTesting(false)
                 }
             }
         }
