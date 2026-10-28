@@ -37,6 +37,8 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    pins reappear. The undo button removes the last pin, the bin removes all pins and forgets the saved room.
 5. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
 6. The **eye** button hides or shows the depth colours.
+7. **Pinch to zoom** (or the +/- at the top, 1× to 4×) to magnify the picture and place a pin precisely on a corner.
+   Zoom is display only: the reading at the crosshair and your pins do not change.
 
 #### Calibrate it against your tape (you stay in control)
 Tap the small underlined line under the reading ("uncalibrated · tap to calibrate").
@@ -167,6 +169,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.38.1 | Pinch to zoom on the Measure screen. |
 | 0.38.0 | **Calibration** against a tape (wall and pin-to-pin checks, error before and after, correction on/off), averaged Hold with spread, depth confidence filter, unreadable-surface warning. |
 | 0.37.1 | Measure pins are drawn where you tap, stay fixed in the room, are numbered, have edge arrows, and are saved with a room map. Mark A replaced by this. |
 | 0.37.0 | Each build now photographs the app tabs in the Simulator. **Measure tab**: live LiDAR distance, depth colours over the camera, tap-to-pin, pin to pin, Mark A, Hold and Save. This README. |

@@ -326,6 +326,7 @@ struct MeasureView: View {
     @StateObject private var model = MeasureModel()
     @State private var showList = false
     @State private var showCal = false
+    @State private var zoom: CGFloat = 1
     @ObservedObject private var cal = CalibrationStore.shared
 
     /// `kind` says which correction applies to a raw sensor value; `.none` shows the number as is.
@@ -346,14 +347,22 @@ struct MeasureView: View {
     var body: some View {
         ZStack {
             // Everything drawn on the picture is an overlay of the camera view itself, so it shares its exact frame.
+            // Zoom magnifies the picture (camera + depth colours) about the centre; the lens and the measurement are unchanged.
+            // Pins are projected, then moved by the same zoom, so they stay on their spot. The crosshair stays in the centre.
             ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
                 .overlay {
                     GeometryReader { geo in
+                        if model.showDepth, let img = model.overlay {
+                            Image(uiImage: img).resizable().scaledToFill().frame(width: geo.size.width, height: geo.size.height).clipped()
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+                .scaleEffect(zoom)
+                .overlay {
+                    GeometryReader { geo in
                         ZStack {
-                            if model.showDepth, let img = model.overlay {
-                                Image(uiImage: img).resizable().scaledToFill().frame(width: geo.size.width, height: geo.size.height).clipped()
-                            }
-                            PinLayer(model: model, size: geo.size)
+                            PinLayer(model: model, size: geo.size, zoom: zoom)
                             Crosshair(colour: status.1).position(x: geo.size.width / 2, y: geo.size.height / 2)
                         }
                     }
@@ -366,12 +375,14 @@ struct MeasureView: View {
                     Text("No LiDAR on this phone: readings use the camera only and are less exact.")
                         .font(.caption).padding(8).background(.red.opacity(0.8), in: RoundedRectangle(cornerRadius: 8)).foregroundStyle(.white)
                 }
+                ZoomControl(zoom: $zoom)
                 Spacer()
                 readout
                 controls
             }
             .padding(.horizontal, 16).padding(.bottom, 8)
         }
+        .pinchZoom($zoom, enabled: true)
         .onAppear {
             model.start()
             if UserDefaults.standard.string(forKey: "measureSheet") == "cal" { showCal = true }   // CI screenshots
@@ -440,10 +451,13 @@ struct MeasureView: View {
 private struct PinLayer: View {
     @ObservedObject var model: MeasureModel
     let size: CGSize
+    let zoom: CGFloat
 
     private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) {
         let p = model.sceneView.projectPoint(SCNVector3(w.x, w.y, w.z))
-        return (CGPoint(x: CGFloat(p.x), y: CGFloat(p.y)), p.z > 0 && p.z < 1)
+        // Same magnification as the picture, about the screen centre.
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        return (CGPoint(x: c.x + (CGFloat(p.x) - c.x) * zoom, y: c.y + (CGFloat(p.y) - c.y) * zoom), p.z > 0 && p.z < 1)
     }
 
     private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool {
