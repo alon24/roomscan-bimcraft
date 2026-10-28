@@ -180,6 +180,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         scanning = false
         hud = ""; status = ""
         Reporter.log("mesh: reset by user")
+        startPreview()      // back to the live camera at the start screen, not a paused one
     }
 
     func stop() {
@@ -646,7 +647,7 @@ struct MeshScanView: View {
                 HStack {
                     if model.scanning {
                         Button("Stop") { model.stop() }
-                        Button("Reset", role: .destructive) { model.discard() }
+                        Button("Reset", role: .destructive) { model.discard(); model.guided.mode = fixedMode ?? initialMode }
                     } else if MeshScanModel.supported && model.plyURL == nil {
                         Button("Start scan") { mode = 0; model.start() }
                     }
@@ -655,7 +656,7 @@ struct MeshScanView: View {
                         if let stl = model.phoneResult?.stl { ShareLink(item: stl) { Text("STL") } }
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
                         Button("Save") { model.saveOnPhone() }
-                        Button("New scan", role: .destructive) { mode = 0; model.discard() }
+                        Button("New scan", role: .destructive) { mode = 0; model.discard(); model.guided.mode = fixedMode ?? initialMode }
                     }
                 }
                 .buttonStyle(.borderedProminent)
