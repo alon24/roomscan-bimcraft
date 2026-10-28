@@ -5,6 +5,8 @@ import statistics
 import subprocess
 from pathlib import Path
 
+from shapely.geometry import MultiPoint, Polygon
+
 from . import geometry as g
 
 MIN_WALL_MM = 150.0
@@ -75,13 +77,24 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
         raise ValueError("all walls shorter than minimum")
 
     snapped = g.snap_endpoints([(a, b) for _, a, b in kept], snap_mm)
-    height_mm = round(statistics.median(w["dimensions"][1] for w, _, _ in kept) * 1000)
+    pairs = [(w, s) for (w, _, _), s in zip(kept, snapped) if s[0] != s[1]]   # BIMCraft refuses a 0 mm wall
+    if len(pairs) < len(kept):
+        log.append(f"dropped {len(kept) - len(pairs)} wall(s) whose ends snapped together")
+    if not pairs:
+        raise ValueError("all walls shorter than minimum")
+    snapped = [s for _, s in pairs]
+    height_mm = round(statistics.median(w["dimensions"][1] for w, _ in pairs) * 1000)
     lines = []
 
     loop = g.chain_loop(snapped)
+    if loop and Polygon(loop).exterior.is_ccw:
+        loop.reverse()   # BIMCraft puts a wall's exterior on its left, so walls drawn clockwise face out
     sq = SQUARE_DEG if square_deg is None else square_deg
     if loop and sq > 0:
-        loop = g.square_loop(loop, sq)
+        squared = g.square_loop(loop, sq)
+        moved = dict(zip(loop, squared))   # doors and windows go on the squared walls, not where the walls were
+        snapped = [(moved[a], moved[b]) for a, b in snapped]
+        loop = squared
         log.append(f"squared corners (tolerance {sq}°)")
     if loop:
         lines.append(_cmd("wall", {"points": [_r(p) for p in loop], "closed": True, "height": height_mm}))
@@ -91,8 +104,7 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
         for a, b in snapped:
             lines.append(_cmd("wall", {"points": [_r(a), _r(b)], "height": height_mm}))
 
-    by_id = {w["identifier"]: (a, b) for (w, _, _), (a, b) in zip(kept, snapped)}
-    segs = list(by_id.values())
+    by_id = {w.get("identifier"): s for (w, _), s in zip(pairs, snapped)}
     level = g.floor_level(scan)
 
     types = set()
@@ -100,7 +112,7 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
         for s in scan.get(key) or []:
             c = g.centre_plan(s)
             host = by_id.get(s.get("parentIdentifier"))
-            cands = [host] if host else segs
+            cands = [host] if host else snapped
             at = min((g.project_on_segment(c, a, b) for a, b in cands), key=lambda q: g.dist(q, c))
             w, h = _mm(s["dimensions"][0]), _mm(s["dimensions"][1])
             tname = f"{kind.title()} {w}x{h}"
@@ -114,10 +126,14 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
                     args["sill"] = sill
             lines.append(_cmd(kind, args))
 
-    pts = loop or [p for seg in snapped for p in seg]
-    mid = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
-    lines.append(_cmd("room", {"point": _r(mid), "name": "Room"}))
-    lines.append("floor {}")
+    if loop:
+        lines.append(_cmd("room", {"point": _r(Polygon(loop).representative_point().coords[0]), "name": "Room"}))
+        lines.append("floor {}")
+    else:   # BIMCraft finds no room inside open walls, and a floor needs an outline: the hull round the walls
+        hull = MultiPoint([p for seg in snapped for p in seg]).convex_hull
+        if hull.geom_type == "Polygon":
+            lines.append(_cmd("floor", {"boundary": [_r(p) for p in hull.exterior.coords[:-1]]}))
+        log.append("no room: the walls do not enclose one")
     lines += furniture(scan, level, log)
     return "\n".join(lines) + "\n", log
 
@@ -130,6 +146,6 @@ def run_cli(script: Path, outdir: Path, timeout: int = 60) -> tuple[bool, str]:
         cmd += ["--save", str(outdir / name)]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except (subprocess.TimeoutExpired, OSError) as e:
         return False, f"{type(e).__name__}: {e}"
     return p.returncode == 0, p.stdout + p.stderr

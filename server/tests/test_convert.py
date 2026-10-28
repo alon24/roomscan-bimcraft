@@ -32,15 +32,9 @@ def test_flat_transform_accepted(scan):
     assert close(g.wall_endpoints(w)[1], (4200, 0))
 
 
-def test_snap_merges_close_endpoints():
-    walls = [((0, 0), (1000, 0)), ((1040, 30), (1040, 900))]
-    s = g.snap_endpoints(walls, 100)
-    assert s[0][1] == s[1][0]
-
-
-def test_snap_keeps_distant_endpoints():
-    s = g.snap_endpoints([((0, 0), (1000, 0)), ((1300, 0), (1300, 900))], 100)
-    assert s[0][1] != s[1][0]
+def test_snap_merges_close_endpoints_only():
+    s = g.snap_endpoints([((0, 0), (1000, 0)), ((1040, 30), (1040, 900)), ((1300, 0), (1300, 900))], 100)
+    assert s[0][1] == s[1][0] and s[0][1] != s[2][0]
 
 
 def test_loop_closing(scan):
@@ -49,13 +43,6 @@ def test_loop_closing(scan):
     assert first.startswith("wall ")
     args = json.loads(first.split(" ", 1)[1])
     assert args["closed"] is True and len(args["points"]) == 4 and args["height"] == 2500
-
-
-def test_open_walls_not_closed(scan):
-    scan["walls"].pop()
-    script, log = convert.convert(scan)
-    assert sum(l.startswith("wall ") for l in script.splitlines()) == 3
-    assert not any(json.loads(l.split(" ", 1)[1]).get("closed") for l in script.splitlines() if l.startswith("wall "))
 
 
 def test_short_wall_dropped(scan):
@@ -83,19 +70,6 @@ def test_floor_and_room_emitted(scan):
     assert "floor {}" in script.splitlines()
     room = json.loads(next(l for l in script.splitlines() if l.startswith("room ")).split(" ", 1)[1])
     assert close(room["point"], (2100, 1800))
-
-
-@pytest.mark.skipif(not os.environ.get("BIMCRAFT_CLI"), reason="BIMCRAFT_CLI not set")
-def test_bimcraft_cli_accepts_script(scan, tmp_path):
-    script, _ = convert.convert(scan)
-    p = tmp_path / "script.txt"
-    p.write_text(script)
-    ok, out = convert.run_cli(p, tmp_path)
-    assert ok, out
-    assert (tmp_path / "room.bimcraft").exists() and (tmp_path / "room.ifc").exists()
-    info = subprocess.run([os.environ["BIMCRAFT_CLI"], "info", str(tmp_path / "room.bimcraft")],
-                          capture_output=True, text=True)
-    assert "wall" in info.stdout.lower()
 
 
 def test_square_loop_fixes_skewed_rectangle():
@@ -151,10 +125,69 @@ def test_furniture_only_without_walls(scan):
     assert not _lines(script, "wall") and len(_lines(script, "component")) == 1
 
 
+def wall(a, b, height=2.5):
+    """A RoomPlan wall between two plan points (mm)."""
+    (x0, z0), (x1, z1) = (a[0] / 1000, -a[1] / 1000), (b[0] / 1000, -b[1] / 1000)
+    n = ((x1 - x0) ** 2 + (z1 - z0) ** 2) ** 0.5
+    ax = [(x1 - x0) / n, 0, (z1 - z0) / n, 0]
+    return {"identifier": f"W{a}{b}", "dimensions": [n, height, 0],
+            "transform": [ax, [0, 1, 0, 0], [-ax[2], 0, ax[0], 0], [(x0 + x1) / 2, height / 2, (z0 + z1) / 2, 1]]}
+
+
+def walls(*pts):
+    return [wall(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))]
+
+
+def test_l_shaped_room_point_is_inside_and_loop_runs_clockwise(scan):
+    # the corners' average (2333, 2333) is outside an L: BIMCraft refuses a room there and the whole script fails
+    scan["walls"] = walls((0, 0), (0, 6000), (1000, 6000), (1000, 1000), (6000, 1000), (6000, 0))
+    script, _ = convert.convert(scan)
+    pts = _lines(script, "wall")[0]["points"]
+    room = _lines(script, "room")[0]["point"]
+    assert room[0] < 1000 or room[1] < 1000
+    assert sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(pts, pts[1:] + pts[:1])) < 0   # clockwise: walls face out
+
+
+def test_open_walls_get_a_floor_but_no_room(scan):
+    scan["walls"].pop()
+    script, log = convert.convert(scan)
+    assert len(_lines(script, "wall")) == 3 and not any(w.get("closed") for w in _lines(script, "wall"))
+    assert not _lines(script, "room") and len(_lines(script, "floor")[0]["boundary"]) == 4
+    assert any("no room" in l for l in log)
+
+
+def test_squared_walls_keep_their_doors(scan):
+    # skewed so far that a door left on the unsquared wall would be off the squared one
+    scan["walls"] = walls((0, 0), (0, 3600), (4200, 3900), (4200, 0))
+    script, _ = convert.convert(scan, square_deg=6)
+    loop = _lines(script, "wall")[0]["points"]
+    door = _lines(script, "door")[0]["at"]
+    segs = list(zip(loop, loop[1:] + loop[:1]))
+    assert min(g.dist(door, g.project_on_segment(door, a, b)) for a, b in segs) < 1
+
+
+def test_walls_whose_ends_snap_together_are_dropped(scan):
+    scan["walls"].insert(1, wall((4200, -90), (4200, 90)))   # 180 mm: kept, but both ends snap to the corner
+    script, log = convert.convert(scan)
+    assert any("snapped together" in l for l in log) and _lines(script, "wall")[0]["closed"]
+
+
 @pytest.mark.skipif(not os.environ.get("BIMCRAFT_CLI"), reason="BIMCRAFT_CLI not set")
-def test_bimcraft_cli_accepts_furniture(scan, tmp_path):
-    scan["objects"] = [TABLE, dict(TABLE, category={"bed": {}}, identifier="B1")]
+@pytest.mark.parametrize("variant", ["box", "furniture", "l_shape", "open", "squared"])
+def test_bimcraft_cli_accepts_script(scan, tmp_path, variant):
+    square = None
+    if variant == "furniture":
+        scan["objects"] = [TABLE, dict(TABLE, category={"bed": {}}, identifier="B1")]
+    elif variant == "l_shape":
+        scan["walls"] = walls((0, 0), (0, 6000), (1000, 6000), (1000, 1000), (6000, 1000), (6000, 0))
+    elif variant == "open":
+        scan["walls"].pop()
+    elif variant == "squared":
+        scan["walls"], square = walls((0, 0), (0, 3600), (4200, 3900), (4200, 0)), 6
     p = tmp_path / "script.txt"
-    p.write_text(convert.convert(scan)[0])
+    p.write_text(convert.convert(scan, square_deg=square)[0])
     ok, out = convert.run_cli(p, tmp_path)
     assert ok, out
+    if variant == "box":
+        info = subprocess.run([os.environ["BIMCRAFT_CLI"], "info", str(tmp_path / "room.bimcraft")], capture_output=True, text=True)
+        assert (tmp_path / "room.ifc").exists() and "wall" in info.stdout.lower()
