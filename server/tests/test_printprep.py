@@ -150,3 +150,21 @@ def test_tolerance_route_returns_a_3mf():
     from app import main
     r = TestClient(main.app).get("/api/print/tolerance.3mf?size=6&depth=8")
     assert r.status_code == 200 and r.content[:2] == b"PK"
+
+
+def test_fit_route_compares_with_a_reference(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    monkeypatch.setattr(main, "DATA", tmp_path)
+    d = tmp_path / "abc"
+    d.mkdir()
+    box = trimesh.creation.box(extents=(40, 25, 15))
+    box.apply_translation([0, 0, 7.5])
+    box.export(d / "model.stl")
+    (d / "meta.json").write_text('{"id":"abc","kind":"mesh"}')
+    ref = io.BytesIO(); trimesh.creation.box(extents=(40, 25, 15)).export(ref, file_type="stl")
+    r = TestClient(main.app).post("/api/scans/abc/fit", files={"reference": ("ref.stl", ref.getvalue())})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["rms_mm"] < 0.3 and len(body["deviation_mm"]) * 3 == len(body["vertices"])
+    assert TestClient(main.app).post("/api/scans/abc/fit", files={"reference": ("ref.txt", b"x")}).status_code == 400

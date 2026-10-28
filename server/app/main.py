@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import re
 import shutil
@@ -18,7 +19,7 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import quality, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import fit as fit_mod, quality, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -604,17 +605,45 @@ def cut_model(scan_id: str, req: CutRequest):
             "size_mm": [[round(float(x), 1) for x in p.extents] for p in parts]}
 
 
-@app.get("/api/scans/{scan_id}/print/mesh.json")
-def print_mesh(scan_id: str, max_faces: int = 60000):
-    """model.stl as vertices and faces (mm, Z up) for the cut view; very dense meshes are thinned for the browser."""
-    m = _model(_dir(scan_id))
+def _view_mesh(d: Path, max_faces: int) -> trimesh.Trimesh:
+    """model.stl for the browser: very dense meshes are thinned."""
+    m = _model(d)
     if len(m.faces) > max_faces:
         import open3d as o3d
         o = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(m.vertices), o3d.utility.Vector3iVector(m.faces))
         o = o.simplify_quadric_decimation(max_faces)
         m = trimesh.Trimesh(vertices=np.asarray(o.vertices), faces=np.asarray(o.triangles), process=False)
+    return m
+
+
+@app.get("/api/scans/{scan_id}/print/mesh.json")
+def print_mesh(scan_id: str, max_faces: int = 60000):
+    """model.stl as vertices and faces (mm, Z up) for the cut view."""
+    m = _view_mesh(_dir(scan_id), max_faces)
     return {"vertices": np.round(m.vertices, 2).ravel().tolist(), "faces": m.faces.ravel().tolist(),
             "size_mm": [round(float(x), 1) for x in m.extents], "origin_mm": [round(float(x), 2) for x in m.bounds[0]]}
+
+
+@app.post("/api/scans/{scan_id}/fit")
+def fit_check(scan_id: str, reference: UploadFile = File(...)):
+    """Line a reference mesh (STL, 3MF, OBJ, PLY, in mm) up on this scan and return how far each point of the scan is from it."""
+    d = _dir(scan_id)
+    ext = Path(reference.filename or "").suffix.lower().lstrip(".")
+    if ext not in ("stl", "3mf", "obj", "ply", "glb", "off"):
+        raise HTTPException(400, "the reference must be an stl, 3mf, obj, ply, glb or off file")
+    try:
+        loaded = trimesh.load(io.BytesIO(reference.file.read()), file_type=ext, force="mesh")
+        ref = loaded if isinstance(loaded, trimesh.Trimesh) else trimesh.util.concatenate(list(loaded.geometry.values()))
+        if not len(ref.faces):
+            raise ValueError("no surface in the file")
+        scan = _view_mesh(d, 40000)
+        res = fit_mod.compare(scan, ref)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"could not compare: {type(e).__name__}: {e}")
+    res.update(vertices=np.round(scan.vertices, 2).ravel().tolist(), faces=scan.faces.ravel().tolist())
+    return res
 
 
 @app.get("/api/scans/{scan_id}/section.svg")
