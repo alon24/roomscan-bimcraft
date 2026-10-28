@@ -41,6 +41,8 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    Zoom is display only: the reading at the crosshair and your pins do not change.
 
 #### Calibrate it against your tape (you stay in control)
+<img src="docs/img/app-calibrate.png" align="right" width="230">
+
 Tap the small underlined line under the reading ("uncalibrated · tap to calibrate").
 1. **Camera to wall**: put the tape's zero at the **back camera lens** (not the phone edge), point the crosshair
    straight at the wall, wait for the green dot, type what the tape says, **Add this check**. Do 0.5 m, 1 m, 2 m, 3 m.
