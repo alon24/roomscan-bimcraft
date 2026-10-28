@@ -9,6 +9,8 @@ final class RingSpeedMonitor {
         var text: String
         var level: Int          // 0 starting, 1 good, 2 careful, 3 problem
         var turns: Double
+        var az: Double? = nil       // where the camera is round the ring this frame (degrees, 0 to 360), when the ring was read
+        var elev: Double? = nil     // and how high above the ring plane (degrees)
     }
 
     static let fast = 30.0, ideal = 20.0, slow = 5.0
@@ -26,6 +28,7 @@ final class RingSpeedMonitor {
     private var travelled = 0.0
     private var slowSince: Double?
     private var warnedAt = 0.0
+    private var frameAz: Double?, frameElev: Double?
 
     func reset() {
         queue.async {
@@ -54,7 +57,9 @@ final class RingSpeedMonitor {
         queue.async { [weak self] in
             guard let self else { return }
             let pose = OnPhoneRing.livePose(gray: gray, w: w, h: h, fx: fx, fy: fy, cx: cx, cy: cy, ring: .current(), flipped: &self.flipped)
-            let reading = self.update(pose, now)
+            self.frameAz = nil; self.frameElev = nil
+            var reading = self.update(pose, now)
+            reading.az = self.frameAz; reading.elev = self.frameElev
             DispatchQueue.main.async {
                 self.busy = false
                 self.onReading?(reading)
@@ -72,6 +77,8 @@ final class RingSpeedMonitor {
         }
         lastSeen = now
         let az = atan2(c.y, c.x)
+        frameAz = (az * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+        frameElev = asin(max(-1, min(1, c.z / max(simd_length(c), 1)))) * 180 / .pi
         if let last = lastAz, now - lastTime < 1.0, now - lastTime > 0.05 {
             var d = az - last
             while d > .pi { d -= 2 * .pi }

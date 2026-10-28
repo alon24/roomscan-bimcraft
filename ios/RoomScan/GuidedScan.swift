@@ -22,6 +22,27 @@ final class CoverageTracker: ObservableObject {
     @Published var framesTaken = 0
     @Published var speed: RingSpeedMonitor.Reading?       // ring scans: how fast the tray is turning, read from the markers
     private let speedMonitor = RingSpeedMonitor()
+    // Ring scans: which angles round the ring have been seen at which height (3 heights x 24 sectors of 15 degrees), same bands as the server's report
+    @Published var ringCells = [Bool](repeating: false, count: 72)
+    @Published var ringHint = ""
+    static let ringSectors = 24
+    private func noteRing(_ r: RingSpeedMonitor.Reading) {
+        guard let az = r.az, let el = r.elev else { return }
+        let band = el < 25 ? 0 : (el < 55 ? 1 : 2)
+        ringCells[band * Self.ringSectors + min(Self.ringSectors - 1, Int(az / (360 / Double(Self.ringSectors))))] = true
+        ringHint = Self.hint(for: ringCells)
+    }
+    func ringShare(_ band: Int) -> Double {
+        Double(ringCells[band * Self.ringSectors..<(band + 1) * Self.ringSectors].filter { $0 }.count) / Double(Self.ringSectors)
+    }
+    static func hint(for cells: [Bool]) -> String {
+        func share(_ b: Int) -> Double { Double(cells[b * ringSectors..<(b + 1) * ringSectors].filter { $0 }.count) / Double(ringSectors) }
+        let low = share(0), mid = share(1), high = share(2)
+        if mid < 0.85 { return "Turn the tray slowly: the first turn is \(Int(mid * 100))% done." }
+        if low < 0.7 { return "Now hold the phone lower, nearly level with the top of the part, and turn the tray once more." }
+        if high < 0.5 { return "Last: hold the phone high, looking down from above, for a quarter turn or more." }
+        return "The whole ring is covered at every height. Tap Stop."
+    }
     private var turntableTicks = 0
     @Published var phase: Phase = .off
     @Published var radius: Float = 0.15 { didSet { if phase == .ready { refresh() } } }
@@ -59,8 +80,9 @@ final class CoverageTracker: ObservableObject {
     }
 
     func begin() {
-        speedMonitor.onReading = { [weak self] r in self?.speed = r }
+        speedMonitor.onReading = { [weak self] r in self?.speed = r; self?.noteRing(r) }
         speed = nil
+        ringCells = [Bool](repeating: false, count: 72); ringHint = ""
         phase = enabled ? (ring ? .capturing : .placing) : .off
         cells = [Bool](repeating: false, count: Self.cellCount)
         hint = ""
@@ -426,6 +448,13 @@ struct GuidedPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             Text(tracker.message).font(.caption).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            if tracker.phase == .capturing && tracker.ring {
+                HStack(spacing: 12) {
+                    RingCoverageDial(cells: tracker.ringCells).frame(width: 96, height: 96)
+                    Text(tracker.ringHint.isEmpty ? "Waiting for the ring…" : tracker.ringHint).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10).card()
+            }
             if tracker.phase == .capturing && tracker.ring, let s = tracker.speed {
                 Text(s.text).font(.callout.weight(.semibold)).foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 8)
                     .background(s.level >= 3 ? Color.red : (s.level == 2 ? Color.orange : (s.level == 1 ? Color.green : Color.gray)), in: Capsule())

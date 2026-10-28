@@ -86,6 +86,9 @@ struct ModelDetailView: View {
     @State private var details: [(String, String)] = []
     @State private var stl: URL?
     @State private var threeMF: URL?
+    @State private var arURL: URL?
+    @State private var showAR = false
+    @State private var arNote = ""
 
     var body: some View {
         List {
@@ -100,6 +103,10 @@ struct ModelDetailView: View {
                 HStack {
                     if let stl { ShareLink(item: stl) { Label("STL", systemImage: "square.and.arrow.up") } }
                     if let threeMF { ShareLink(item: threeMF) { Label("3MF", systemImage: "square.and.arrow.up") } }
+                }
+                if scan.kind != "room" {
+                    Button { Task { await openAR() } } label: { Label("View in AR (real size)", systemImage: "arkit") }
+                    if !arNote.isEmpty { Text(arNote).font(.caption).foregroundStyle(.secondary) }
                 }
             }
             Section {
@@ -116,6 +123,14 @@ struct ModelDetailView: View {
         }
         .navigationTitle(scan.name)
         .task { await load() }
+        .fullScreenCover(isPresented: $showAR) { if let arURL { ARPreview(url: arURL).ignoresSafeArea() } }
+    }
+
+    private func openAR() async {
+        arNote = "Making the AR model…"
+        if arURL == nil { arURL = await fetch("model.usdz") }
+        arNote = arURL == nil ? "This scan has no model to show in AR yet." : ""
+        showAR = arURL != nil
     }
 
     private func fetch(_ file: String) async -> URL? {

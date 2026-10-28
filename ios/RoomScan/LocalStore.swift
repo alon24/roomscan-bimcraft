@@ -239,6 +239,7 @@ struct SavedScanDetail: View {
     @State private var zipURL: URL?
     @State private var preview: SCNScene?
     @State private var previewNote = "Building the preview…"
+    @State private var showAR = false
 
     var body: some View {
         Form {
@@ -250,6 +251,10 @@ struct SavedScanDetail: View {
                 } else {
                     Text(previewNote)
                 }
+            }
+            if let usdz = scan.usdz {
+                Section { Button { showAR = true } label: { Label("View in AR (real size)", systemImage: "arkit") } }
+                    .fullScreenCover(isPresented: $showAR) { ARPreview(url: LocalStore.dir(scan.id).appendingPathComponent(usdz)).ignoresSafeArea() }
             }
             Section("Name") {
                 TextField("Name", text: $name).onSubmit { LocalStore.rename(scan, to: name) }
