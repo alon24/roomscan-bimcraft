@@ -2,7 +2,7 @@ import ARKit
 import SceneKit
 import SwiftUI
 
-/// A saved distance, kept on the phone. `span` is point A to point B; `point` is camera to the wall.
+/// A saved distance, kept on the phone. `span` is between two points; `point` is camera to the wall.
 struct Measurement: Codable, Identifiable {
     var id = UUID()
     var date = Date()
@@ -10,22 +10,29 @@ struct Measurement: Codable, Identifiable {
     var metres: Double
 }
 
-/// Point the camera, read the LiDAR distance at the crosshair. Mark A, move, and the live A to B span shows too.
+/// Point the camera, read the LiDAR distance at the crosshair. Tap to pin spots: pins are ARKit anchors, so they stay on
+/// their spot in the room while you move, and are written to a saved room map so they come back after you leave.
 final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     let sceneView = ARSCNView()
     static let minRange = 0.25, maxRange = 5.0
+    static let mapURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("measure.worldmap")
 
     @Published var distance: Double?     // smoothed camera-to-target, metres
     @Published var steady = false
-    @Published var span: Double?         // A to the crosshair, metres
-    @Published var markA: SIMD3<Float>?
+    @Published var span: Double?         // last pin to the crosshair, metres
     @Published var frozen: Double?
     @Published var saved: [Measurement] = []
     @Published var hasLiDAR = true
     @Published var overlay: UIImage?     // live depth, colour coded, drawn over the camera picture
     @Published var showDepth = true
     @Published var pins: [SIMD3<Float>] = []
+    @Published var relocalizing = false
+
     var camPos = SIMD3<Float>(0, 0, 0)
+    private var pinAnchors: [String: ARAnchor] = [:]
+    private var recent: [Double] = []
+    private var lastPoint: SIMD3<Float>?
+    private var live = true
     private var frameCount = 0
     private static let ramp: [UInt8] = {   // near = red, far = blue
         var r = [UInt8]()
@@ -38,15 +45,16 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         return r
     }()
 
-    private var recent: [Double] = []
-    private var lastPoint: SIMD3<Float>?
-    private var live = true
-
     override init() {
         super.init()
         sceneView.session.delegate = self
         sceneView.automaticallyUpdatesLighting = true
+        // Taps are read on the camera view itself, so the point is in exactly the same coordinates the pins are drawn in.
+        sceneView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
         if let d = UserDefaults.standard.data(forKey: "measurements"), let m = try? JSONDecoder().decode([Measurement].self, from: d) { saved = m }
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.saveMap(thenPause: false)
+        }
     }
 
     func start() {
@@ -55,21 +63,39 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         if hasLiDAR { cfg.frameSemantics.insert(.sceneDepth) }
         if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) { cfg.sceneReconstruction = .mesh }
         cfg.planeDetection = [.horizontal, .vertical]
+        if let data = try? Data(contentsOf: Self.mapURL),
+           let map = try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) {
+            cfg.initialWorldMap = map   // brings the saved pins back once the phone recognises the place
+        }
         live = true
+        pinAnchors = [:]
+        pins = []
         sceneView.session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
         Screen.awake(true)
     }
 
     func stop() {
         live = false
-        sceneView.session.pause()
+        saveMap(thenPause: true)
         Screen.awake(false)
     }
 
-    /// Median of the 3x3 depth pixels around the centre, ignoring zeros, so one noisy pixel cannot move the reading.
-    private func centreDepth(_ frame: ARFrame) -> Double? { depth(frame, nx: 0.5, ny: 0.5) }
+    /// Writes the room map (with the pins in it). Skipped when there are no pins or the phone has not seen enough yet,
+    /// so an older good map is never replaced by a bad one.
+    private func saveMap(thenPause: Bool) {
+        let session = sceneView.session
+        guard !pinAnchors.isEmpty else { if thenPause { session.pause() }; return }
+        session.getCurrentWorldMap { [weak self] map, _ in
+            if let map, let data = try? NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true) {
+                try? data.write(to: Self.mapURL, options: .atomic)
+            }
+            if thenPause, self?.live == false { session.pause() }
+        }
+    }
 
-    /// Depth in metres at a point given in normalised camera-image coordinates (0...1, sensor orientation).
+    // MARK: depth
+
+    /// Median of the 3x3 depth pixels around a point (normalised camera-image coordinates), ignoring zeros.
     private func depth(_ frame: ARFrame, nx: Double, ny: Double) -> Double? {
         guard let map = (frame.smoothedSceneDepth ?? frame.sceneDepth)?.depthMap else { return nil }
         CVPixelBufferLockBaseAddress(map, .readOnly)
@@ -89,7 +115,11 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard live else { return }
-        var d = centreDepth(frame)
+        let lost: Bool
+        if case .limited(.relocalizing) = frame.camera.trackingState { lost = true } else { lost = false }
+        if lost != relocalizing { relocalizing = lost }
+
+        var d = depth(frame, nx: 0.5, ny: 0.5)
         if d == nil {
             // No LiDAR: fall back to an ARKit raycast from the screen centre (less exact).
             let c = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
@@ -99,6 +129,8 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
                 d = Double(simd_length(SIMD3(p.x - cam.x, p.y - cam.y, p.z - cam.z)))
             }
         }
+        let t = frame.camera.transform
+        camPos = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         guard let depth = d else { distance = nil; steady = false; return }
         recent.append(depth)
         if recent.count > 12 { recent.removeFirst() }
@@ -109,14 +141,86 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
         frameCount += 1
         if showDepth, frameCount % 3 == 0 { overlay = depthImage(frame) }
-        let t = frame.camera.transform
-        let cam = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         let fwd = -SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)
-        let point = cam + fwd * Float(med)
+        let point = camPos + fwd * Float(med)
         lastPoint = point
-        camPos = cam
-        if let a = markA { span = Double(simd_length(point - a)) } else { span = nil }
+        if let last = pins.last { span = Double(simd_length(point - last)) } else { span = nil }
     }
+
+    // MARK: pins
+
+    private func refreshPins() {
+        let ordered = pinAnchors.sorted { (Int($0.key.dropFirst(4)) ?? 0) < (Int($1.key.dropFirst(4)) ?? 0) }
+        pins = ordered.map { SIMD3($0.value.transform.columns.3.x, $0.value.transform.columns.3.y, $0.value.transform.columns.3.z) }
+    }
+
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { track(anchors) }
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { track(anchors) }
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        for a in anchors { if let n = a.name, n.hasPrefix("pin-") { pinAnchors[n] = nil } }
+        refreshPins()
+    }
+    private func track(_ anchors: [ARAnchor]) {
+        var changed = false
+        for a in anchors { if let n = a.name, n.hasPrefix("pin-") { pinAnchors[n] = a; changed = true } }
+        if changed { refreshPins() }
+    }
+
+    @objc private func tapped(_ g: UITapGestureRecognizer) {
+        let p = g.location(in: sceneView)
+        // The readout card and buttons sit at the bottom; a tap there is not a point on the wall.
+        guard p.y < sceneView.bounds.height - 300 else { return }
+        addPin(at: p)
+    }
+
+    /// Pin the spot under a tap. ARKit gives the ray through that screen point (so the pin is drawn exactly where it was
+    /// touched); the LiDAR depth there says how far along the ray the surface is.
+    private func addPin(at p: CGPoint) {
+        guard let frame = sceneView.session.currentFrame,
+              let q = sceneView.raycastQuery(from: p, allowing: .estimatedPlane, alignment: .any) else { fail(); return }
+        let dir = simd_normalize(q.direction)
+        let fwd = -SIMD3(frame.camera.transform.columns.2.x, frame.camera.transform.columns.2.y, frame.camera.transform.columns.2.z)
+        var world: SIMD3<Float>?
+
+        let size = sceneView.bounds.size
+        let orientation = sceneView.window?.windowScene?.interfaceOrientation ?? .portrait
+        let img = CGPoint(x: p.x / size.width, y: p.y / size.height)
+            .applying(frame.displayTransform(for: orientation, viewportSize: size).inverted())
+        if let d = depth(frame, nx: Double(img.x), ny: Double(img.y)), d >= Self.minRange, d <= Self.maxRange {
+            let along = Float(d) / max(simd_dot(dir, fwd), 0.2)
+            world = q.origin + dir * along
+        } else if let hit = sceneView.session.raycast(q).first {
+            let c = hit.worldTransform.columns.3
+            world = SIMD3(c.x, c.y, c.z)
+        }
+        guard let w = world else { fail(); return }
+
+        var m = matrix_identity_float4x4
+        m.columns.3 = SIMD4(w.x, w.y, w.z, 1)
+        let next = (pinAnchors.keys.compactMap { Int($0.dropFirst(4)) }.max() ?? 0) + 1
+        sceneView.session.add(anchor: ARAnchor(name: "pin-\(next)", transform: m))
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    private func fail() { UINotificationFeedbackGenerator().notificationOccurred(.error) }
+
+    func undoPin() {
+        guard let last = pinAnchors.sorted(by: { (Int($0.key.dropFirst(4)) ?? 0) < (Int($1.key.dropFirst(4)) ?? 0) }).last else { return }
+        sceneView.session.remove(anchor: last.value)
+    }
+
+    func clearPins() {
+        for a in pinAnchors.values { sceneView.session.remove(anchor: a) }
+        pinAnchors = [:]
+        pins = []
+        span = nil
+        try? FileManager.default.removeItem(at: Self.mapURL)
+    }
+
+    /// Distance between the last two pins.
+    var pinSpan: Double? { pins.count >= 2 ? Double(simd_length(pins[pins.count - 1] - pins[pins.count - 2])) : nil }
+
+    // MARK: depth picture
 
     /// Colour-codes the depth map (0.3 m red ... 4 m blue) as a translucent picture; shown rotated for portrait.
     private func depthImage(_ frame: ARFrame) -> UIImage? {
@@ -142,32 +246,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         return UIImage(cgImage: cg, scale: 1, orientation: .right)
     }
 
-    /// Pin the point under a tap: read the depth there and keep it as a fixed spot in the room.
-    func tap(_ p: CGPoint) {
-        guard let frame = sceneView.session.currentFrame else { return }
-        let size = sceneView.bounds.size
-        guard size.width > 0 else { return }
-        let toView = frame.displayTransform(for: .portrait, viewportSize: size)
-        let img = CGPoint(x: p.x / size.width, y: p.y / size.height).applying(toView.inverted())
-        guard let d = depth(frame, nx: Double(img.x), ny: Double(img.y)), d >= Self.minRange, d <= Self.maxRange else {
-            UINotificationFeedbackGenerator().notificationOccurred(.error); return
-        }
-        let k = frame.camera.intrinsics, res = frame.camera.imageResolution
-        let u = Float(img.x) * Float(res.width), v = Float(img.y) * Float(res.height)
-        let z = Float(d)
-        let cam4 = SIMD4((u - k[2][0]) / k[0][0] * z, -(v - k[2][1]) / k[1][1] * z, -z, 1)
-        let w = frame.camera.transform * cam4
-        if pins.count >= 2 { pins = [] }
-        pins.append(SIMD3(w.x, w.y, w.z))
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-    }
-
-    var pinSpan: Double? { pins.count == 2 ? Double(simd_length(pins[1] - pins[0])) : nil }
-
-    func mark() {
-        if markA == nil { markA = lastPoint } else { markA = nil; span = nil }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
+    // MARK: readings
 
     func freeze() {
         guard let v = pinSpan ?? span ?? distance else { return }
@@ -177,7 +256,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     func save() {
         guard let v = frozen else { return }
-        saved.insert(Measurement(kind: (span != nil || pinSpan != nil) ? "span" : "point", metres: v), at: 0)
+        saved.insert(Measurement(kind: pins.isEmpty ? "point" : "span", metres: v), at: 0)
         persist()
         frozen = nil
     }
@@ -198,6 +277,7 @@ struct MeasureView: View {
     }
 
     private var status: (String, Color) {
+        if model.relocalizing { return ("Looking for your saved place… move slowly", .orange) }
         guard let d = model.distance else { return ("Point at a surface", .gray) }
         if d < MeasureModel.minRange { return ("Too close, move back", .red) }
         if d > MeasureModel.maxRange { return ("Too far for LiDAR (max 5 m)", .red) }
@@ -206,13 +286,21 @@ struct MeasureView: View {
 
     var body: some View {
         ZStack {
+            // Everything drawn on the picture is an overlay of the camera view itself, so it shares its exact frame.
             ARSceneRepresentable(view: model.sceneView).ignoresSafeArea()
-            if model.showDepth, let img = model.overlay {
-                Image(uiImage: img).resizable().scaledToFill().ignoresSafeArea().allowsHitTesting(false)
-            }
-            Color.clear.contentShape(Rectangle()).ignoresSafeArea().onTapGesture(coordinateSpace: .local) { model.tap($0) }
-            pinLabels.allowsHitTesting(false)
-            Crosshair(colour: status.1).allowsHitTesting(false)
+                .overlay {
+                    GeometryReader { geo in
+                        ZStack {
+                            if model.showDepth, let img = model.overlay {
+                                Image(uiImage: img).resizable().scaledToFill().frame(width: geo.size.width, height: geo.size.height).clipped()
+                            }
+                            PinLayer(model: model, size: geo.size)
+                            Crosshair(colour: status.1).position(x: geo.size.width / 2, y: geo.size.height / 2)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+                .ignoresSafeArea()
 
             VStack(spacing: 8) {
                 if !model.hasLiDAR {
@@ -230,48 +318,24 @@ struct MeasureView: View {
         .sheet(isPresented: $showList) { MeasurementList(model: model) }
     }
 
-    /// Pins stay on their spot in the room; the label shows how far each is from the camera right now, and A to B between two.
-    private var pinLabels: some View {
-        let _ = model.distance   // redraw every frame
-        let pts = model.pins.map { model.sceneView.projectPoint(SCNVector3($0.x, $0.y, $0.z)) }
-        return ZStack {
-            if pts.count == 2 {
-                Path { p in p.move(to: CGPoint(x: CGFloat(pts[0].x), y: CGFloat(pts[0].y))); p.addLine(to: CGPoint(x: CGFloat(pts[1].x), y: CGFloat(pts[1].y))) }
-                    .stroke(.white, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-                if let s = model.pinSpan {
-                    Text(Self.text(s).big).font(.headline).padding(4).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
-                        .position(x: CGFloat(pts[0].x + pts[1].x) / 2, y: CGFloat(pts[0].y + pts[1].y) / 2 - 18)
-                }
-            }
-            ForEach(Array(pts.enumerated()), id: \.offset) { i, p in
-                if p.z > 0 && p.z < 1 {
-                    VStack(spacing: 2) {
-                        Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(Theme.accent, lineWidth: 3))
-                        Text(Self.text(Double(simd_length(model.pins[i] - model.camPos))).big).font(.caption2.bold())
-                            .padding(3).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
-                    }.position(x: CGFloat(p.x), y: CGFloat(p.y))
-                }
-            }
-        }.ignoresSafeArea()
-    }
-
     private var readout: some View {
         VStack(spacing: 4) {
             if let s = model.pinSpan {
                 let t = Self.text(s)
-                Text("pin to pin").font(.caption).foregroundStyle(.secondary)
+                Text("pin \(model.pins.count - 1) → pin \(model.pins.count)").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
+                if let c = model.span { Text("crosshair from last pin " + Self.text(c).big).font(.caption2).foregroundStyle(.secondary) }
             } else if let s = model.span {
                 let t = Self.text(s)
-                Text("A → here").font(.caption).foregroundStyle(.secondary)
+                Text("pin 1 → here").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
-                if let d = model.distance { Text("camera to target " + Self.text(d).big).font(.caption2).foregroundStyle(.secondary) }
             } else if let d = model.distance {
                 let t = Self.text(d)
                 Text(t.big).font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
+                Text("Tap the picture to pin a spot").font(.caption2).foregroundStyle(.secondary)
             } else {
                 Text("—").font(.system(size: 44, weight: .bold, design: .rounded))
             }
@@ -288,18 +352,83 @@ struct MeasureView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 12) {
-            Button { model.mark() } label: {
-                Label(model.markA == nil ? "Mark A" : "Clear A", systemImage: model.markA == nil ? "mappin" : "xmark").lineLimit(1).minimumScaleFactor(0.7)
-            }.buttonStyle(CaptureButtonStyle())
+        HStack(spacing: 10) {
             Button { model.showDepth.toggle(); if !model.showDepth { model.overlay = nil } } label: { Image(systemName: model.showDepth ? "eye.fill" : "eye.slash") }
                 .buttonStyle(CaptureButtonStyle())
-            Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised") }
+            Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised").lineLimit(1) }
                 .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil)
-            Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet") }
+            Button { model.undoPin() } label: { Image(systemName: "arrow.uturn.backward") }
+                .buttonStyle(CaptureButtonStyle()).disabled(model.pins.isEmpty)
+            Button { model.clearPins() } label: { Image(systemName: "trash") }
+                .buttonStyle(CaptureButtonStyle()).disabled(model.pins.isEmpty)
+            Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet").lineLimit(1) }
                 .buttonStyle(CaptureButtonStyle())
         }
         .padding(.bottom, 52)
+    }
+}
+
+/// Pins stay on their spot in the room. In view: a numbered dot with its distance from the camera and dashed lines with the
+/// length of each leg. Out of view: an arrow at the screen edge pointing the way to turn.
+private struct PinLayer: View {
+    @ObservedObject var model: MeasureModel
+    let size: CGSize
+
+    private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) {
+        let p = model.sceneView.projectPoint(SCNVector3(w.x, w.y, w.z))
+        return (CGPoint(x: CGFloat(p.x), y: CGFloat(p.y)), p.z > 0 && p.z < 1)
+    }
+
+    private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool {
+        q.front && q.pt.x > 10 && q.pt.x < size.width - 10 && q.pt.y > 60 && q.pt.y < size.height - 280
+    }
+
+    /// Where the arrow sits: on the edge of the usable area, in the direction of the pin.
+    private func edge(_ q: (pt: CGPoint, front: Bool)) -> (CGPoint, Double) {
+        let c = CGPoint(x: size.width / 2, y: (size.height - 220) / 2)
+        var dx = q.pt.x - c.x, dy = q.pt.y - c.y
+        if !q.front { dx = -dx; dy = -dy }
+        if abs(dx) < 1 && abs(dy) < 1 { dy = -1 }
+        let hx = size.width / 2 - 36, hy = (size.height - 220) / 2 - 70
+        let s = min(hx / max(abs(dx), 0.001), hy / max(abs(dy), 0.001))
+        return (CGPoint(x: c.x + dx * s, y: c.y + dy * s), Double(atan2(dy, dx)) + .pi / 2)
+    }
+
+    var body: some View {
+        let _ = model.distance   // redraw every frame so pins follow the camera
+        let pts = model.pins.map(project)
+        ZStack {
+            ForEach(0..<max(pts.count - 1, 0), id: \.self) { i in
+                let a = model.pins[i], b = model.pins[i + 1]
+                if pts[i].front && pts[i + 1].front {
+                    Path { p in p.move(to: pts[i].pt); p.addLine(to: pts[i + 1].pt) }
+                        .stroke(.white, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                }
+                let m = project((a + b) / 2)
+                if onScreen(m) {
+                    Text(MeasureView.text(Double(simd_length(b - a))).big).font(.caption.bold())
+                        .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
+                        .position(x: m.pt.x, y: m.pt.y - 16)
+                }
+            }
+            ForEach(0..<pts.count, id: \.self) { i in
+                if onScreen(pts[i]) {
+                    VStack(spacing: 2) {
+                        Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
+                            .background(Theme.accent, in: Circle()).overlay(Circle().stroke(.white, lineWidth: 2))
+                        Text(MeasureView.text(Double(simd_length(model.pins[i] - model.camPos))).big).font(.caption2.bold())
+                            .padding(3).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
+                    }.position(x: pts[i].pt.x, y: pts[i].pt.y + 14)
+                } else {
+                    let e = edge(pts[i])
+                    VStack(spacing: 0) {
+                        Image(systemName: "location.north.fill").rotationEffect(.radians(e.1)).font(.title3).foregroundStyle(Theme.accent)
+                        Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white)
+                            .padding(.horizontal, 5).background(.black.opacity(0.7), in: Capsule())
+                    }.position(e.0)
+                }
+            }
+        }
     }
 }
 
