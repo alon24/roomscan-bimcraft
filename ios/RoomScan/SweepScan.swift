@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// This tracks where the camera has looked, round the circle and at three heights, so the user can fill the dial.
 final class SweepCoverage: ObservableObject {
-    static let sectors = CoverageTracker.ringSectors   // 24 sectors of 15 degrees of turn
+    static let sectors = RingTracker.sectors   // 24 sectors of 15 degrees of turn
     static let reach = 25.0                            // a cell counts as seen when the camera points within this many degrees of its centre
     static let stayWithin = 0.35                       // metres of wandering before we say "turn on the spot"
     /// Cell layout matches RingCoverageDial: band 0 outer ring, 1 middle, 2 inner.

@@ -18,7 +18,7 @@ struct RoomTab: View {
                  ? "A coloured 3D copy of the room and everything in it, from the LiDAR and the photos. To look at and measure."
                  : "Stand in one place and turn the phone round (a small or cluttered room). Gives a 360° picture and a measured model of the room.")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal)
-            if kind == 0 { ScanView() } else if kind == 1 { MeshScanView(fixedMode: 0, liveGuide: true) } else { MeshScanView(fixedMode: 0, sweepMode: true, liveGuide: true) }
+            if kind == 0 { ScanView() } else if kind == 1 { MeshScanView(liveGuide: true) } else { MeshScanView(sweepMode: true, liveGuide: true) }
         }
     }
 }
@@ -38,7 +38,7 @@ struct ObjectTab: View {
                  ? "Part in the middle of the printed marker ring. Real size in mm, sharp shape from the photos, STL to print."
                  : "Apple's object capture: walk around the part on a table. Needs a matte part with some detail; size is estimated.")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal)
-            if kind == 0 { MeshScanView(fixedMode: 3) } else { ObjectScanView() }
+            if kind == 0 { MeshScanView(ringScan: true) } else { ObjectScanView() }
         }
     }
 }

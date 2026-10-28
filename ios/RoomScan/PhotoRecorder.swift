@@ -46,7 +46,7 @@ final class PhotoRecorder {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
-    /// `force` skips the movement test: the guided scan decides when a new view is worth a photo.
+    /// `force` skips the movement test: ring scans and "Keep every frame" take photos on a clock instead.
     func consider(_ frame: ARFrame, force: Bool = false) {
         // `currentFrame` stays on the last frame when the session is interrupted (another tab's camera), and forced
         // captures would otherwise fill the scan with copies of it.

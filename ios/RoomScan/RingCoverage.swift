@@ -4,7 +4,7 @@ import SwiftUI
 /// has been seen from that angle round the ring at that height.
 struct RingCoverageDial: View {
     let cells: [Bool]
-    private let sectors = CoverageTracker.ringSectors
+    private let sectors = RingTracker.sectors
 
     var body: some View {
         Canvas { ctx, size in

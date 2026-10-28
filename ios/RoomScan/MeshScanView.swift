@@ -1,5 +1,4 @@
 import CoreImage
-import CoreMotion
 import SwiftUI
 import ARKit
 import SceneKit
@@ -16,16 +15,12 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var plyURL: URL?
     @Published var photoURLs: [URL] = []
     @Published var photosMetaURL: URL?
-    private var footprintURL: URL?
     private var maskURLs: [URL] = []
     private var outlining = false
-    private var wasTurntable = false
-    private var wasRing = false
-    @Published var serverOnly = false     // turntable and ring scans: only the server can put the frames together
+    @Published var serverOnly = false     // ring scans: only the server (or Build here) can put the frames together
     @Published var phoneResult: OnPhoneRing.Result?
     @Published var buildingOnPhone = false
-    var canBuildOnPhone: Bool { wasRing && !outlining && !maskURLs.isEmpty && !buildingOnPhone && phoneResult == nil }
-    private var lastMode = 0
+    var canBuildOnPhone: Bool { ring.enabled && !outlining && !maskURLs.isEmpty && !buildingOnPhone && phoneResult == nil }
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
     private var timer: Timer?
@@ -37,12 +32,12 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var overlayTimer: Timer?
     private var lastCount = 0
     private var stalled = 0
-    let guided = CoverageTracker()
+    let ring = RingTracker()         // Object tab: the printed marker ring
     let sweep = SweepCoverage()      // "Sweep from one spot": where the camera has looked
     let live = LiveLink()            // optional two-way link to the server (docs/live-guide.md)
     var liveWanted = false           // room scans: the Room tab asks for it
     var sweepMode = false
-    @Published var guidedActive = false
+    @Published var ringActive = false
     private var coverageTimer: Timer?
     // Depth point cloud, built from the LiDAR depth map of every camera frame. This does not depend on ARKit's mesh
     // anchors, which never arrived on the test phone.
@@ -62,7 +57,6 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         super.init()
         sceneView.delegate = self
         sceneView.automaticallyUpdatesLighting = true
-        guided.attach(to: sceneView.scene)
     }
 
     /// Show the camera as soon as the tab opens, so it is clear the app is alive before anything is scanned.
@@ -109,19 +103,19 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false; phoneResult = nil
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
-        guided.begin()
+        ring.begin()
         sweep.reset()
         if liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true) {
             live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
                        name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo)
         }
-        if guided.ring { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
-        guidedActive = guided.isActive
+        if ring.enabled { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
+        ringActive = ring.capturing
         overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
         lastCount = 0; stalled = 0; pointCount = 0; dots = []
         coverageTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.guided.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
+            self.ring.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
             if self.sweepMode, let f = self.sceneView.session.currentFrame { self.sweep.update(f) }
             self.live.pump(self.recorder, frame: self.sceneView.session.currentFrame)
         }
@@ -160,7 +154,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
         // "Keep every frame": a photo, the LiDAR depth and the pose twice a second, so each frame can be reviewed on the server.
         let every = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true
-        if !dark && (every || !guided.isActive) { recorder?.consider(frame, force: every && (!guided.isActive || guided.phase == .capturing)) }
+        if !dark && (every || !ring.capturing) { recorder?.consider(frame, force: every) }
         lock.lock()
         for a in frame.anchors { if let m = a as? ARMeshAnchor { meshAnchors[m.identifier] = m } }
         let all = Array(meshAnchors.values)
@@ -172,7 +166,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         parts.append("\(cloud.count / 1000)k points · \(all.count) patches · \(tris / 1000)k triangles · \(recorder?.count ?? 0) photos")
         stalled = cloud.count == lastCount ? stalled + 1 : 0
         lastCount = cloud.count
-        if stalled >= 4 && !guided.isActive { parts.append("Nothing new captured: move slowly, 0.3 to 3 m from a surface") }
+        if stalled >= 4 && !ring.capturing { parts.append("Nothing new captured: move slowly, 0.3 to 3 m from a surface") }
         hud = parts.joined(separator: " · ")
     }
 
@@ -185,12 +179,12 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         dots = []; pointCount = 0
         sceneView.session.pause()
         Screen.awake(false)
-        guided.end()
-        guidedActive = false
+        ring.end()
+        ringActive = false
         cloud = []; cloudColours = []; occupied = []
         lock.lock(); meshAnchors = [:]; lock.unlock()
         recorder = nil
-        plyURL = nil; photoURLs = []; photosMetaURL = nil; footprintURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
+        plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
         scanning = false
         hud = ""; status = ""
         Reporter.log("mesh: reset by user")
@@ -204,17 +198,14 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         coverageTimer?.invalidate(); coverageTimer = nil
         overlayTimer?.invalidate(); overlayTimer = nil
         dots = []
-        guided.end()
-        guidedActive = false
+        ring.end()
+        ringActive = false
         lock.lock(); let anchors = Array(meshAnchors.values); lock.unlock()
         sceneView.session.pause()
         scanning = false
         Screen.awake(false)
-        wasTurntable = guided.turntable
-        wasRing = guided.ring
-        serverOnly = guided.turntable || guided.ring
-        lastMode = guided.mode
-        guard !anchors.isEmpty || !cloud.isEmpty || ((guided.turntable || guided.ring) && (recorder?.count ?? 0) > 0) else {
+        serverOnly = ring.enabled
+        guard !anchors.isEmpty || !cloud.isEmpty || (ring.enabled && (recorder?.count ?? 0) > 0) else {
             let why = sceneView.session.currentFrame == nil ? "The camera never started." : "The camera ran but the LiDAR produced no mesh."
             status = "No surfaces were captured (\(ticks / 2) s). \(why) A report was sent."
             Reporter.report(tab: "mesh", message: "No surfaces captured after \(ticks / 2) s", detail: why)
@@ -232,27 +223,21 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 self.plyURL = ok ? url : nil
                 self.photoURLs = rec?.urls ?? []
                 self.photosMetaURL = rec?.writeManifest()
-                if let fp = self.guided.footprintJSON() {
-                    let u = FileManager.default.temporaryDirectory.appendingPathComponent("footprint.json")
-                    self.footprintURL = (try? fp.write(to: u)) != nil ? u : nil
-                } else { self.footprintURL = nil }
                 self.modelScene = scene
                 self.status = ok ? "Scan ready" : "Could not save the mesh"
-                if ok && self.wasRing { self.outlineParts() }
+                if ok && self.ring.enabled { self.outlineParts() }
             }
         }
     }
 
     /// The phone's settings for this scan, stored with the model on the server and shown next to it.
     private var scanInfo: [String: Any] {
-        let names = ["Free scan", "Guided object", "LiDAR turntable (no ring)", "LiDAR + ring"]
-        let mode = lastMode
-        var info: [String: Any] = ["scan type": sweepMode ? "Sweep from one spot" : names[min(max(mode, 0), 3)], "app": AppVersion.text,
+        var info: [String: Any] = ["scan type": sweepMode ? "Sweep from one spot" : (ring.enabled ? "LiDAR + ring" : "Free scan"), "app": AppVersion.text,
                 "device": Reporter.deviceModel(), "ios": UIDevice.current.systemVersion,
                 "keep every frame": UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true,
-                "photo longest side px": mode == 3 ? 1920 : 1280, "frames sent": photoURLs.filter { $0.pathExtension == "jpg" }.count,
+                "photo longest side px": ring.enabled ? 1920 : 1280, "frames sent": photoURLs.filter { $0.pathExtension == "jpg" }.count,
                 "lidar depth": photoURLs.contains { $0.pathExtension == "depth" },
-                "traced outline": footprintURL != nil, "part outlines": maskURLs.count]
+                "part outlines": maskURLs.count]
         if sweepMode { info["sweep"] = true; info["sweep max movement m"] = (sweep.maxMoved * 100).rounded() / 100 }
         return info
     }
@@ -323,8 +308,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     private var package: ScanPackage? {
         guard let plyURL else { return nil }
-        return ScanPackage(name: (wasRing ? "Part " : "3D room ") + Date().formatted(), kind: "mesh", mesh: plyURL, footprint: footprintURL,
-                           photosMeta: photosMetaURL, photos: photoURLs, masks: maskURLs, turntableScan: wasTurntable, ringScan: wasRing, info: scanInfo)
+        return ScanPackage(name: (ring.enabled ? "Part " : "3D room ") + Date().formatted(), kind: "mesh", mesh: plyURL,
+                           photosMeta: photosMetaURL, photos: photoURLs, masks: maskURLs, ringScan: ring.enabled, info: scanInfo)
     }
 
     func saveOnPhone() {
@@ -364,11 +349,11 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     // MARK: depth point cloud
     private func addPoints() {
-        // A turning part would smear in a cloud built in room coordinates: show only the current view.
-        if (guided.turntable || guided.ring) && guided.phase == .capturing { cloud = []; cloudColours = []; occupied = [] }
+        // A turning part would smear in a cloud built in room coordinates: show only the current view, in finer dots.
+        if ring.capturing { cloud = []; cloudColours = []; occupied = [] }
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
-              guided.acceptsPoints, let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
-        let vox = guided.phase == .capturing ? max(0.004, min(voxel, (guided.hasOutline ? guided.fitRadius : guided.radius) / 50)) : voxel
+              let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
+        let vox: Float = ring.capturing ? 0.004 : voxel
         let dm = depth.depthMap
         let dw = CVPixelBufferGetWidth(dm), dh = CVPixelBufferGetHeight(dm)
         // camera colours at the depth map's size
@@ -394,7 +379,6 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 guard d > 0.15, d < 5, crow[x] >= 1 else { continue }
                 // ARKit camera: +X right, +Y up, looks down -Z; image rows go down
                 let w = t * SIMD4<Float>((Float(x) - cx) * d / fx, -(Float(y) - cy) * d / fy, -d, 1)
-                guard guided.contains(SIMD3(w.x, w.y, w.z)) else { continue }
                 let key = Self.voxelKey(w, vox)
                 guard occupied.insert(key).inserted else { continue }
                 cloud.append(SIMD3(w.x, w.y, w.z))
@@ -605,15 +589,12 @@ struct OrbitSceneView: UIViewRepresentable {
 }
 
 struct MeshScanView: View {
-    var initialMode = 0     // 0 free scan, 1 guided object, 2 turntable, 3 ring
-    var fixedMode: Int? = nil   // the Room and Object tabs each use one kind of scan, without the picker
+    var ringScan = false        // Object tab: LiDAR with the printed marker ring; otherwise a room
     var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
     var liveGuide = false       // Room tab: use the two-way link to the server when it can be reached
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
-    @State private var mode = 0   // 0 AR overlay, 1 3D model
     @State private var zoom: CGFloat = 1
-    @State private var didSetMode = false
 
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
@@ -632,7 +613,7 @@ struct MeshScanView: View {
         if model.plyURL != nil {
             return "Scan done. This is what the phone captured: turn it with one finger, pinch to zoom. Tap Upload for the finished model (solid surface, colours, STL) in the Models tab. New scan throws it away."
         }
-        return "What this does: it measures a room or an object with the LiDAR and shows the result as coloured dots over the camera picture while you scan, so you can see what is captured. Tap Start scan, then walk slowly around what you want, 0.5 to 3 m away. For one small part on a table, pick Guided object."
+        return "What this does: it measures a room or an object with the LiDAR and shows the result as coloured dots over the camera picture while you scan, so you can see what is captured. Tap Start scan, then walk slowly around what you want, 0.5 to 3 m away."
     }
 
     var body: some View {
@@ -654,13 +635,11 @@ struct MeshScanView: View {
                 }
                 .ignoresSafeArea().allowsHitTesting(false).scaleEffect(zoom)
             }
-            TraceTapLayer(tracker: model.guided, view: model.sceneView, zoom: zoom)
             if liveGuide && model.scanning {
                 GeometryReader { geo in LiveNeedLayer(live: model.live, view: model.sceneView, size: geo.size, zoom: zoom) }
                     .ignoresSafeArea().allowsHitTesting(false)
             }
             VStack(spacing: 8) {
-                if fixedMode == nil && !model.scanning && model.plyURL == nil { ScanTypePicker(tracker: model.guided) }
                 HStack(spacing: 8) {
                     if model.modelScene == nil || model.scanning { ZoomControl(zoom: $zoom) }
                     if !model.scanning && model.plyURL == nil {
@@ -671,10 +650,10 @@ struct MeshScanView: View {
                         .accessibilityLabel(model.previewOn ? "Turn the camera off" : "Turn the camera on")
                     }
                 }
-                if !model.guidedActive && !(sweepMode && model.scanning) {
+                if !model.ringActive && !(sweepMode && model.scanning) {
                     HelpCard(text: guide)
                 }
-                if model.scanning && !model.guidedActive && !sweepMode {
+                if model.scanning && !model.ringActive && !sweepMode {
                     VStack(spacing: 2) {
                         Text("\(model.pointCount) points · \(model.framesSoFar) photos").font(.title3.weight(.bold))
                         if model.framesSoFar < 120 { Text("Keep going: a room needs about 120 photos (1 to 2 minutes)").font(.caption) }
@@ -684,25 +663,23 @@ struct MeshScanView: View {
                 Spacer()
                 if sweepMode && model.scanning { SweepPanel(sweep: model.sweep, frames: model.framesSoFar) }
                 if liveGuide && model.scanning { LivePanel(live: model.live) }
-                if model.guidedActive && model.scanning {
-                    GuidedPanel(tracker: model.guided) { model.guided.setObject(model.sceneView) }
-                }
+                if model.ringActive && model.scanning { RingPanel(tracker: model.ring) }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
                 if liveGuide { LiveNote(live: model.live) }
                 HStack {
                     if model.scanning {
                         Button("Stop") { model.stop() }
-                        Button("Reset", role: .destructive) { model.discard(); model.guided.mode = fixedMode ?? initialMode }
+                        Button("Reset", role: .destructive) { model.discard() }
                     } else if MeshScanModel.supported && model.plyURL == nil {
-                        Button("Start scan") { mode = 0; model.start() }
+                        Button("Start scan") { model.start() }
                     }
                     if model.plyURL != nil, !model.scanning {
                         if model.canBuildOnPhone { Button("Build here") { model.buildOnPhone() } }
                         if let stl = model.phoneResult?.stl { ShareLink(item: stl) { Text("STL") } }
                         Button("Upload") { Task { await model.upload(server: serverURL) } }
                         Button("Save") { model.saveOnPhone() }
-                        Button("New scan", role: .destructive) { mode = 0; model.discard(); model.guided.mode = fixedMode ?? initialMode }
+                        Button("New scan", role: .destructive) { model.discard() }
                     }
                 }
                 .buttonStyle(CaptureButtonStyle())
@@ -712,34 +689,7 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
-        .onAppear { model.sweepMode = sweepMode; model.liveWanted = liveGuide; if !model.scanning && model.plyURL == nil && !didSetMode { model.guided.mode = fixedMode ?? initialMode; didSetMode = true }; model.startPreview() }
+        .onAppear { model.sweepMode = sweepMode; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
         .onDisappear { model.pausePreview() }
-    }
-}
-
-struct ScanTypePicker: View {
-    @ObservedObject var tracker: CoverageTracker
-    var body: some View {
-        VStack(spacing: 4) {
-            Picker("Scan type", selection: $tracker.mode) {
-                Text("Free scan").tag(0)
-                Text("Guided object").tag(1)
-                Text("LiDAR turn").tag(2)
-                Text("LiDAR+Ring").tag(3)
-            }
-            .pickerStyle(.segmented)
-            if tracker.mode == 1 {
-                Text("For a part on a table: you mark where it is, and the app shows which views are still missing.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            if tracker.mode == 3 {
-                Text("LiDAR AND the printed marker ring together: the LiDAR measures the shape, the ring markers place every frame exactly. The phone and the spool can both move, and the size is real millimetres.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            if tracker.mode == 2 {
-                Text("LiDAR only, no ring needed. Phone on a stand, part on a turning plate. You trace the plate; the server works out the turning speed and joins the frames. Plain white parts work.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-        }
     }
 }
