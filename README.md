@@ -38,6 +38,21 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
 5. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
 6. The **eye** button hides or shows the depth colours.
 
+#### Calibrate it against your tape (you stay in control)
+Tap the small underlined line under the reading ("uncalibrated · tap to calibrate").
+1. **Camera to wall**: put the tape's zero at the **back camera lens** (not the phone edge), point the crosshair
+   straight at the wall, wait for the green dot, type what the tape says, **Add this check**. Do 0.5 m, 1 m, 2 m, 3 m.
+2. **Between two pins**: pin both ends of something you can tape (a door width) and type its length. This also tests
+   how well the phone tracked while you moved.
+3. The screen shows every check with its error before and after the correction, and the typical error ("±1.2 cm"),
+   which then appears under every reading. Swipe a check to delete it. **Use the correction** switches it off.
+4. If the fitted scale is more than 10% from 1 it is almost always a mistyped tape value: it is **not applied** unless
+   you switch on "Apply even if it looks wrong".
+
+**Hold** now averages about a second and shows the spread ("2.317 m ± 0.4 cm"). Saved readings keep the raw sensor value
+too, so a later recalibration can recompute them. Low-confidence depth pixels are ignored, and glass, mirrors and shiny
+black surfaces show "Can't read this surface".
+
 Notes: needs a LiDAR iPhone (Pro models). LiDAR is good to about ±1 cm at 1 to 3 m on matt walls; glass,
 mirrors and black shiny surfaces read badly. Saved readings stay on the phone for now.
 
@@ -152,6 +167,7 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
+| 0.38.0 | **Calibration** against a tape (wall and pin-to-pin checks, error before and after, correction on/off), averaged Hold with spread, depth confidence filter, unreadable-surface warning. |
 | 0.37.1 | Measure pins are drawn where you tap, stay fixed in the room, are numbered, have edge arrows, and are saved with a room map. Mark A replaced by this. |
 | 0.37.0 | Each build now photographs the app tabs in the Simulator. **Measure tab**: live LiDAR distance, depth colours over the camera, tap-to-pin, pin to pin, Mark A, Hold and Save. This README. |
 | 0.36.0 | Ring coverage dial and hints, View in AR, Fit to my printer, multi-colour 3MF, Detect features, Compare scans, Share links, design refresh, model-ready banner |

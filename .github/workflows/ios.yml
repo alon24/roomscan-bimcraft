@@ -71,6 +71,10 @@ jobs:
             xcrun simctl terminate $UDID com.roomscan.app
             i=$((i+1))
           done
+          xcrun simctl launch $UDID com.roomscan.app -uiShots 1 -startTab 2 -measureSheet cal
+          sleep 8
+          xcrun simctl io $UDID screenshot shots/calibrate.png
+          xcrun simctl terminate $UDID com.roomscan.app
           ls -l shots
       - uses: actions/upload-artifact@v4
         with:

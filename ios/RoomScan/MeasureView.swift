@@ -7,7 +7,19 @@ struct Measurement: Codable, Identifiable {
     var id = UUID()
     var date = Date()
     var kind: String
-    var metres: Double
+    var metres: Double        // as shown (corrected if the calibration was on)
+    var raw: Double?          // what the sensor said, so a later calibration can recompute it
+    var sd: Double?           // spread over the averaging second, metres
+    var calibrated: Bool?
+}
+
+/// A frozen reading: an average over about a second, with its spread.
+struct Held {
+    var value: Double
+    var raw: Double
+    var sd: Double
+    var n: Int
+    var kind: CalKind
 }
 
 /// Point the camera, read the LiDAR distance at the crosshair. Tap to pin spots: pins are ARKit anchors, so they stay on
@@ -20,7 +32,9 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     @Published var distance: Double?     // smoothed camera-to-target, metres
     @Published var steady = false
     @Published var span: Double?         // last pin to the crosshair, metres
-    @Published var frozen: Double?
+    @Published var frozen: Held?
+    @Published var holding = false
+    @Published var poor = false          // depth is there but the sensor does not trust it (glass, mirror, shiny black)
     @Published var saved: [Measurement] = []
     @Published var hasLiDAR = true
     @Published var overlay: UIImage?     // live depth, colour coded, drawn over the camera picture
@@ -34,6 +48,8 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     private var lastPoint: SIMD3<Float>?
     private var live = true
     private var frameCount = 0
+    private var holdBuf: [Double] = []
+    private var holdUntil = Date()
     private static let ramp: [UInt8] = {   // near = red, far = blue
         var r = [UInt8]()
         for i in 0..<256 {
@@ -97,16 +113,27 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     /// Median of the 3x3 depth pixels around a point (normalised camera-image coordinates), ignoring zeros.
     private func depth(_ frame: ARFrame, nx: Double, ny: Double) -> Double? {
-        guard let map = (frame.smoothedSceneDepth ?? frame.sceneDepth)?.depthMap else { return nil }
+        guard let data = frame.smoothedSceneDepth ?? frame.sceneDepth else { return nil }
+        let map = data.depthMap
+        // The confidence map says how far LiDAR trusts each pixel (0 low, 1 medium, 2 high). Low pixels are ignored.
+        let conf = frame.sceneDepth?.confidenceMap ?? data.confidenceMap
         CVPixelBufferLockBaseAddress(map, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        if let conf { CVPixelBufferLockBaseAddress(conf, .readOnly) }
+        defer { if let conf { CVPixelBufferUnlockBaseAddress(conf, .readOnly) } }
         guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
         let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
+        let cbase = conf.flatMap { CVPixelBufferGetBaseAddress($0) }
+        let crb = conf.map { CVPixelBufferGetBytesPerRow($0) } ?? 0
         let cx = min(max(Int(nx * Double(w)), 1), w - 2), cy = min(max(Int(ny * Double(h)), 1), h - 2)
         var v = [Float]()
         for dy in -1...1 { for dx in -1...1 {
             let row = base.advanced(by: (cy + dy) * rb).assumingMemoryBound(to: Float32.self)
             let d = row[cx + dx]
+            if let cbase, cbase != base {
+                let level = cbase.advanced(by: (cy + dy) * crb).assumingMemoryBound(to: UInt8.self)[cx + dx]
+                if level < 1 { continue }
+            }
             if d.isFinite, d > 0 { v.append(d) }
         } }
         guard v.count >= 4 else { return nil }
@@ -131,6 +158,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         }
         let t = frame.camera.transform
         camPos = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        poor = d == nil && frame.sceneDepth != nil
         guard let depth = d else { distance = nil; steady = false; return }
         recent.append(depth)
         if recent.count > 12 { recent.removeFirst() }
@@ -145,6 +173,25 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         let point = camPos + fwd * Float(med)
         lastPoint = point
         if let last = pins.last { span = Double(simd_length(point - last)) } else { span = nil }
+
+        if holding {
+            // Average the raw reading over the hold second: one frame is noisy, thirty are not.
+            let rawNow = pins.last.map { Double(simd_length(camPos + fwd * Float(depth) - $0)) } ?? depth
+            holdBuf.append(rawNow)
+            if Date() >= holdUntil { finishHold() }
+        }
+    }
+
+    private func finishHold() {
+        holding = false
+        guard !holdBuf.isEmpty else { return }
+        let n = Double(holdBuf.count)
+        let mean = holdBuf.reduce(0, +) / n
+        let sd = (holdBuf.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / n).squareRoot()
+        let kind: CalKind = pins.isEmpty ? .wall : .span
+        let value = kind == .wall ? CalibrationStore.shared.wall(mean) : CalibrationStore.shared.leg(mean)
+        frozen = Held(value: value, raw: mean, sd: sd, n: holdBuf.count, kind: kind)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     // MARK: pins
@@ -249,14 +296,21 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     // MARK: readings
 
     func freeze() {
-        guard let v = pinSpan ?? span ?? distance else { return }
-        frozen = v
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        if let s = pinSpan {   // two pins are fixed points: nothing to average
+            frozen = Held(value: CalibrationStore.shared.leg(s), raw: s, sd: 0, n: 1, kind: .span)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return
+        }
+        guard distance != nil else { return }
+        holdBuf = []
+        holdUntil = Date().addingTimeInterval(1)
+        holding = true
     }
 
     func save() {
-        guard let v = frozen else { return }
-        saved.insert(Measurement(kind: pins.isEmpty ? "point" : "span", metres: v), at: 0)
+        guard let f = frozen else { return }
+        saved.insert(Measurement(kind: pins.isEmpty ? "point" : "span", metres: f.value, raw: f.raw, sd: f.sd,
+                                 calibrated: abs(f.value - f.raw) > 1e-9), at: 0)
         persist()
         frozen = nil
     }
@@ -271,12 +325,17 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 struct MeasureView: View {
     @StateObject private var model = MeasureModel()
     @State private var showList = false
+    @State private var showCal = false
+    @ObservedObject private var cal = CalibrationStore.shared
 
-    static func text(_ m: Double) -> (big: String, small: String) {
-        (String(format: "%.3f m", m), String(format: "%.1f cm  ·  %.0f mm", m * 100, m * 1000))
+    /// `kind` says which correction applies to a raw sensor value; `.none` shows the number as is.
+    static func text(_ raw: Double, _ kind: CalKind = .none) -> (big: String, small: String) {
+        let m = kind == .wall ? CalibrationStore.shared.wall(raw) : kind == .span ? CalibrationStore.shared.leg(raw) : raw
+        return (String(format: "%.3f m", m), String(format: "%.1f cm  ·  %.0f mm", m * 100, m * 1000))
     }
 
     private var status: (String, Color) {
+        if model.poor { return ("Can't read this surface (glass, mirror, shiny black?)", .red) }
         if model.relocalizing { return ("Looking for your saved place… move slowly", .orange) }
         guard let d = model.distance else { return ("Point at a surface", .gray) }
         if d < MeasureModel.minRange { return ("Too close, move back", .red) }
@@ -313,26 +372,30 @@ struct MeasureView: View {
             }
             .padding(.horizontal, 16).padding(.bottom, 8)
         }
-        .onAppear { model.start() }
+        .onAppear {
+            model.start()
+            if UserDefaults.standard.string(forKey: "measureSheet") == "cal" { showCal = true }   // CI screenshots
+        }
         .onDisappear { model.stop() }
         .sheet(isPresented: $showList) { MeasurementList(model: model) }
+        .sheet(isPresented: $showCal) { CalibrationView(model: model) }
     }
 
     private var readout: some View {
         VStack(spacing: 4) {
             if let s = model.pinSpan {
-                let t = Self.text(s)
+                let t = Self.text(s, .span)
                 Text("pin \(model.pins.count - 1) → pin \(model.pins.count)").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
-                if let c = model.span { Text("crosshair from last pin " + Self.text(c).big).font(.caption2).foregroundStyle(.secondary) }
+                if let c = model.span { Text("crosshair from last pin " + Self.text(c, .span).big).font(.caption2).foregroundStyle(.secondary) }
             } else if let s = model.span {
-                let t = Self.text(s)
+                let t = Self.text(s, .span)
                 Text("pin 1 → here").font(.caption).foregroundStyle(.secondary)
                 Text(t.big).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
             } else if let d = model.distance {
-                let t = Self.text(d)
+                let t = Self.text(d, .wall)
                 Text(t.big).font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
                 Text("Tap the picture to pin a spot").font(.caption2).foregroundStyle(.secondary)
@@ -340,9 +403,13 @@ struct MeasureView: View {
                 Text("—").font(.system(size: 44, weight: .bold, design: .rounded))
             }
             Label(status.0, systemImage: "circle.fill").font(.caption).foregroundStyle(status.1)
+            Button { showCal = true } label: {
+                Text(cal.summary).font(.caption2).foregroundStyle(.secondary).underline()
+            }
+            if model.holding { Text("Averaging for 1 s, keep still…").font(.caption).foregroundStyle(.orange) }
             if let f = model.frozen {
                 HStack {
-                    Text("Held: " + Self.text(f).big).font(.headline)
+                    Text("Held: " + Self.text(f.value).big + (f.sd > 0 ? String(format: " ± %.1f cm", f.sd * 100) : "")).font(.headline)
                     Button("Save") { model.save() }.buttonStyle(.borderedProminent)
                     Button("Drop") { model.frozen = nil }.buttonStyle(.bordered)
                 }.padding(.top, 4)
@@ -356,7 +423,7 @@ struct MeasureView: View {
             Button { model.showDepth.toggle(); if !model.showDepth { model.overlay = nil } } label: { Image(systemName: model.showDepth ? "eye.fill" : "eye.slash") }
                 .buttonStyle(CaptureButtonStyle())
             Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised").lineLimit(1) }
-                .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil)
+                .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil || model.holding)
             Button { model.undoPin() } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(CaptureButtonStyle()).disabled(model.pins.isEmpty)
             Button { model.clearPins() } label: { Image(systemName: "trash") }
@@ -406,7 +473,7 @@ private struct PinLayer: View {
                 }
                 let m = project((a + b) / 2)
                 if onScreen(m) {
-                    Text(MeasureView.text(Double(simd_length(b - a))).big).font(.caption.bold())
+                    Text(MeasureView.text(Double(simd_length(b - a)), .span).big).font(.caption.bold())
                         .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
                         .position(x: m.pt.x, y: m.pt.y - 16)
                 }
@@ -416,7 +483,7 @@ private struct PinLayer: View {
                     VStack(spacing: 2) {
                         Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
                             .background(Theme.accent, in: Circle()).overlay(Circle().stroke(.white, lineWidth: 2))
-                        Text(MeasureView.text(Double(simd_length(model.pins[i] - model.camPos))).big).font(.caption2.bold())
+                        Text(MeasureView.text(Double(simd_length(model.pins[i] - model.camPos)), .wall).big).font(.caption2.bold())
                             .padding(3).background(.black.opacity(0.7), in: Capsule()).foregroundStyle(.white)
                     }.position(x: pts[i].pt.x, y: pts[i].pt.y + 14)
                 } else {
