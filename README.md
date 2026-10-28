@@ -7,9 +7,9 @@ BIMCraft models (`.bimcraft`, `.ifc`), 3D-printable meshes (STL / 3MF), a sharea
 server, with no new app to install.
 
 > This file is kept up to date with every feature (see [Keeping this file current](#keeping-this-file-current)).
-> Current: **v0.37.0** · screenshots of the web page are real; phone pictures are drawn illustrations.
+> Current: **v0.44.0** · screenshots of the web page are real; phone pictures are drawn illustrations.
 
-![The five tabs](docs/img/phone-tabs.svg)
+![The four tabs](docs/img/phone-tabs.svg)
 
 ---
 
@@ -18,7 +18,7 @@ server, with no new app to install.
 Install: build comes from GitHub Actions, sideload `RoomScan.ipa` with iloader (see `CLAUDE.md`).
 Open **Settings (gear, top right)** and type your server address, e.g. `http://192.168.1.20:8010`.
 
-### Measure tab (new): live distance, no scanning
+### Measure tab: live distance, no scanning
 Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
 
 <img src="docs/img/phone-measure.svg" align="right" width="230">
@@ -33,7 +33,8 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    nothing is joined unless you say so. A pin out of view gets an **arrow at the screen edge** pointing the way to turn.
    **Tap a pin's bullseye** to open its menu: select, measure from it to the crosshair, keep a line to the selected pin,
    name it, **move it to the crosshair**, or delete it.
-4. **Choose what to measure by selecting pins.** Tap a pin to select it (it turns amber), tap it again to unselect.
+4. **Choose what to measure by selecting pins**, from a pin's menu (**Select to measure**) or by ticking it in **Manage pins**.
+   Selected pins turn amber.
    - 1 selected: live distance from that pin to the crosshair.
    - 2 selected: the distance between them, plus how much of it is along the floor and how much is height.
      **Keep a line between these two** leaves a measured line drawn there for good.
@@ -91,8 +92,11 @@ stays on the server. Because the frames are already on the server when you stop,
 <img src="docs/img/live-panel.png" width="560">
 
 - **Offline always works.** Live is an extra. With no network the phone captures exactly as before and uploads later. If the
-  connection drops mid-scan the phone keeps scanning and sends what is missing when it is back. If it never comes back, the
-  rest is sent afterwards and the scan is built from everything (`POST /api/scans/{id}/frames`, then Build what I have).
+  connection drops mid-scan the phone keeps scanning and sends what is missing when it is back. After **Stop**, **Upload** first
+  sends the frames the server does not have yet and asks it to build (the line under the buttons says "Sending N frames…", then
+  "building"). If the frames cannot be sent within 2 minutes, or the build fails or takes over 15 minutes, the phone deletes the half-sent scan on the server and uploads the whole
+  scan the ordinary way; if even that fails it is kept on the phone (Models, On this phone). The server also accepts the missing
+  frames with `POST /api/scans/{id}/frames` (used by `tools/live_replay.py --offline-after`), but the app does not use it.
 - **Watch it on the web page.** Open the scan page while someone scans: the scan appears by itself with a **Live capture** panel:
   the top-down map (green = seen well, orange = thin or far, blue = floor looked across, white dot = the phone), the percent
   covered, the numbered things to capture next, and **Build what I have** for a capture that was left unfinished (it also builds
@@ -100,7 +104,8 @@ stays on the server. Because the frames are already on the server when you stop,
 - **What the needs are.** Directions of the room never faced (walls, ceiling, floor, as on the phone's dial), holes in the outline,
   walls seen only from more than 3 m or from fewer than 3 frames, a ceiling or floor hardly seen, blurry frames. At most 5; a need
   keeps its place until you have satisfied it.
-- **Patch a scan you already have.** Start a capture on an existing room scan ("add more"). After a few frames the server finds
+- **Patch a scan you already have** (server and `tools/live_replay.py --resume-scan`; the phone app does not offer it yet).
+  Start a capture on an existing room scan ("add more"). After a few frames the server finds
   where the new session sits in the first one (gravity is shared, so only a turn and a shift are unknown; it matches the LiDAR
   geometry), tells the phone, and from then on the map shows what the first scan already covered, in the phone's own frame. The new
   frames are fused with the old ones into one rebuilt model. If it cannot tell (a bare room, or a room that looks the same from two
@@ -146,10 +151,9 @@ straight above (it warns if the angle is steep). Good for glass, mirrors, shiny 
 app. On a plain `http://192.168...` address it works in the browser but the browser won't offer the install button.
 Everything runs on your own server (OpenCV finds the card); nothing leaves it.
 
-### Room from one spot: sweep the phone (and a 360 picture)
-Small room, cluttered room, no time to walk round it: **sit or stand in the middle and sweep the phone round** (turn on the spot, tip the
-phone up and down so floor and ceiling are in too). Upload it like any 3D room scan. The server notices that every frame was taken from
-about the same spot (or the app says "Sweep from one spot") and builds, from the photo, the LiDAR depth and the camera direction of each frame:
+### What the server builds from a sweep (360 picture and room model)
+For a scan made with **From one spot** (above) the server notices that every frame was taken from about the same spot (the app also
+flags it as "Sweep from one spot") and builds, from the photo, the LiDAR depth and the camera direction of each frame:
 
 <img src="docs/img/room-panorama.jpg" width="520" align="right">
 
@@ -283,13 +287,13 @@ The image is about 2.3 GB. Scans are stored in `./data`.
 
 ## 5. Not built yet
 
-Android app (idea: a browser capture page), STEP / CAD output, whole-room AR at 1:1,
-Gaussian splats, a live preview on the Room tab. Measure readings are not yet uploaded to the server.
+STEP / CAD output, whole-room AR at 1:1, Gaussian splats, patching an existing scan from the phone.
+Measure readings are not yet uploaded to the server.
 
 ## 6. What is untested
 
-Everything in the phone app has only been compiled by CI, not yet confirmed on a phone. Tell me what
-looks wrong and I will fix it.
+Ring scans and sweeps have been tried on a real iPhone 13 Pro. Anything newer (live guided capture in particular) has only
+been compiled by CI until it is tried on a phone. Tell me what looks wrong and I will fix it.
 
 ---
 
@@ -297,10 +301,11 @@ looks wrong and I will fix it.
 
 | Version | What was added |
 |---|---|
-| 0.42.2 | Ring dial bands now low <32° / mid 32-50° / high >50° with a live camera-angle label; Room tab **From one spot** sweep mode with its own coverage dial (walls, ceiling, floor); uploads over 1000 files accepted (server). |
-| 0.42.1 | Measure: only the bullseye in the middle creates a pin (tap it), taps elsewhere do nothing; tap a pin to open its menu. |
+| 0.44.x (app) | After Stop, a live room scan shows what the link is doing (sending the last frames, building, server errors); live guidance, problem reports and ring sync work before the server address was ever changed in Settings; no repeated frames when another tab takes the camera. Removed scan modes no tab could open (guided object, LiDAR turntable, photo turntable). |
 | 0.44.0 (server) | **Live guided capture**: two-way WebSocket with the phone (live map and what-to-capture-next), live panel and Build what I have on the scan page, patching an existing scan by registering a new session to it, offline routes `/frames` and `/add`, uploads of any size, `tools/live_replay.py`. |
 | 0.43.0 | **Room from one spot**: sweep the phone from the middle; 360 degree panorama (viewer and download), depth-panorama room model with flat walls, room width, length and height and wall distances, a 'you stood here' marker instead of a red star of camera arrows, blended brightness-matched colours for room scans. |
+| 0.42.2 | Ring dial bands now low <32° / mid 32-50° / high >50° with a live camera-angle label; Room tab **From one spot** sweep mode with its own coverage dial (walls, ceiling, floor); uploads over 1000 files accepted (server). |
+| 0.42.1 | Measure: only the bullseye in the middle creates a pin (tap it), taps elsewhere do nothing; tap a pin to open its menu. |
 | 0.42.0 | **Android app** (APK built in CI, thin shell for Photo Measure) and a **Get the app** page on the server (`/apps.html`) that hands out the APK and IPA. |
 | 0.41.0 | **Photo Measure** web app (`/photo.html`): measure from a photo with a bank card or paper as the ruler, works on Android and iPhone, installable (PWA), straighten to a top-down view. |
 | 0.40.0 | **Cut tool like Orca Slicer's**: big panel, move and tilt the cut plane with the mouse, two-colour preview with pull-apart, keep/discard/flip, connector shapes (circle, square, triangle, hexagon), click to add, move or remove connectors on the cut face, any-angle cuts. Server: `/cut/preview`, `/cut/plane`. |

@@ -82,9 +82,10 @@ class MainActivity : Activity() {
             .setPositiveButton("Open") { _, _ ->
                 var s = input.text.toString().trim().trimEnd('/')
                 if (s.isNotEmpty() && !s.startsWith("http")) s = "http://$s"
-                if (s.isNotEmpty()) { prefs.edit().putString("server", s).apply(); load(s) }
+                // An empty answer would leave a blank page with no way back to this dialog: ask again.
+                if (s.isNotEmpty()) { prefs.edit().putString("server", s).apply(); load(s) } else askServer(message)
             }
-            .setNegativeButton("Try again") { _, _ -> prefs.getString("server", null)?.let { load(it) } }
+            .setNegativeButton("Try again") { _, _ -> prefs.getString("server", null)?.let { load(it) } ?: askServer(message) }
             .show()
     }
 
