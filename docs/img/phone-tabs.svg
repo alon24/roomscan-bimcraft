@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="150" viewBox="0 0 640 150" font-family="sans-serif" font-size="13">
+<rect width="640" height="150" rx="12" fill="#f4f6f7"/>
+<g text-anchor="middle"><rect x="20" y="20" width="110" height="110" rx="14" fill="#14b8a6"/><text x="75" y="70" fill="#fff" font-weight="bold">Room</text><text x="75" y="90" fill="#fff" font-size="11">walls, doors,</text><text x="75" y="105" fill="#fff" font-size="11">floor plan</text>
+<rect x="145" y="20" width="110" height="110" rx="14" fill="#0f766e"/><text x="200" y="70" fill="#fff" font-weight="bold">Object</text><text x="200" y="90" fill="#fff" font-size="11">3D part, with</text><text x="200" y="105" fill="#fff" font-size="11">or without ring</text>
+<rect x="270" y="20" width="110" height="110" rx="14" fill="#2563eb"/><text x="325" y="70" fill="#fff" font-weight="bold">Measure</text><text x="325" y="90" fill="#fff" font-size="11">live distance,</text><text x="325" y="105" fill="#fff" font-size="11">tap to pin</text>
+<rect x="395" y="20" width="110" height="110" rx="14" fill="#7c3aed"/><text x="450" y="70" fill="#fff" font-weight="bold">Models</text><text x="450" y="90" fill="#fff" font-size="11">saved scans,</text><text x="450" y="105" fill="#fff" font-size="11">upload, AR</text>
+<rect x="520" y="20" width="100" height="110" rx="14" fill="#64748b"/><text x="570" y="70" fill="#fff" font-weight="bold">Gear</text><text x="570" y="90" fill="#fff" font-size="11">server address</text></g>
+</svg>

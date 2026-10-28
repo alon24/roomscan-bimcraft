@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="560" viewBox="0 0 300 560" font-family="sans-serif">
+<rect width="300" height="560" rx="28" fill="#222"/><rect x="8" y="8" width="284" height="544" rx="22" fill="#2b3a42"/>
+<ellipse cx="150" cy="190" rx="105" ry="55" fill="none" stroke="#eee" stroke-width="10" stroke-dasharray="6 5"/>
+<rect x="125" y="100" width="50" height="95" rx="10" fill="#d9e4e8"/>
+<rect x="20" y="300" width="260" height="170" rx="14" fill="#fff" opacity=".93"/>
+<circle cx="80" cy="385" r="48" fill="none" stroke="#ddd" stroke-width="8"/><circle cx="80" cy="385" r="34" fill="none" stroke="#14b8a6" stroke-width="8" stroke-dasharray="60 154"/><circle cx="80" cy="385" r="20" fill="none" stroke="#ddd" stroke-width="8"/>
+<text x="140" y="340" font-size="12" font-weight="bold">Turn 1: 68%</text>
+<text x="140" y="358" font-size="11" fill="#444">Now hold the phone</text><text x="140" y="372" font-size="11" fill="#444">lower and turn again.</text>
+<rect x="140" y="390" width="130" height="24" rx="12" fill="#2e7d32"/><text x="205" y="406" font-size="11" fill="#fff" text-anchor="middle">Good speed · 18°/s</text>
+<text x="150" y="450" font-size="10" fill="#666" text-anchor="middle">outer = low · middle = mid · inner = high</text>
+</svg>

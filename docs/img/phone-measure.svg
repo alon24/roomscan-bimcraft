@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="560" viewBox="0 0 300 560" font-family="sans-serif">
+<rect width="300" height="560" rx="28" fill="#222"/><rect x="8" y="8" width="284" height="544" rx="22" fill="#6b7f8c"/>
+<defs><linearGradient id="d" x1="0" x2="1"><stop offset="0" stop-color="#e53935" stop-opacity=".55"/><stop offset=".5" stop-color="#fdd835" stop-opacity=".55"/><stop offset="1" stop-color="#1e88e5" stop-opacity=".55"/></linearGradient></defs>
+<rect x="8" y="8" width="284" height="400" rx="22" fill="url(#d)"/>
+<circle cx="150" cy="200" r="17" fill="none" stroke="#4caf50" stroke-width="2"/><circle cx="150" cy="200" r="3" fill="#4caf50"/>
+<circle cx="70" cy="150" r="6" fill="#fff" stroke="#14b8a6" stroke-width="3"/><circle cx="230" cy="260" r="6" fill="#fff" stroke="#14b8a6" stroke-width="3"/>
+<line x1="70" y1="150" x2="230" y2="260" stroke="#fff" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="120" y="190" width="70" height="20" rx="10" fill="#000" opacity=".7" transform="translate(0,-40)"/><text x="155" y="164" fill="#fff" font-size="13" text-anchor="middle" font-weight="bold">1.842 m</text>
+<rect x="20" y="420" width="260" height="76" rx="14" fill="#fff" opacity=".92"/>
+<text x="150" y="455" font-size="30" font-weight="bold" text-anchor="middle">2.317 m</text><text x="150" y="473" font-size="11" text-anchor="middle" fill="#555">231.7 cm · 2317 mm</text>
+<text x="150" y="489" font-size="11" text-anchor="middle" fill="#2e7d32">● Steady, reading is good</text>
+<g font-size="11" fill="#fff"><rect x="20" y="506" width="62" height="28" rx="8" fill="#14b8a6"/><text x="51" y="524" text-anchor="middle">Mark A</text>
+<rect x="90" y="506" width="36" height="28" rx="8" fill="#14b8a6"/><text x="108" y="524" text-anchor="middle">eye</text>
+<rect x="134" y="506" width="62" height="28" rx="8" fill="#14b8a6"/><text x="165" y="524" text-anchor="middle">Hold</text>
+<rect x="204" y="506" width="76" height="28" rx="8" fill="#14b8a6"/><text x="242" y="524" text-anchor="middle">list (3)</text></g>
+</svg>

@@ -205,3 +205,5 @@ Notes:
 - Keep the iOS code minimal; push logic to the server.
 - Commit fixtures (real scans are small JSON).
 - Exact commands in docs; the user prefers concise, step-by-step instructions.
+
+- Every user-visible feature updates `README.md` (how to use it, Changelog line, screenshot) in the same commit. The user reads it to learn what the app can do.

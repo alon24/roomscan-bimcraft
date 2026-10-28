@@ -15,7 +15,10 @@ cd server && BIMCRAFT_CLI=$(realpath ../../BIMCraft/target/release/bimcraft-cli)
 - Without `BIMCRAFT_CLI` the BIMCraft integration tests are skipped, so a passing run proves less. Set it.
 - Check any new `bimcraft-cli` script syntax first: `bimcraft-cli commands` lists the parameters. Never guess names. A script stops at its first failing line and names it.
 
-## 2. Version
+## 2. README
+If the change is something a person would notice, update `README.md` first: how-to text, a Changelog line, and a fresh screenshot in `docs/img` when the web page changed (command at the bottom of the README).
+
+## 2b. Version
 Edit `VERSION` (minor bump for a feature). The build number is the git commit count, so the phone, CI and `deploy.sh` agree.
 
 ## 3. Commit and push
