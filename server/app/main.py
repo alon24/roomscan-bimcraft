@@ -750,7 +750,7 @@ def cut_plane(scan_id: str, req: PlaneCutRequest):
             _model(d), planes, c.type, c.shape, c.size, c.depth, c.clearance, c.count,
             req.keep.upper, req.keep.lower, req.flip.upper, req.flip.lower)
         if c.type != "none" and req.keep.upper and req.keep.lower and not pins and not any("pegs" in l or "keys" in l for l in log):
-            if any("too small" in l for l in log):
+            if any("too small" in l for l in log):   # printprep's log wording; test_api pins it
                 p0 = planes[0]
                 pv = printprep.cut_preview(_model(d), p0["origin"], p0["normal"], "none", c.shape, c.size, c.count)
                 raise ValueError(f"a {c.size:g} mm connector does not fit on this cut face (up to {pv['max_size_mm']:g} mm fits): "
@@ -967,7 +967,12 @@ def scan_features(scan_id: str):
     d = _dir(scan_id)
     p = d / "features.json"
     if not p.exists():
-        p.write_text(json.dumps(features_mod.detect(_model(d))))
+        m = _model(d)
+        try:
+            found = features_mod.detect(m)
+        except Exception as e:   # a tiny or degenerate mesh: say so instead of a 500
+            raise HTTPException(422, f"could not find features on this model: {type(e).__name__}: {e}")
+        p.write_text(json.dumps(found))
     return json.loads(p.read_text())
 
 

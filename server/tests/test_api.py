@@ -235,3 +235,14 @@ def test_share_link_serves_only_that_model_and_can_be_revoked(client):
     assert c.delete("/api/scans/s1/share").json() == {"shared": False}
     assert c.get(f"/s/{tok}/mesh.json").status_code == 404
     assert c.post("/api/scans/zzz/share").status_code == 404
+
+
+def test_connector_that_does_not_fit_is_a_clear_400(client):
+    """cut_plane turns printprep's "too small" log line into a 400: this pins that wording."""
+    d = main.DATA / "small"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"id": "small", "name": "small", "created_at": 1, "status": "ok"}))
+    trimesh.creation.box(extents=(8, 8, 20)).export(d / "model.stl")
+    r = client.post("/api/scans/small/cut/plane", json={"planes": [{"origin": [0, 0, 0], "normal": [0, 0, 1]}],
+                                                        "connector": {"type": "dowel", "size": 10}})
+    assert r.status_code == 400 and "does not fit on this cut face" in r.json()["detail"]
