@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from typing import Annotated
 from pathlib import Path, PurePosixPath
 
 import anyio.to_thread
@@ -586,11 +587,8 @@ class CutRequest(BaseModel):
     connector: Connector = Connector()
 
 
-def _do_cut(d: Path, cuts: list[tuple[str, float]], c: Connector) -> dict:
-    try:
-        parts, pins, log = printprep.cut_all(_model(d), cuts, c.type, c.diameter, c.depth, c.clearance, c.count)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+def _store_cut(d: Path, parts: list, pins: list, log: list[str]) -> dict:
+    """Write the parts, pins and the one 3MF that holds them, and describe the result."""
     _clear_print_prep(d, keep_colours=True)   # an earlier cut's parts are replaced; the colours still hold
     files = []
     for i, part in enumerate(parts, 1):
@@ -610,10 +608,102 @@ def _do_cut(d: Path, cuts: list[tuple[str, float]], c: Connector) -> dict:
             "total": {"grams": round(sum(e["grams"] for e in est), 1), "hours": round(sum(e["hours"] for e in est), 1)}}
 
 
+def _do_cut(d: Path, cuts: list[tuple[str, float]], c: Connector) -> dict:
+    try:
+        parts, pins, log = printprep.cut_all(_model(d), cuts, c.type, c.diameter, c.depth, c.clearance, c.count)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _store_cut(d, parts, pins, log)
+
+
 @app.post("/api/scans/{scan_id}/cut")
 def cut_model(scan_id: str, req: CutRequest):
     """Split model.stl at every plane, join the cuts with connectors, lay each part flat. One 3MF holds all parts."""
     return _do_cut(_dir(scan_id), [(x.axis, x.at) for x in req.cuts], req.connector)
+
+
+Vec3 = Annotated[list[float], Field(min_length=3, max_length=3)]
+
+
+class PlaneConnector(BaseModel):
+    type: str = Field("dowel", pattern="^(none|dowel|peg|key)$")
+    shape: str | None = Field(None, pattern="^(circle|square|triangle|hexagon)$", description="default: square for a key, else circle")
+    size: float = Field(6.0, ge=2, le=30, description="mm across (triangle, hexagon: across the corners)")
+    depth: float = Field(8.0, ge=2, le=40, description="mm into each half")
+    clearance: float = Field(0.3, ge=0, le=1, description="mm of play in each hole")
+    count: int = Field(2, ge=1, le=6, description="per cut face, when the spots are automatic")
+
+
+class CutPlane(BaseModel):
+    origin: Vec3 = Field(description="a point on the plane, mm, in model.stl's frame (the same frame as print/mesh.json)")
+    normal: Vec3 = Field(description="the plane's direction; 'upper' is the side it points to")
+    connectors: list[Annotated[list[float], Field(min_length=2, max_length=2)]] | None = Field(
+        None, max_length=24, description="[u, v] spots on the cut face, in the plane's own mm (see cut/preview); automatic when absent")
+
+
+class Sides(BaseModel):
+    upper: bool
+    lower: bool
+
+
+class PlaneCutRequest(BaseModel):
+    planes: list[CutPlane] = Field(min_length=1, max_length=8)
+    connector: PlaneConnector = PlaneConnector()
+    keep: Sides = Sides(upper=True, lower=True)
+    flip: Sides = Sides(upper=False, lower=False)
+
+
+class PreviewRequest(BaseModel):
+    plane: CutPlane
+    connector: PlaneConnector = PlaneConnector()
+
+
+def _thin(m: trimesh.Trimesh, max_faces: int) -> trimesh.Trimesh:
+    if len(m.faces) <= max_faces:
+        return m
+    import open3d as o3d
+    o = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(m.vertices), o3d.utility.Vector3iVector(m.faces))
+    o = o.simplify_quadric_decimation(max_faces)
+    return trimesh.Trimesh(vertices=np.asarray(o.vertices), faces=np.asarray(o.triangles), process=False)
+
+
+@app.post("/api/scans/{scan_id}/cut/preview")
+def cut_preview(scan_id: str, req: PreviewRequest):
+    """The cut face at a plane (outlines in the plane's own u, v mm) and where connectors would go automatically,
+    so the browser can show the face and let the user add, move or remove connector spots."""
+    c = req.connector
+    try:
+        return printprep.cut_preview(_model(_dir(scan_id)), req.plane.origin, req.plane.normal, c.type, c.shape, c.size, c.count)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/scans/{scan_id}/cut/plane")
+def cut_plane(scan_id: str, req: PlaneCutRequest):
+    """Cut on any plane (Orca-style): keep or discard each side, flip it, join the cut with connectors of a chosen shape
+    at automatic or chosen spots. Same files as /cut, plus `views`: each part in place (model.stl's frame) for an exploded view."""
+    d = _dir(scan_id)
+    c = req.connector
+    planes = [dict(origin=p.origin, normal=p.normal, points=[tuple(x) for x in p.connectors] if p.connectors is not None else None,
+                   label="the cut plane" if len(req.planes) == 1 else f"cut plane {i}") for i, p in enumerate(req.planes, 1)]
+    try:
+        parts, pins, log, views = printprep.cut_planes(
+            _model(d), planes, c.type, c.shape, c.size, c.depth, c.clearance, c.count,
+            req.keep.upper, req.keep.lower, req.flip.upper, req.flip.lower)
+        if c.type != "none" and req.keep.upper and req.keep.lower and not pins and not any("pegs" in l or "keys" in l for l in log):
+            if any("too small" in l for l in log):
+                p0 = planes[0]
+                pv = printprep.cut_preview(_model(d), p0["origin"], p0["normal"], "none", c.shape, c.size, c.count)
+                raise ValueError(f"a {c.size:g} mm connector does not fit on this cut face (up to {pv['max_size_mm']:g} mm fits): "
+                                 "make it smaller, move the cut, or pick 'none'")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    out = _store_cut(d, parts, pins, log)
+    out["views"] = []
+    for side, m in views:
+        t = _thin(m, 15000)
+        out["views"].append({"side": side, "vertices": np.round(t.vertices, 2).ravel().tolist(), "faces": t.faces.ravel().tolist()})
+    return out
 
 
 class AutoFit(BaseModel):
@@ -638,13 +728,7 @@ def autofit(scan_id: str, req: AutoFit = AutoFit()):
 
 def _view_mesh(d: Path, max_faces: int) -> trimesh.Trimesh:
     """model.stl for the browser: very dense meshes are thinned."""
-    m = _model(d)
-    if len(m.faces) > max_faces:
-        import open3d as o3d
-        o = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(m.vertices), o3d.utility.Vector3iVector(m.faces))
-        o = o.simplify_quadric_decimation(max_faces)
-        m = trimesh.Trimesh(vertices=np.asarray(o.vertices), faces=np.asarray(o.triangles), process=False)
-    return m
+    return _thin(_model(d), max_faces)
 
 
 @app.get("/api/scans/{scan_id}/print/mesh.json")
