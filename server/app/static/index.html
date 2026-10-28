@@ -135,6 +135,7 @@
           <div class="hint" id="connHelp"></div>
           <div class="row" style="margin:8px 0 4px">
             <button class="btn" id="cutBtn">Make parts</button>
+            <button class="btn" id="fitBedBtn" title="Cuts the model into parts that fit the printer bed (BED_MM on the server), joined with the connector chosen above, and estimates filament and time">Fit to my printer</button>
             <button class="btn" id="colourBtn" title="Filament colours that match the scan">Colour suggestions</button>
           </div>
           <div class="hint" id="cutHint"></div>
@@ -1044,6 +1045,25 @@ async function setupPrint(id) {
   $("cutNum").onchange = () => { $("cutAt").value = Math.max(0.5, Math.min(PRINT.size[axisI()] - 0.5, +$("cutNum").value || 0)); update(); };
   $("cutAdd").onclick = () => { PRINT.cuts.push(here()); chips(); update(); };
   $("connType").onchange = conn;
+  const showCut = j => {
+    const sup = (j.estimates || []).filter(e => e.supports !== "none").length;
+    $("cutHint").textContent = `${j.parts} part${j.parts === 1 ? "" : "s"}${j.pins ? ` and ${j.pins} dowel pins` : ""}${j.files.length ? ", all in model_parts.3mf" : ""}. ` + j.log.join(". ") + "."
+      + (j.estimates?.length ? ` Rough estimate: about ${j.total.grams} g of PLA and ${j.total.hours} h (15% infill)${j.fits_bed === false ? ", but a part is still bigger than the bed" : ""}; supports: ${sup ? sup + " of " + j.parts + " parts need them" : "none needed"}.` : "");
+    for (const a of [...$("actions").querySelectorAll("a")]) if (/^(model_part|dowels)/.test(a.download)) a.remove();
+    for (const f of j.files) {
+      const a = document.createElement("a"); a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}?t=${Date.now()}`; a.download = f;
+      $("actions").append(a);
+    }
+  };
+  $("fitBedBtn").onclick = async () => {
+    $("fitBedBtn").disabled = true; $("cutHint").textContent = "Fitting to the printer…";
+    const res = await fetch(`/api/scans/${id}/autofit`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connector: { type: $("connType").value, diameter: +$("connD").value, depth: +$("connDepth").value, count: +$("connN").value, clearance: +$("connClr").value } }) });
+    $("fitBedBtn").disabled = false;
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) { $("cutHint").textContent = "Could not fit: " + (typeof j.detail === "string" ? j.detail : res.status); return; }
+    showCut(j);
+  };
   $("cutBtn").onclick = async () => {
     const cuts = PRINT.cuts.length ? PRINT.cuts : [here()];   // nothing added yet: use the blue plane
     $("cutBtn").disabled = true; $("cutHint").textContent = "Cutting…";
@@ -1053,12 +1073,7 @@ async function setupPrint(id) {
     $("cutBtn").disabled = false;
     const j = await res.json().catch(() => ({}));
     if (!res.ok) { $("cutHint").textContent = "Cut failed: " + (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || res.status)); return; }
-    $("cutHint").textContent = `${j.parts} parts${j.pins ? ` and ${j.pins} dowel pins` : ""}, all in model_parts.3mf. ` + j.log.join(". ") + ".";
-    for (const a of [...$("actions").querySelectorAll("a")]) if (/^(model_part|dowels)/.test(a.download)) a.remove();
-    for (const f of j.files) {
-      const a = document.createElement("a"); a.className = "btn"; a.textContent = f; a.href = `/api/scans/${id}/${f}?t=${Date.now()}`; a.download = f;
-      $("actions").append(a);
-    }
+    showCut(j);
   };
   $("colourBtn").onclick = async () => {
     const res = await fetch(`/api/scans/${id}/colours`);

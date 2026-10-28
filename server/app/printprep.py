@@ -2,6 +2,7 @@
 All sizes are mm in model.stl's own frame (Z up, centred on the bed, sitting on Z=0)."""
 import io
 import json
+import math
 import os
 from pathlib import Path
 
@@ -246,6 +247,34 @@ def lay_out(parts: list[trimesh.Trimesh], extra: list[trimesh.Trimesh] = ()) -> 
     return scene
 
 
+PLA_G_PER_MM3 = 0.00124      # PLA, grams per mm3
+FLOW_MM3_S = 9.0             # a typical average extrusion rate over a whole print, mm3 per second
+
+
+def auto_cuts(size_mm: list[float], bed: list[float] = BED_MM, margin: float = 4.0) -> list[tuple[str, float]]:
+    """Equal cuts along every axis that is longer than the bed (minus a margin for connectors and the brim)."""
+    cuts = []
+    for axis, s, b in zip("xyz", size_mm, bed):
+        n = math.ceil(s / max(b - margin, 1.0))
+        cuts += [(axis, s * k / n) for k in range(1, n)]
+    return cuts
+
+
+def estimate(mesh: trimesh.Trimesh) -> dict:
+    """A rough print estimate for a part lying on the bed: filament, time, and how much of the surface hangs over (supports).
+    Walls of 1.2 mm and 15% infill; the time uses an average flow, so treat it as a guide within about 30%."""
+    area, vol = float(mesh.area), abs(float(mesh.volume)) if mesh.is_watertight else 0.0
+    shell = min(vol, area * 1.2) if vol else area * 1.2
+    material = shell + 0.15 * max(vol - shell, 0.0)
+    n = mesh.face_normals
+    down = n[:, 2] < -0.707                                         # steeper than 45 degrees from vertical, facing down
+    above_bed = mesh.triangles_center[:, 2] > 0.6                   # a face lying on the bed needs no support
+    overhang = float(mesh.area_faces[down & above_bed].sum() / area) if area else 0.0
+    return {"grams": round(material * PLA_G_PER_MM3, 1), "hours": round(material / FLOW_MM3_S / 3600 * 1.3, 1), "overhang": round(overhang, 3),
+            "supports": "none" if overhang < 0.02 else "a little" if overhang < 0.12 else "yes",
+            "size_mm": [round(float(x), 1) for x in mesh.extents]}
+
+
 CLEARANCE_STEPS = (0.1, 0.2, 0.3, 0.4, 0.5)
 
 
@@ -368,3 +397,58 @@ def suggest_colours(scan_dir: Path, k: int = 4) -> dict:
     return {"source": source, "colours": cols,
             "note": "Suggestions only: scan lighting darkens and dulls colours. Print the biggest share in the main filament, "
                     "or paint/swap filament for the rest."}
+
+
+def vertex_rgb_for(mesh_mm: trimesh.Trimesh, ply: Path) -> np.ndarray | None:
+    """Colour of every vertex of model.stl (mm, Z up), looked up in colored.ply (metres, Y up) by position, because the STL is
+    cleaned and re-read in another vertex order. None when the two do not describe the same surface (nothing within 0.5 mm)."""
+    from scipy.spatial import cKDTree
+    col = trimesh.load(ply, process=False)
+    if col.visual.kind != "vertex" or not len(col.vertices):
+        return None
+    v = np.asarray(col.vertices)
+    moved = np.c_[v[:, 0], -v[:, 2], v[:, 1]] * 1000.0
+    moved = moved - moved.min(axis=0) + mesh_mm.bounds[0]       # the STL was also moved onto the bed: line the two up by their boxes
+    d, i = cKDTree(moved).query(mesh_mm.vertices)
+    if float(np.percentile(d, 99)) > 0.5:
+        return None
+    return np.asarray(col.visual.vertex_colors)[i][:, :3]
+
+
+def colour_3mf(scan_dir: Path, k: int = 4) -> tuple[bytes, list[dict]]:
+    """model.stl as one 3MF whose every triangle carries one of the suggested filaments (3MF basematerials, per triangle).
+    Slicers differ in how much of this they read: PrusaSlicer/Orca show the colours and let you map each to a filament slot."""
+    import zipfile
+    stl, ply = scan_dir / "model.stl", scan_dir / "colored.ply"
+    if not stl.exists() or not ply.exists():
+        raise ValueError("this scan has no colours to print with")
+    mesh = trimesh.load(stl)
+    rgb = vertex_rgb_for(mesh, ply)
+    if rgb is None:
+        raise ValueError("the coloured model and the printable model do not match any more: re-convert the scan first")
+    rgb = rgb.astype(float)
+    wanted = [c["filament"] for c in vertex_colours(ply, k)]
+    names = list(dict.fromkeys(wanted))
+    palette = np.array([FILAMENTS[n] for n in names], dtype=float)
+    face_rgb = rgb[mesh.faces].mean(axis=1)
+    pick = ((face_rgb[:, None, :] - palette[None]) ** 2).sum(axis=2).argmin(axis=1)
+    hexes = ["#%02X%02X%02X" % FILAMENTS[n] for n in names]
+    bases = "".join(f'<base name="{n}" displaycolor="{h}"/>' for n, h in zip(names, hexes))
+    verts = "".join(f'<vertex x="{x:.4f}" y="{y:.4f}" z="{z:.4f}"/>' for x, y, z in mesh.vertices)
+    tris = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}" pid="1" p1="{int(i)}"/>' for (a, b, c), i in zip(mesh.faces, pick))
+    model = ('<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" '
+             'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>'
+             f'<basematerials id="1">{bases}</basematerials>'
+             f'<object id="2" type="model" pid="1" pindex="0"><mesh><vertices>{verts}</vertices><triangles>{tris}</triangles></mesh></object>'
+             '</resources><build><item objectid="2"/></build></model>')
+    import io as _io
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                   '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>')
+        z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')
+        z.writestr("3D/3dmodel.model", model)
+    share = np.bincount(pick, minlength=len(names)) / len(pick)
+    return buf.getvalue(), [{"filament": n, "hex": h, "percent": round(float(p) * 100, 1)} for n, h, p in zip(names, hexes, share)]

@@ -168,3 +168,72 @@ def test_fit_route_compares_with_a_reference(tmp_path, monkeypatch):
     body = r.json()
     assert body["rms_mm"] < 0.3 and len(body["deviation_mm"]) * 3 == len(body["vertices"])
     assert TestClient(main.app).post("/api/scans/abc/fit", files={"reference": ("ref.txt", b"x")}).status_code == 400
+
+
+def test_autofit_cuts_a_long_part_to_the_bed_and_estimates(monkeypatch):
+    monkeypatch.setattr(pp, "BED_MM", [100.0, 100.0, 100.0])
+    m = trimesh.creation.box(extents=(230, 40, 30))
+    m.apply_translation(-m.bounds[0])
+    cuts = pp.auto_cuts([230, 40, 30], [100, 100, 100])
+    assert [c[0] for c in cuts] == ["x", "x"] and abs(cuts[0][1] - 230 / 3) < 1e-6
+    e = pp.estimate(m)
+    assert 0 < e["grams"] < m.volume * 0.00124 and e["supports"] == "none" and e["hours"] > 0
+    arch = trimesh.creation.box(extents=(40, 40, 10)); arch.apply_translation([0, 0, 25])     # a floating slab: its underside hangs over
+    assert pp.estimate(arch)["supports"] == "yes"
+
+
+def test_usdz_is_real_size_and_passes_the_arkit_check(tmp_path):
+    from pxr import Usd, UsdGeom, UsdUtils
+    from app import usdzout
+    m = trimesh.creation.box(extents=(0.05, 0.1, 0.03)); m.apply_translation([0, 0.05, 0])
+    m.visual.vertex_colors = np.tile(np.array([200, 30, 30, 255], dtype=np.uint8), (len(m.vertices), 1))
+    m.export(tmp_path / "colored.ply")
+    trimesh.creation.box(extents=(50, 100, 30)).export(tmp_path / "model.stl")
+    out = usdzout.make_usdz(tmp_path, tmp_path / "model.usdz")
+    stage = Usd.Stage.Open(str(out))
+    assert UsdGeom.GetStageMetersPerUnit(stage) == 1.0 and UsdGeom.GetStageUpAxis(stage) == "Y"
+    pts = np.array(UsdGeom.Mesh(stage.GetPrimAtPath("/Model/Mesh")).GetPointsAttr().Get())
+    assert abs(np.ptp(pts[:, 1]) - 0.1) < 1e-4
+    import zipfile
+    from pxr import UsdShade
+    z = zipfile.ZipFile(out)
+    assert z.namelist()[0].endswith(".usdc") and all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist())   # Quick Look wants it stored, not compressed
+    mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/Model/Mesh"))
+    assert UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()[0]
+    assert len(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").Get()) == len(pts)
+
+
+def test_colour_3mf_gives_every_triangle_a_filament(tmp_path):
+    import re
+    import zipfile
+    box = trimesh.creation.box(extents=(20, 20, 20))
+    box.export(tmp_path / "model.stl")
+    v = box.vertices
+    c = trimesh.Trimesh(np.c_[v[:, 0], v[:, 2], -v[:, 1]] / 1000.0, box.faces, process=False)      # metres, Y up, as the scans' colored.ply
+    c.visual.vertex_colors = np.where(v[:, [2]] > 0, [200, 40, 40, 255], [30, 30, 30, 255]).astype(np.uint8)
+    c.export(tmp_path / "colored.ply")
+    data, used = pp.colour_3mf(tmp_path, 2)
+    names = {u["filament"] for u in used}
+    assert names == {"Red", "Black"} and abs(sum(u["percent"] for u in used) - 100) < 0.5
+    xml = zipfile.ZipFile(io.BytesIO(data)).read("3D/3dmodel.model").decode()
+    assert len(re.findall(r"<triangle ", xml)) == len(box.faces) and xml.count("<base ") == 2
+    back = trimesh.load(io.BytesIO(data), file_type="3mf")                      # still a normal 3MF to every other reader
+    assert abs(back.bounds[1][0] - 10) < 1e-3
+
+
+def test_features_route_and_scan_to_scan_fit(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    monkeypatch.setattr(main, "DATA", tmp_path)
+    for sid, scale in (("a1", 1.0), ("b2", 1.04)):
+        d = tmp_path / sid
+        d.mkdir()
+        (d / "meta.json").write_text('{"id":"%s","kind":"mesh"}' % sid)
+        bar = trimesh.creation.box(extents=(60, 30, 20))
+        bar.apply_scale(scale); bar.apply_translation(-bar.bounds[0]); bar.export(d / "model.stl")
+    c = TestClient(main.app)
+    f = c.get("/api/scans/a1/features").json()
+    assert {p["facing"] for p in f["planes"]} >= {"top", "bottom"} and (tmp_path / "a1" / "features.json").exists()
+    r = c.post("/api/scans/b2/fit", data={"against": "a1"})
+    assert r.status_code == 200 and r.json()["signed_mean_mm"] > 0.3          # the second scan is 4% bigger
+    assert c.post("/api/scans/b2/fit", data={"against": "nope"}).status_code == 404

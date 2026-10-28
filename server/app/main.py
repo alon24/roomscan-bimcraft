@@ -2,6 +2,7 @@ import os
 import io
 import json
 import re
+import secrets
 import shutil
 import tempfile
 import time
@@ -19,14 +20,14 @@ from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import fit as fit_mod, quality, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
-             "model_parts.3mf", "colours.json", "dowels.stl"}
-PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json)$")  # derived from model.stl: stale once it changes
+             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json"}
+PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json|model\.usdz|features\.json)$")  # derived from model.stl: stale once it changes
 
 
 def _clear_print_prep(d: Path, keep_colours: bool = False):
@@ -585,13 +586,9 @@ class CutRequest(BaseModel):
     connector: Connector = Connector()
 
 
-@app.post("/api/scans/{scan_id}/cut")
-def cut_model(scan_id: str, req: CutRequest):
-    """Split model.stl at every plane, join the cuts with connectors, lay each part flat. One 3MF holds all parts."""
-    d = _dir(scan_id)
-    c = req.connector
+def _do_cut(d: Path, cuts: list[tuple[str, float]], c: Connector) -> dict:
     try:
-        parts, pins, log = printprep.cut_all(_model(d), [(x.axis, x.at) for x in req.cuts], c.type, c.diameter, c.depth, c.clearance, c.count)
+        parts, pins, log = printprep.cut_all(_model(d), cuts, c.type, c.diameter, c.depth, c.clearance, c.count)
     except ValueError as e:
         raise HTTPException(400, str(e))
     _clear_print_prep(d, keep_colours=True)   # an earlier cut's parts are replaced; the colours still hold
@@ -605,8 +602,38 @@ def cut_model(scan_id: str, req: CutRequest):
         files.append("dowels.stl")
     printprep.lay_out(parts, pin_meshes).export(d / "model_parts.3mf")
     files.append("model_parts.3mf")
+    est = [printprep.estimate(p) for p in parts]
+    bed = printprep.BED_MM
     return {"files": files[-1:] + files[:-1], "log": log, "parts": len(parts), "pins": len(pins),
-            "size_mm": [[round(float(x), 1) for x in p.extents] for p in parts]}
+            "size_mm": [[round(float(x), 1) for x in p.extents] for p in parts], "estimates": est,
+            "fits_bed": all(p.extents[0] <= bed[0] and p.extents[1] <= bed[1] and p.extents[2] <= bed[2] for p in parts),
+            "total": {"grams": round(sum(e["grams"] for e in est), 1), "hours": round(sum(e["hours"] for e in est), 1)}}
+
+
+@app.post("/api/scans/{scan_id}/cut")
+def cut_model(scan_id: str, req: CutRequest):
+    """Split model.stl at every plane, join the cuts with connectors, lay each part flat. One 3MF holds all parts."""
+    return _do_cut(_dir(scan_id), [(x.axis, x.at) for x in req.cuts], req.connector)
+
+
+class AutoFit(BaseModel):
+    connector: Connector = Connector()
+
+
+@app.post("/api/scans/{scan_id}/autofit")
+def autofit(scan_id: str, req: AutoFit = AutoFit()):
+    """Fit the model to the printer: cut it into bed-sized parts (equal cuts along each too-long axis, joined with the chosen connector)
+    and give a rough filament and time estimate. A model that already fits just gets the estimate."""
+    d = _dir(scan_id)
+    m = _model(d)
+    cuts = printprep.auto_cuts([float(x) for x in m.extents])
+    if not cuts:
+        e = printprep.estimate(m)
+        return {"files": [], "parts": 1, "log": [f"the model already fits the {printprep.BED_MM[0]:g} x {printprep.BED_MM[1]:g} x {printprep.BED_MM[2]:g} mm bed"],
+                "estimates": [e], "fits_bed": True, "total": {"grams": e["grams"], "hours": e["hours"]}, "size_mm": [e["size_mm"]], "pins": 0}
+    out = _do_cut(d, cuts, req.connector)
+    out["cuts"] = [{"axis": a, "at": round(at, 1)} for a, at in cuts]
+    return out
 
 
 def _view_mesh(d: Path, max_faces: int) -> trimesh.Trimesh:
@@ -629,15 +656,19 @@ def print_mesh(scan_id: str, max_faces: int = 60000):
 
 
 @app.post("/api/scans/{scan_id}/fit")
-def fit_check(scan_id: str, reference: UploadFile = File(...)):
-    """Line a reference mesh (STL, 3MF, OBJ, PLY, in mm) up on this scan and return how far each point of the scan is from it."""
+def fit_check(scan_id: str, reference: UploadFile | None = File(None), against: str | None = Form(None)):
+    """Line a reference mesh (STL, 3MF, OBJ, PLY, in mm) up on this scan and return how far each point of the scan is from it.
+    The reference can also be another scan on this server (`against` = its id), to see how a part changed between two scans."""
     d = _dir(scan_id)
-    ext = Path(reference.filename or "").suffix.lower().lstrip(".")
-    if ext not in ("stl", "3mf", "obj", "ply", "glb", "off"):
+    ext = Path(reference.filename or "").suffix.lower().lstrip(".") if reference else ""
+    if not against and ext not in ("stl", "3mf", "obj", "ply", "glb", "off"):
         raise HTTPException(400, "the reference must be an stl, 3mf, obj, ply, glb or off file")
     try:
-        loaded = trimesh.load(io.BytesIO(reference.file.read()), file_type=ext, force="mesh")
-        ref = loaded if isinstance(loaded, trimesh.Trimesh) else trimesh.util.concatenate(list(loaded.geometry.values()))
+        if against:
+            ref = _model(_dir(against))
+        else:
+            loaded = trimesh.load(io.BytesIO(reference.file.read()), file_type=ext, force="mesh")
+            ref = loaded if isinstance(loaded, trimesh.Trimesh) else trimesh.util.concatenate(list(loaded.geometry.values()))
         if not len(ref.faces):
             raise ValueError("no surface in the file")
         scan = _view_mesh(d, 40000)
@@ -690,6 +721,100 @@ def tolerance_3mf(size: float = 6.0, depth: float = 8.0):
         raise HTTPException(400, str(e))
     return Response(scene.export(file_type="3mf"), media_type="model/3mf",
                     headers={"Content-Disposition": f'attachment; filename="tolerance-test-{size:g}mm.3mf"'})
+
+
+@app.get("/api/scans/{scan_id}/model.usdz")
+def model_usdz(scan_id: str):
+    """The model in real size for AR Quick Look on the phone (made on first request)."""
+    d = _dir(scan_id)
+    out = d / "model.usdz"
+    if not out.exists():
+        try:
+            usdzout.make_usdz(d, out)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+    return FileResponse(out, media_type="model/vnd.usdz+zip", filename=f"{_meta(d).get('name', scan_id)}.usdz".replace("/", "-"))
+
+
+@app.get("/api/scans/{scan_id}/model_colour.3mf")
+def model_colour_3mf(scan_id: str, k: int = 4):
+    """model.stl with one of the suggested filaments on every triangle, for a multi-colour print."""
+    try:
+        data, used = printprep.colour_3mf(_dir(scan_id), max(2, min(k, 6)))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return Response(data, media_type="model/3mf", headers={"Content-Disposition": 'attachment; filename="model-colour.3mf"',
+                                                           "X-Colours": json.dumps(used)})
+
+
+def _shared(token: str) -> Path:
+    """The scan folder a share link points to. Only scans that were shared and not revoked."""
+    if DATA.exists() and re.fullmatch(r"[A-Za-z0-9_-]{8,40}", token):
+        for d in DATA.glob("*"):
+            try:
+                if (d / "meta.json").exists() and _meta(d).get("share") == token:
+                    return d
+            except Exception:
+                continue
+    raise HTTPException(404, "this link is not shared (any more)")
+
+
+@app.post("/api/scans/{scan_id}/share")
+def share_on(scan_id: str, request: Request):
+    """Make a read-only link to the 3D model: /s/<token>. Anyone who can reach this server and has the link can look at it and
+    download the STL; nothing else of the scan. DELETE revokes it."""
+    d = _dir(scan_id)
+    if not (d / "model.stl").exists():
+        raise HTTPException(400, "only scans with a printable model can be shared")
+    meta = _meta(d)
+    meta.setdefault("share", secrets.token_urlsafe(9))
+    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    return {"token": meta["share"], "path": f"/s/{meta['share']}", "url": str(request.base_url).rstrip("/") + f"/s/{meta['share']}"}
+
+
+@app.delete("/api/scans/{scan_id}/share")
+def share_off(scan_id: str):
+    d = _dir(scan_id)
+    meta = _meta(d)
+    meta.pop("share", None)
+    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    return {"shared": False}
+
+
+@app.get("/s/{token}")
+def share_page(token: str):
+    _shared(token)
+    return FileResponse(Path(__file__).parent / "static" / "share.html", media_type="text/html")
+
+
+@app.get("/s/{token}/mesh.json")
+def share_mesh(token: str):
+    d = _shared(token)
+    m = _view_mesh(d, 60000)
+    out = {"name": _meta(d).get("name", ""), "vertices": np.round(m.vertices, 2).ravel().tolist(), "faces": m.faces.ravel().tolist(),
+           "size_mm": [round(float(x), 1) for x in m.extents]}
+    ply = d / "colored.ply"
+    if ply.exists() and len(m.faces) == len(_model(d).faces):          # colours only when the mesh was not thinned
+        rgb = printprep.vertex_rgb_for(m, ply)
+        if rgb is not None:
+            out["colors"] = np.round(rgb / 255.0, 3).ravel().tolist()
+    return out
+
+
+@app.get("/s/{token}/model.stl")
+def share_stl(token: str):
+    d = _shared(token)
+    return FileResponse(d / "model.stl", media_type="model/stl", filename=f"{_meta(d).get('name', 'model')}.stl".replace("/", "-"))
+
+
+@app.get("/api/scans/{scan_id}/features")
+def scan_features(scan_id: str):
+    """Flat faces, round bosses and round holes with real sizes (cached as features.json)."""
+    d = _dir(scan_id)
+    p = d / "features.json"
+    if not p.exists():
+        p.write_text(json.dumps(features_mod.detect(_model(d))))
+    return json.loads(p.read_text())
 
 
 @app.get("/api/scans/{scan_id}/quality")

@@ -239,3 +239,25 @@ def test_tags_are_cleaned_and_kept(tmp_path, monkeypatch):
     r = c.patch("/api/scans/t1", json={"tags": ["#Gear ", "gear", "", "bracket"]})
     assert r.json()["tags"] == ["Gear", "bracket", "gear"]
     assert c.get("/api/scans").json()[0]["tags"] == ["Gear", "bracket", "gear"]
+
+
+def test_share_link_serves_only_that_model_and_can_be_revoked(tmp_path, monkeypatch):
+    import trimesh
+    monkeypatch.setattr(main, "DATA", tmp_path)
+    for sid in ("s1", "s2"):
+        d = tmp_path / sid
+        d.mkdir()
+        (d / "meta.json").write_text(json.dumps({"id": sid, "name": sid, "created_at": 1, "status": "ok"}))
+        trimesh.creation.box(extents=(10, 20, 30)).export(d / "model.stl")
+    c = TestClient(main.app)
+    assert c.get("/s/not-a-real-token").status_code == 404
+    tok = c.post("/api/scans/s1/share").json()["token"]
+    assert c.post("/api/scans/s1/share").json()["token"] == tok                       # the same link every time
+    assert "Shared model" in c.get(f"/s/{tok}").text
+    m = c.get(f"/s/{tok}/mesh.json").json()
+    assert m["name"] == "s1" and len(m["faces"]) == 36
+    assert c.get(f"/s/{tok}/model.stl").content[:5] != b""
+    assert c.get("/s/" + tok + "x/mesh.json").status_code == 404
+    assert c.delete("/api/scans/s1/share").json() == {"shared": False}
+    assert c.get(f"/s/{tok}/mesh.json").status_code == 404
+    assert c.post("/api/scans/zzz/share").status_code == 404
