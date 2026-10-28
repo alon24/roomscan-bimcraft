@@ -280,3 +280,20 @@ def test_outline_that_includes_the_plate_is_cleaned_with_the_phones_separate_thi
     assert meta["status"] == "ok" and "outline carving from 12 photos" in meta["log"], meta["log"]
     size = sorted(client.get(f"/api/scans/{r.json()['id']}/report.json").json()["size_mm"])
     assert 46 < size[0] < 56 and 46 < size[1] < 56 and 55 < size[2] < 66, (size, meta["log"])   # 50 x 50 x 60 mm, within a few mm
+
+
+def test_quality_report_finds_the_gaps_and_the_missing_low_pass(tmp_path):
+    import shutil
+    from app import quality
+    _ring_photos(tmp_path, make_ring.MARKER, make_ring.R_CENTRE, n=4)       # frames at 0, 60, 120, 180 degrees, one a second, one height
+    d = tmp_path / "scan"
+    (d / "photos").mkdir(parents=True)
+    for f in tmp_path.glob("p*.jpg"):
+        shutil.copy(f, d / "photos" / f.name)
+    shutil.copy(tmp_path / "photos.json", d / "photos.json")
+    q = quality.analyse(d)
+    assert q["usable"] == 4 and q["frames"] == 4
+    assert any(g[0] >= 180 or g[1] > 180 for g in q["gaps"]), q["gaps"]       # nothing between 180 and 360 degrees
+    assert any("low pass" in t for t in q["tips"])                            # all frames at one height
+    assert q["grade"] in ("poor", "fair") and q["score"] < 80
+    assert 50 < q["speed"]["median"] < 70                                     # 60 degrees a second in the synthetic scan

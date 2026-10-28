@@ -15,10 +15,10 @@ from anyio import from_thread
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import quality, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -646,6 +646,26 @@ def colours(scan_id: str, k: int = 4):
             p.write_text(json.dumps(res))
         return res
     return json.loads(p.read_text())
+
+
+@app.get("/api/print/tolerance.3mf")
+def tolerance_3mf(size: float = 6.0, depth: float = 8.0):
+    """A test bar with holes of 0.1 to 0.5 mm clearance and two pins: print it to find the clearance that fits this printer."""
+    try:
+        scene = printprep.tolerance_test(max(2.0, min(size, 20.0)), max(3.0, min(depth, 20.0)))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(scene.export(file_type="3mf"), media_type="model/3mf",
+                    headers={"Content-Disposition": f'attachment; filename="tolerance-test-{size:g}mm.3mf"'})
+
+
+@app.get("/api/scans/{scan_id}/quality")
+def scan_quality(scan_id: str):
+    """Score, coverage gaps and tips for a ring scan (cached as quality.json)."""
+    d = _dir(scan_id)
+    if not (d / "photos.json").exists() or not json.loads((d / "meta.json").read_text()).get("ring"):
+        raise HTTPException(404, "the quality report is for ring scans")
+    return quality.cached(d)
 
 
 @app.get("/api/scans/{scan_id}/photos/{name}")

@@ -128,3 +128,25 @@ def test_routes_cut_section_colours(tmp_path, monkeypatch):
     assert c.get("/api/scans/abc/colours").status_code == 404   # no colour information
     main._clear_print_prep(d)   # what a re-convert does: the parts no longer match model.stl
     assert not list(d.glob("model_part*")) and not (d / "dowels.stl").exists() and (d / "model.stl").exists()
+
+
+def test_tolerance_bar_has_a_hole_per_clearance_and_matching_pins():
+    import io
+    scene = pp.tolerance_test(6.0, 8.0)
+    names = list(scene.geometry)
+    assert len(names) == 3                                         # the bar and two pins
+    bar = scene.geometry[names[0]]
+    assert bar.is_watertight and abs(bar.bounds[0][2]) < 1e-6
+    # five blind holes: removing them leaves less volume than the solid bar
+    solid = bar.extents[0] * bar.extents[1] * bar.extents[2]
+    removed = solid - bar.volume
+    holes = sum(np.pi * (3 + c) ** 2 * 8 for c in pp.CLEARANCE_STEPS)
+    assert holes * 0.9 < removed < holes * 1.2, (removed, holes)
+    assert all(scene.geometry[n].is_watertight for n in names)
+
+
+def test_tolerance_route_returns_a_3mf():
+    from fastapi.testclient import TestClient
+    from app import main
+    r = TestClient(main.app).get("/api/print/tolerance.3mf?size=6&depth=8")
+    assert r.status_code == 200 and r.content[:2] == b"PK"

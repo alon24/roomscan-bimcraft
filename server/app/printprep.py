@@ -246,6 +246,35 @@ def lay_out(parts: list[trimesh.Trimesh], extra: list[trimesh.Trimesh] = ()) -> 
     return scene
 
 
+CLEARANCE_STEPS = (0.1, 0.2, 0.3, 0.4, 0.5)
+
+
+def tolerance_test(size: float = 6.0, depth: float = 8.0, steps=CLEARANCE_STEPS) -> trimesh.Scene:
+    """A small bar with one blind hole per clearance (hole = size + 2 * clearance) and two loose pins of the connector size, to find
+    out which clearance fits on this printer. Hole n has n notches on the front edge: n = 1 is the tightest."""
+    pitch = size + 10.0
+    plate_h = depth + 3.0
+    length, width = pitch * len(steps) + 6.0, size + 12.0
+    bar = trimesh.creation.box(extents=(length, width, plate_h))
+    bar.apply_translation([length / 2, 0, plate_h / 2])
+    for n, c in enumerate(steps, 1):
+        x = 3.0 + pitch * (n - 0.5)
+        hole = trimesh.creation.cylinder(radius=size / 2 + c, height=depth + 1.0, sections=64)
+        hole.apply_translation([x, 0, plate_h - depth / 2 + 0.5])
+        cut = _boolean("difference", bar, hole)
+        if cut is None:
+            raise ValueError("could not cut a hole in the test bar")
+        bar = cut
+        for k in range(n):                                   # n notches on the front edge, 1.5 mm wide, 2 mm apart
+            notch = trimesh.creation.box(extents=(1.5, 1.6, 1.5))
+            notch.apply_translation([x + (k - (n - 1) / 2) * 3.0, -width / 2 + 0.6, plate_h - 0.7])
+            cut = _boolean("difference", bar, notch)
+            if cut is not None:
+                bar = cut
+    bar.apply_translation([-length / 2, 0, 0])
+    return lay_out([bar], pin_meshes([(size, 2 * depth - 1.0)] * 2))
+
+
 def section_svg(mesh: trimesh.Trimesh, axis: str, at_mm: float) -> str:
     """Outline of the cross-section at `axis = at_mm` as an SVG (mm), the cut face seen from the high side."""
     i = AXES[axis]
