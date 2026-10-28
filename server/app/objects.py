@@ -131,14 +131,12 @@ def load_mesh_file(path: Path) -> trimesh.Trimesh:
     return m
 
 
-def _write(mesh: trimesh.Trimesh, log: list[str], outdir: Path, extra=None) -> tuple[bool, str]:
+def _write(mesh: trimesh.Trimesh, log: list[str], outdir: Path) -> tuple[bool, str]:
     mesh.export(outdir / "model.stl")
     mesh.export(outdir / "model.3mf")
     (outdir / "preview.json").write_text(json.dumps({
         "vertices": np.round(mesh.vertices, 2).ravel().tolist(),
         "faces": mesh.faces.ravel().tolist()}))
-    if extra:
-        extra(log)
     rep = report(mesh)
     log.append(json.dumps(rep))
     (outdir / "report.json").write_text(json.dumps(rep))
@@ -159,13 +157,11 @@ def convert_object(src: Path, outdir: Path, scale: float = 1.0) -> tuple[bool, s
     """Write model.stl, model.3mf and preview.json into outdir. Returns (ok, log)."""
     try:
         mesh, log = clean(load_usdz(src), scale)
-
-        def textured(log):
-            try:
-                if extract_textured(src, outdir):
-                    log.append("textured preview written")
-            except Exception as e:  # the plain preview still works
-                log.append(f"no textured preview: {type(e).__name__}: {e}")
-        return _write(mesh, log, outdir, textured)
+        try:
+            if extract_textured(src, outdir):
+                log.append("textured preview written")
+        except Exception as e:  # the plain preview still works
+            log.append(f"no textured preview: {type(e).__name__}: {e}")
+        return _write(mesh, log, outdir)
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"

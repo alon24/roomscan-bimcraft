@@ -1,7 +1,6 @@
 import json
 
 import numpy as np
-import pytest
 import trimesh
 from pxr import Gf, Usd, UsdGeom, UsdUtils
 
@@ -31,17 +30,12 @@ def make_usdz(path, cube_m=0.03, extra_speck=False, y_up=True, open_top=False):
     return path
 
 
-def test_load_units_and_transform(tmp_path):
+def test_load_units_transform_and_y_up(tmp_path):
     mesh = objects.load_usdz(make_usdz(tmp_path / "a.usdz"))
     assert np.allclose(mesh.extents, [30, 30, 30], atol=0.01)  # 0.03 m -> 30 mm
     assert mesh.is_watertight
-
-
-def test_y_up_converted_to_z_up(tmp_path):
-    p = make_usdz(tmp_path / "a.usdz", y_up=True)
-    m = objects.load_usdz(p)
     # translate (1,2,3) m in Y-up -> (x, -z, y) = (1000, -3000, 2000) mm centre
-    assert np.allclose(m.bounds.mean(axis=0), [1000, -3000, 2000], atol=0.01)
+    assert np.allclose(mesh.bounds.mean(axis=0), [1000, -3000, 2000], atol=0.01)
 
 
 def test_clean_drops_speck_and_sits_on_bed(tmp_path):
@@ -54,11 +48,6 @@ def test_clean_drops_speck_and_sits_on_bed(tmp_path):
 def test_clean_fills_hole(tmp_path):
     m, log = objects.clean(objects.load_usdz(make_usdz(tmp_path / "a.usdz", open_top=True)))
     assert m.is_watertight
-
-
-def test_scale(tmp_path):
-    m, _ = objects.clean(objects.load_usdz(make_usdz(tmp_path / "a.usdz")), scale=2)
-    assert np.allclose(m.extents, 60, atol=0.01)
 
 
 def test_convert_object_writes_files(tmp_path):

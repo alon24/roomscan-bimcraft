@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, UsdUtils, Vt
+from pxr import Sdf, Usd, UsdGeom, UsdShade, UsdUtils, Vt
 
 
 def _source(d: Path) -> tuple[trimesh.Trimesh, float, str]:
@@ -21,8 +21,16 @@ def _source(d: Path) -> tuple[trimesh.Trimesh, float, str]:
 
 def make_usdz(d: Path, out: Path) -> Path:
     m, unit, up = _source(d)
-    work = Path(tempfile.mkdtemp())
-    usdc = work / "model.usdc"
+    with tempfile.TemporaryDirectory() as work:
+        usdc = Path(work) / "model.usdc"
+        _write_usdc(m, unit, up, usdc)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.unlink(missing_ok=True)
+        UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(usdc)), str(out))
+    return out
+
+
+def _write_usdc(m: trimesh.Trimesh, unit: float, up: str, usdc: Path):
     stage = Usd.Stage.CreateNew(str(usdc))
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y if up == "Y" else UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, unit)
@@ -49,8 +57,3 @@ def make_usdz(d: Path, out: Path) -> Path:
     mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(mat)
     stage.GetRootLayer().Save()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    if out.exists():
-        out.unlink()
-    UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(usdc)), str(out))
-    return out
