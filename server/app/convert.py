@@ -73,8 +73,6 @@ def convert(scan: dict, snap_mm: float = SNAP_MM, square_deg: float | None = Non
             log.append(f"dropped short wall {w.get('identifier')} ({g.dist(a, b):.0f} mm)")
         else:
             kept.append((w, a, b))
-    if not kept:
-        raise ValueError("all walls shorter than minimum")
 
     snapped = g.snap_endpoints([(a, b) for _, a, b in kept], snap_mm)
     pairs = [(w, s) for (w, _, _), s in zip(kept, snapped) if s[0] != s[1]]   # BIMCraft refuses a 0 mm wall

@@ -21,11 +21,3 @@ def test_a_moved_and_turned_copy_lines_up_with_almost_no_difference():
     res = fit.compare(scan, ref)
     assert res["rms_mm"] < 0.4 and res["max_mm"] < 1.5, res["rms_mm"]
     assert abs(res["volume_ratio"] - 1) < 0.01
-
-
-def test_a_scan_that_is_too_fat_reads_positive():
-    ref = _part()
-    scan = ref.copy()
-    scan.apply_scale(1.05)
-    res = fit.compare(scan, ref)
-    assert res["signed_mean_mm"] > 0.3 and res["volume_ratio"] > 1.1

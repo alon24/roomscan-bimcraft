@@ -25,13 +25,14 @@ def _rot_z(deg: float) -> np.ndarray:
 def align(ref: trimesh.Trimesh, scan: trimesh.Trimesh, seed: int = 0) -> tuple[np.ndarray, float]:
     """4x4 matrix that moves `ref` onto `scan`, and the RMS distance after it. Tries every axis-aligned turn of the reference and
     every 10 degrees about Z, keeps the best few by distance, then refines them with ICP."""
-    a = scan.sample(3000, seed=seed) if hasattr(scan, "sample") else scan.vertices
-    b = ref.sample(3000)
+    a = scan.sample(3000, seed=seed)
+    b = ref.sample(3000, seed=seed + 1)
+    b_icp = ref.sample(4000, seed=seed + 2)
     ca, cb = a.mean(axis=0), b.mean(axis=0)
     tree = cKDTree(a - ca)
     cands = []
     for R in _cube_rotations():
-        for z in range(0, 360, 10):
+        for z in range(0, 90, 10):              # the cube turns already hold the quarter turns about Z
             M = _rot_z(z) @ R
             d, _ = tree.query((b - cb) @ M.T)
             cands.append((float(np.sqrt((d ** 2).mean())), M))
@@ -40,7 +41,7 @@ def align(ref: trimesh.Trimesh, scan: trimesh.Trimesh, seed: int = 0) -> tuple[n
     for _, M in cands[:6]:
         T = np.eye(4); T[:3, :3] = M; T[:3, 3] = ca - M @ cb
         try:
-            mat, _, _ = trimesh.registration.icp(ref.sample(4000), a, initial=T, threshold=1e-6, max_iterations=60, scale=False)
+            mat, _, _ = trimesh.registration.icp(b_icp, a, initial=T, threshold=1e-6, max_iterations=60, scale=False)
         except Exception:
             mat = T
         moved = trimesh.transform_points(b, mat)
