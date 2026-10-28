@@ -4,11 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO=alon24/roomscan-bimcraft
-mkdir -p data/apps
+if ! mkdir -p data/apps 2>/dev/null; then
+  # data/ is owned by root when the container wrote it: make the folder from inside the container, open to the current user
+  docker compose run --rm --no-deps --entrypoint sh server -c 'mkdir -p /app/data/apps && chmod 777 /app/data/apps'
+fi
 
 fetch() {   # workflow file, artifact name
   local id tmp
-  id=$(gh run list -R "$REPO" --workflow "$1" --status success -L1 --json databaseId -q '.[0].databaseId')
+  id=$(gh run list -R "$REPO" --workflow "$1" -L 20 --json databaseId,conclusion -q '[.[] | select(.conclusion == "success")][0].databaseId // empty')
   [ -n "$id" ] || { echo "no successful $1 run yet"; return 0; }
   tmp=$(mktemp -d)
   gh run download "$id" -R "$REPO" -n "$2" --dir "$tmp"

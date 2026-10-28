@@ -197,6 +197,8 @@ Files are in `docs/ring/`; see `docs/turntable-ring.md`. Print at 100% and keep 
 ---
 
 ## Get the apps from your own server
+
+<img src="docs/img/apps-page.png" width="300" align="right">
 Open `http://<server>:8010/apps.html`. It lists the **Android app (APK)** and the **iPhone app (IPA)** that this server holds, with
 download buttons and install steps, and a link to the no-install web app.
 - Put the newest builds on the server with `./tools/get-apps.sh` (downloads the last successful iPhone and Android builds from

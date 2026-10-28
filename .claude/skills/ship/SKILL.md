@@ -33,6 +33,9 @@ gh run download $id -R alon24/roomscan-bimcraft -n RoomScan.ipa --dir ~/Download
 ```
 Run the wait in the background. Always download after a green build, delete the old file first, and tell the user the build number. They sideload by hand with iloader "Install IPA" (SideStore/Sideloader sign-in was broken with Apple error -80046; re-check later). Free-account signing lasts 7 days.
 
+## 4b. Apps on the server
+After a green iOS or Android build run `./tools/get-apps.sh`: it copies the newest IPA and APK into `data/apps/`, and the server hands them out at `/apps.html` (no redeploy needed). `data/` is root-owned, the script makes `data/apps` through Docker when needed. The Android build is `.github/workflows/android.yml` (Gradle 8.7, AGP 8.5.2, debug-signed APK). Validate any workflow YAML with `python3 -c "import yaml;yaml.safe_load(open(f))"`: an unquoted `: ` in a step name makes the whole workflow invalid.
+
 ## 5. Server
 ```bash
 PORT=8010 ./deploy.sh      # prints "Server vX build N"
