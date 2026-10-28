@@ -18,17 +18,21 @@ struct RoomScanApp: App {
         bar.configureWithOpaqueBackground()
         UITabBar.appearance().standardAppearance = bar
         UITabBar.appearance().scrollEdgeAppearance = bar
-        Notifier.setUp()
+        // CI screenshots launch with -uiShots 1: no permission pop-up over the picture.
+        if !UserDefaults.standard.bool(forKey: "uiShots") { Notifier.setUp() }
     }
+
+    /// `-startTab N` on launch opens that tab (used by the CI screenshot job).
+    @State private var tab = UserDefaults.standard.integer(forKey: "startTab")
 
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                TabView {
-                    RoomTab().tabItem { Label("Room", systemImage: "square.split.bottomrightquarter") }
-                    ObjectTab().tabItem { Label("Object", systemImage: "cube") }
-                    MeasureView().tabItem { Label("Measure", systemImage: "ruler") }
-                    ModelsView().tabItem { Label("Models", systemImage: "cube.box") }
+                TabView(selection: $tab) {
+                    RoomTab().tabItem { Label("Room", systemImage: "square.split.bottomrightquarter") }.tag(0)
+                    ObjectTab().tabItem { Label("Object", systemImage: "cube") }.tag(1)
+                    MeasureView().tabItem { Label("Measure", systemImage: "ruler") }.tag(2)
+                    ModelsView().tabItem { Label("Models", systemImage: "cube.box") }.tag(3)
                 }
                 .toolbarBackground(.visible, for: .tabBar)
                 .tint(Theme.accent)

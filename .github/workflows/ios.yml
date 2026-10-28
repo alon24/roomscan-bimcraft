@@ -33,3 +33,46 @@ jobs:
         with:
           name: RoomScan.ipa
           path: ios/RoomScan.ipa
+
+  screenshots:
+    # Runs the app in the iOS Simulator and photographs each tab. The Simulator has no camera or LiDAR,
+    # so scan screens show an empty camera area, but layout, text and buttons are real.
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: brew install xcodegen
+      - run: cd ios && xcodegen generate
+      - name: Build for Simulator
+        run: |
+          cd ios
+          xcodebuild -project RoomScan.xcodeproj -scheme RoomScan -configuration Debug \
+            -sdk iphonesimulator -derivedDataPath build \
+            MARKETING_VERSION=$(cat ../VERSION) CURRENT_PROJECT_VERSION=$(git rev-list --count HEAD) \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Photograph the tabs
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          c=[x for k,v in d.items() if 'iOS' in k for x in v if 'iPhone 1' in x['name'] and 'Pro' in x['name']] or [x for k,v in d.items() if 'iOS' in k for x in v if 'iPhone' in x['name']]
+          print(c[-1]['udid'])")
+          xcrun simctl boot $UDID; xcrun simctl bootstatus $UDID -b
+          xcrun simctl privacy $UDID grant camera com.roomscan.app || true
+          xcrun simctl install $UDID ios/build/Build/Products/Debug-iphonesimulator/RoomScan.app
+          mkdir -p shots
+          i=0
+          for name in room object measure models; do
+            xcrun simctl launch $UDID com.roomscan.app -uiShots 1 -startTab $i
+            sleep 8
+            xcrun simctl io $UDID screenshot shots/$name.png
+            xcrun simctl terminate $UDID com.roomscan.app
+            i=$((i+1))
+          done
+          ls -l shots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screens
+          path: shots
