@@ -95,9 +95,16 @@ The server turns it into a BIMCraft model and plan. **Quick test (30 s)** is a s
 
 #### Room from one spot: sweep the phone (small or cluttered rooms)
 Room tab, **From one spot**. You don't walk round the room: stand in the middle, tap **Start scan**, and turn slowly on the spot.
-- A dial shows where the camera has looked: **outer ring = the walls** all the way round, **middle = the ceiling**, **inner = the floor**.
-  Fill the outer ring first (turn slowly), then tilt up, then tilt down. The hint under the dial tells you what's next.
-- It warns "You are 40 cm from where you started" if you wander off. Small steps are fine.
+- A dial shows where the camera has looked: **outer ring = the walls** all the way round, **middle = the ceiling**, **inner = the floor**,
+  and two arrows in the middle light up once you have pointed **straight up** and **straight down**.
+  Fill the outer ring first (turn slowly), then tip the phone up about 45° and turn again, then down. The hint tells you what's next.
+- Three chips under the hint, green / orange / red:
+  - **moved**: how far the phone is from where it started, sideways. Keep it under 10 cm: hold the phone near your face with both hands
+    and shuffle your feet round under it, or put it on a tripod or a stick and turn it there. Off-centre photos cause doubled edges.
+  - **up/down**: how much higher or lower the phone is than at the start. Tip it to look up or down; don't lift it.
+  - **turn speed**: about 10°/s is right (one turn in 35 to 40 s). Over 20°/s the photos blur.
+  The phone buzzes once when one of them goes wrong.
+- Turn on every light: a brighter room means shorter exposures and sharper photos.
 - The phone keeps a photo, the LiDAR depth and the camera's direction twice a second. The server turns them into a 360° picture of
   the room and a model of it seen from that spot, with its measurements.
 
@@ -340,6 +347,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.47.0 | **Sharper 360° pictures**: where photos overlap, the sharpest photo taken nearest the middle now wins instead of being averaged with blurry or off-centre ones (doubled edges mostly gone; old panoramas are redrawn when next opened, **Re-convert** also refreshes the room colours). **Sweep coaching** in the app: live chips for how far the phone moved (green under 10 cm), how much it went up or down, and turn speed (aim for about 10°/s), a buzz when one goes wrong, and arrows in the dial for pointing straight up and straight down. |
 | 0.46.1 (server, web) | Switching between 3D views keeps the camera where it is (going back to the first view no longer jumps outside the room). |
 | 0.46.0 (server, web) | Swept rooms open in a new **360° photo** view: the room shape coloured straight from the 360 panorama, much sharper than the per-point colours (Solid surface is still there). "You stood here" is a ring on the floor instead of a ball in front of your eyes; the misleading mesh box size is hidden for rooms (the room panel gives width, length, height). |
 | 0.45.2 (app, Measure) | With two pins selected, **Calibrate: real length…** right under the reading: type the tape length and every pin-to-pin length is corrected from then on. |

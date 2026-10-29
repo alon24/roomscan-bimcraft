@@ -25,9 +25,12 @@ def _lock(d: Path) -> threading.Lock:
     return _locks.setdefault(str(d), threading.Lock())
 
 
+METHOD = 2   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
+
+
 def key_for(d: Path, width: int) -> str:
     st = (d / "photos.json").stat()
-    return f"{st.st_mtime_ns}:{st.st_size}:{width}"
+    return f"m{METHOD}:{st.st_mtime_ns}:{st.st_size}:{width}"
 
 
 def usable_photos(d: Path) -> list[dict]:
@@ -45,7 +48,7 @@ def select_frames(d: Path, photos: list[dict], max_frames: int = 70) -> list[dic
         sharp = float(cv2.Laplacian(cv2.resize(g, (320, 240), interpolation=cv2.INTER_AREA), cv2.CV_32F).var())
         f = -_mat(ph["transform"])[:3, 2]
         cell = (int((math.atan2(f[0], -f[2]) + math.pi) / (2 * math.pi) * 30), int((math.asin(max(-1.0, min(1.0, f[1]))) + math.pi / 2) / math.pi * 15))
-        rows.append((cell, sharp, ph))
+        rows.append((cell, sharp, dict(ph, _sharp=sharp)))
     keep, by = [], {}
     for cell, sharp, ph in rows:
         by.setdefault(cell, []).append((sharp, ph))
@@ -129,12 +132,25 @@ def _gains(low: list, npix: int, sweeps: int = 3) -> np.ndarray:
     return g
 
 
+def frame_quality(chosen: list[dict], centre: np.ndarray, near: float = 0.2) -> np.ndarray:
+    """How much each frame should count where frames overlap: sharper is better, and so is a camera close to the centre
+    (a photo taken 50 cm to the side sees round things, and any error in the depth shifts its pixels by more)."""
+    sharp = np.array([ph.get("_sharp", 1.0) for ph in chosen], float)
+    rel = np.clip(sharp / max(float(np.median(sharp)), 1e-6), 0.2, 3.0)
+    off = np.array([np.linalg.norm(_mat(ph["transform"])[:3, 3] - centre) for ph in chosen])
+    return (rel ** 1.5 * np.exp(-(off / near) ** 2) + 1e-4).astype(np.float32)
+
+
 def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | None, width: int = 3072,
-           max_frames: int = 70) -> tuple[np.ndarray, float, int]:
-    """The panorama image (uint8 H x W x 3), the share of directions covered, and how many frames were used."""
+           max_frames: int = 70, sharpen: float = 3.0) -> tuple[np.ndarray, float, int]:
+    """The panorama image (uint8 H x W x 3), the share of directions covered, and how many frames were used.
+    Where photos overlap, each pixel's weight is (edge feather x frame quality) ** `sharpen`: the best photo for a spot nearly
+    wins outright instead of being averaged with blurrier or off-centre ones (averaging is what made doubled edges), while
+    the seams between photos stay soft. `sharpen` 1 is the old plain feathered average."""
     chosen = select_frames(d, photos, max_frames)
     if not chosen:
         raise ValueError("no usable photos")
+    quality = frame_quality(chosen, np.asarray(centre, float))
 
     def load(ph):
         return np.asarray(Image.open(d / "photos" / ph["file"]).convert("RGB"))
@@ -159,18 +175,21 @@ def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | 
     W, H = width, width // 2
     df = sweep.dirs_grid(W, H).reshape(-1, 3)
     rf = _radius(depth, W, H)
-    acc = np.zeros((H * W, 3), np.float32)
-    wt = np.zeros(H * W, np.float32)
+    acc = np.zeros((H * W, 3), np.float64)     # float64: weights raised to a power get very small
+    wt = np.zeros(H * W, np.float64)
+    cover = np.zeros(H * W, np.float32)        # the plain feather weight: what counts as seen, as before
     used = 0
     for k, ph in enumerate(chosen):
         idx, u, v, wg = _samples(ph, df, rf, centre, occluder(ph))
         if len(idx) == 0:
             continue
+        cover[idx] += wg
+        w = (wg.astype(np.float64) * quality[k]) ** sharpen
         col = _colours(load(ph), u, v) * gains[k]
-        acc[idx] += col * wg[:, None]
-        wt[idx] += wg
+        acc[idx] += col * w[:, None]
+        wt[idx] += w
         used += 1
-    seen = wt > 0.02
+    seen = (cover > 0.02) & (wt > 0)
     out = np.full((H * W, 3), NEUTRAL, np.float32)
     out[seen] = acc[seen] / wt[seen, None]
     return np.clip(out, 0, 255).astype(np.uint8).reshape(H, W, 3), float(seen.mean()), used

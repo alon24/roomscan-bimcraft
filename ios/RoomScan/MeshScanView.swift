@@ -270,7 +270,12 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 "photo longest side px": ring.enabled ? 1920 : 1280, "frames sent": photoURLs.filter { $0.pathExtension == "jpg" }.count,
                 "lidar depth": photoURLs.contains { $0.pathExtension == "depth" },
                 "part outlines": maskURLs.count]
-        if sweepMode { info["sweep"] = true; info["sweep max movement m"] = (sweep.maxMoved * 100).rounded() / 100 }
+        if sweepMode {
+            info["sweep"] = true; info["sweep max movement m"] = (sweep.maxMoved * 100).rounded() / 100
+            info["sweep max height change m"] = (sweep.maxLift * 100).rounded() / 100
+            info["sweep turn speed deg/s"] = sweep.medianSpeed.rounded()
+            info["sweep straight up/down"] = "\(sweep.upDone ? "up" : "-") \(sweep.downDone ? "down" : "-")"
+        }
         return info
     }
 
