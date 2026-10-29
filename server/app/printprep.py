@@ -487,6 +487,10 @@ def section_svg(mesh: trimesh.Trimesh, axis: str, at_mm: float) -> str:
             f'<path d="{d}" fill="#c9a46c" fill-opacity=".5" fill-rule="evenodd" stroke="#333" stroke-width=".4"/></svg>')
 
 
+class NoColours(ValueError):
+    """The model has a colour file but nothing in it to suggest filaments from (the routes answer 422, not 404)."""
+
+
 def _nearest(rgb: np.ndarray) -> str:
     names = list(FILAMENTS)
     d = ((np.array([FILAMENTS[n] for n in names]) - rgb) ** 2).sum(axis=1)
@@ -496,6 +500,8 @@ def _nearest(rgb: np.ndarray) -> str:
 def cluster_colours(rgb: np.ndarray, weights: np.ndarray, k: int = 4) -> list[dict]:
     """k-means on sRGB samples (area-weighted); returns clusters biggest first, with a filament name."""
     from scipy.cluster.vq import kmeans2
+    if not len(rgb):
+        raise NoColours("there are no coloured surfaces to take colours from")
     rgb = rgb.astype(float)
     k = max(1, min(k, len(rgb)))
     rng = np.random.default_rng(0)
@@ -539,6 +545,8 @@ def textured_colours(textured: dict, texture: bytes, k: int = 4) -> list[dict]:
 
 def vertex_colours(ply: Path, k: int = 4) -> list[dict]:
     m = trimesh.load(ply, process=False)
+    if getattr(m, "visual", None) is None or m.visual.kind != "vertex":   # trimesh fills in its own grey, which is not the scan's
+        raise NoColours("this model has no colours: it was saved without vertex colours")
     rgb = np.asarray(m.visual.vertex_colors)[:, :3]
     return cluster_colours(rgb, np.ones(len(rgb)), k)
 
@@ -581,12 +589,12 @@ def colour_3mf(scan_dir: Path, k: int = 4) -> tuple[bytes, list[dict]]:
     stl, ply = scan_dir / "model.stl", scan_dir / "colored.ply"
     if not stl.exists() or not ply.exists():
         raise ValueError("this scan has no colours to print with")
+    wanted = [c["filament"] for c in vertex_colours(ply, k)]     # first, so a PLY without colours says so
     mesh = trimesh.load(stl)
     rgb = vertex_rgb_for(mesh, ply)
     if rgb is None:
         raise ValueError("the coloured model and the printable model do not match any more: re-convert the scan first")
     rgb = rgb.astype(float)
-    wanted = [c["filament"] for c in vertex_colours(ply, k)]
     names = list(dict.fromkeys(wanted))
     palette = np.array([FILAMENTS[n] for n in names], dtype=float)
     face_rgb = rgb[mesh.faces].mean(axis=1)

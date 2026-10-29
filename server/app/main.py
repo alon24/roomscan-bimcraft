@@ -846,6 +846,8 @@ def colours(scan_id: str, k: int = 4):
     if not p.exists() or k != 4:
         try:
             res = printprep.suggest_colours(d, max(1, min(k, 8)))
+        except printprep.NoColours as e:
+            raise HTTPException(422, str(e))
         except ValueError as e:
             raise HTTPException(404, str(e))
         if k == 4:
@@ -907,6 +909,8 @@ def model_colour_3mf(scan_id: str, k: int = 4):
     """model.stl with one of the suggested filaments on every triangle, for a multi-colour print."""
     try:
         data, used = printprep.colour_3mf(_dir(scan_id), max(2, min(k, 6)))
+    except printprep.NoColours as e:
+        raise HTTPException(422, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     return Response(data, media_type="model/3mf", headers={"Content-Disposition": 'attachment; filename="model-colour.3mf"',

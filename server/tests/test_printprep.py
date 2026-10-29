@@ -92,6 +92,12 @@ def test_two_colour_texture_gives_two_suggestions_and_ignores_unused_texture():
     assert sum(c["percent"] for c in cols) == pytest.approx(100, abs=0.5)
 
 
+def test_no_coloured_triangles_is_a_plain_no_colours_error():
+    buf = io.BytesIO(); Image.new("RGB", (4, 4), (200, 40, 40)).save(buf, "PNG")
+    with pytest.raises(pp.NoColours, match="no coloured"):
+        pp.textured_colours({"positions": [0.0] * 9, "uvs": [0.0] * 6}, buf.getvalue(), k=2)   # one triangle with no area
+
+
 def test_routes_cut_section_colours(tmp_path, monkeypatch):
     import json
     from fastapi.testclient import TestClient
@@ -115,6 +121,11 @@ def test_routes_cut_section_colours(tmp_path, monkeypatch):
     assert c.post("/api/scans/abc/cut", json={"cuts": [{"axis": "z", "at": 999}]}).status_code == 400
     assert c.get("/api/scans/abc/section.svg?axis=x&at=20").text.startswith("<svg")
     assert c.get("/api/scans/abc/colours").status_code == 404   # no colour information
+    box((10, 10, 10)).export(d / "colored.ply")                  # a PLY without vertex colours: no made-up 'Light grey'
+    r = c.get("/api/scans/abc/colours")
+    assert r.status_code == 422 and "no colours" in r.json()["detail"], r.text
+    assert c.get("/api/scans/abc/model_colour.3mf").status_code == 422
+    (d / "colored.ply").unlink()
     main._clear_print_prep(d)   # what a re-convert does: the parts no longer match model.stl
     assert not list(d.glob("model_part*")) and not (d / "dowels.stl").exists() and (d / "model.stl").exists()
 
