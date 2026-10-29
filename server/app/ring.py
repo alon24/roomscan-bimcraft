@@ -51,7 +51,8 @@ def config(d: Path | None = None) -> dict:
     return json.loads(BUNDLED.read_text())
 
 
-def _detector() -> "cv2.aruco.ArucoDetector":
+def detector() -> "cv2.aruco.ArucoDetector":
+    """The ArUco detector for the ring's markers (4x4_50, sub-pixel corners). Public: quality and hull use it too."""
     p = cv2.aruco.DetectorParameters()
     p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
     return cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), p)
@@ -93,7 +94,7 @@ def to_ring(points_world: np.ndarray, photo: dict, R: np.ndarray, t: np.ndarray)
 def fuse(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     """Every frame's LiDAR depth, placed by the ring markers, in the ring's own frame; a surface is fitted through the points."""
     cfg = config(d)
-    det = _detector()
+    det = detector()
     inner_r = cfg["stage_d_mm"] / 2 - 1.0
     clouds, colours, used, markers, errs, skipped, no_depth = [], [], 0, 0, [], 0, 0
     for ph in frames.manifest(d):
@@ -192,7 +193,7 @@ def calibrate(work: Path, marker_mm: float | None, centre_distance_mm: float | N
     Returns the numbers the app shows and, if the photos are good, the config to save."""
     nominal = build_config()
     cfg = build_config(marker_mm, centre_distance_mm / 2 if centre_distance_mm else None)
-    det = _detector()
+    det = detector()
     rows, ratios, edge_px = [], [], []
     for ph in frames.manifest(work):
         path = work / "photos" / ph["file"]

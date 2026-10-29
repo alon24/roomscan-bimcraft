@@ -59,9 +59,9 @@ def choose_instances(labels: np.ndarray, ph: dict, R: np.ndarray, t: np.ndarray,
 def carve(d: Path, scale: float = 1.0, voxel: float = 1.5, misses: int | None = None, height: float = 320.0):
     """Returns (mesh in metres with Y up, colours, log, number of photos used) or None if there are too few outlined photos."""
     from skimage.measure import marching_cubes
-    from .ring import _detector, config, ring_pose
+    from .ring import config, detector, ring_pose
     cfg = config(d)
-    det = _detector()
+    det = detector()
     inner_r = cfg["stage_d_mm"] / 2 - 1.0
     trusted = trusted_masks(d)
     views = []

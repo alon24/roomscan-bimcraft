@@ -19,7 +19,7 @@ BANDS = (("low", 0, 32), ("middle", 32, 50), ("high", 50, 91))   # the same edge
 
 def _poses(d: Path) -> list[dict]:
     cfg = ring.config(d)
-    det = ring._detector()
+    det = ring.detector()
     rows = []
     for ph in frames.manifest(d):
         path = d / "photos" / ph["file"]
