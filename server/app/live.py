@@ -41,6 +41,9 @@ IDLE_S = float(os.environ.get("LIVE_IDLE_S", "600"))
 MAX_FRAME_BYTES = 12 * 1024 * 1024
 ATTEMPT_AT = 6             # a patch session tries to register itself to the old scan after this many frames, then every this many more
 LIVE_KINDS = ("room", "sweep")
+FLUSH_S = 2.0              # photos.json, sessions.json and live.json are rewritten at most this often while frames stream in (and
+FLUSH_SHARE = 4            # every max(16, frames / this) frames), not after every frame: frames.jsonl carries each frame until then
+JOURNAL = "frames.jsonl"
 STATE_OF = {"capturing": "capturing", "building": "building", "ok": "ready"}   # meta.status -> the `state` message; anything else is "error"
 
 
@@ -96,6 +99,24 @@ def _photos(d: Path) -> list[dict]:
 
 def _save_photos(d: Path, photos: list[dict]) -> None:
     _write(d / "photos.json", {"version": 2, "photos": photos})
+
+
+def _journal_lines(d: Path) -> list[dict]:
+    """frames.jsonl: one line per frame (or bare frame number) stored since photos.json was last rewritten. A line cut off by a
+    crash is skipped: its frame was never acknowledged, so the phone sends it again."""
+    try:
+        text = (d / JOURNAL).read_text()
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
 
 
 def _sessions(d: Path) -> dict:
@@ -173,11 +194,10 @@ class Session:
         self.kind = kind or st.get("kind") or "room"
         self.index = index if index is not None else st.get("session", 1)
         self.patch = patch if patch is not None else bool(st.get("patch", False))
-        self.got: set[int] = set(st.get("got", []))
+        self.got: set[int] = set(range(1, int(st.get("acked", 0)) + 1)) | set(st.get("got", []))
         self.finished = index is None and (bool(st.get("finish", False)) or _meta(d).get("status") != "capturing")
         self.deleted = False
         self.acked = 0
-        self._recount()
         self.sess_file = _sessions(d)
         mine = next((s for s in self.sess_file["sessions"] if s["index"] == self.index), None)
         if mine is None:
@@ -185,7 +205,14 @@ class Session:
             self.sess_file["sessions"].append(mine)
         self.mine = mine
         self.T = np.array(mine["transform"], dtype=float).reshape(4, 4) if mine.get("transform") else None
-        photos = _photos(d)
+        self.photos: list[dict] = _photos(d)       # photos.json as it is now: written to disk by flush()
+        self.journal = d / JOURNAL
+        self.dirty = False
+        self.since_flush = 0
+        self.last_flush = time.time()
+        recovered = self._replay()
+        self._recount()
+        photos = self.photos
         self.stamps: set[float] = set()
         nums = [0]
         for p in photos + [f for s in self.sess_file["sessions"] for f in s.get("frames", [])]:
@@ -208,6 +235,9 @@ class Session:
         self.pending_engine = coverage.CoverageEngine(self.kind) if engine and self.patch and not self.aligned else None
         self.last_meta_count = -1
         self.last_meta_t = 0.0
+        if recovered:
+            with self.lock:
+                self._flush()
         if engine:
             threading.Thread(target=self._work, daemon=True).start()
 
@@ -231,14 +261,68 @@ class Session:
         """live.json and sessions.json. Call with self.lock held: every live.json write of a live session goes through here."""
         keep = {k: v for k, v in _read(self.d / "live.json", {}).items() if k in ("prev_status", "cancelled", "resume_scan")}
         _write(self.d / "live.json", {**keep, **extra, "kind": self.kind, "session": self.index, "patch": self.patch,
-                                      "got": sorted(self.got), "finish": self.finished})
+                                      "acked": self.acked, "got": sorted(n for n in self.got if n > self.acked), "finish": self.finished})
         self.mine["aligned"] = self.aligned
         self.mine["transform"] = None if self.T is None else self.T.tolist()
         _write(self.d / "sessions.json", self.sess_file)
 
+    def _flush(self, **extra) -> None:
+        """Lock held. Rewrite photos.json (atomically: a reader always finds a whole file), live.json and sessions.json from memory,
+        then empty the journal. A crash between the two leaves lines that are already in photos.json: _replay skips those."""
+        if self.deleted:
+            return
+        _save_photos(self.d, self.photos)
+        self._save_state(**extra)
+        self.journal.unlink(missing_ok=True)
+        self.dirty, self.since_flush, self.last_flush = False, 0, time.time()
+
+    def flush(self, **extra) -> None:
+        with self.lock:
+            self._flush(**extra)
+
+    def flush_if_due(self, force_time: bool = True) -> None:
+        with self.lock:
+            if self.dirty and (self.since_flush >= max(16, len(self.photos) // FLUSH_SHARE)
+                               or (force_time and time.time() - self.last_flush >= FLUSH_S)):
+                self._flush()
+
+    def _log(self, rec: dict) -> None:
+        """Lock held. One line, appended: what makes a frame safe before its ack, at a cost that does not grow with the scan."""
+        with open(self.journal, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        self.dirty = True
+        self.since_flush += 1
+
+    def _replay(self) -> bool:
+        """Put the journal's frames (a crash before the last flush) back into photos / sessions / got. True if any was missing."""
+        recs = _journal_lines(self.d)
+        if not recs:
+            return False
+        have = {p["file"] for p in self.photos}
+        by_index = {s["index"]: s for s in self.sess_file["sessions"]}
+        for rec in recs:
+            if rec.get("session") == self.index and isinstance(rec.get("n"), int):
+                self.got.add(rec["n"])
+            raw = rec.get("raw")
+            if not isinstance(raw, dict) or "file" not in raw:
+                continue
+            stored = raw if rec.get("stored") is True else rec.get("stored")
+            if isinstance(stored, dict) and stored.get("file") not in have:
+                self.photos.append(stored)
+                have.add(stored["file"])
+            if rec.get("keep_raw"):
+                s = by_index.get(rec.get("session"))
+                if s is None:
+                    s = {"index": rec.get("session"), "aligned": False, "transform": None, "frames": []}
+                    self.sess_file["sessions"].append(s)
+                    by_index[s["index"]] = s
+                if raw["file"] not in {f["file"] for f in s.setdefault("frames", [])}:
+                    s["frames"].append(raw)
+        return True
+
     def mark(self, **extra) -> None:
         with self.lock:
-            self._save_state(**extra)
+            self._flush(**extra)
 
     def push(self, msg: dict) -> None:
         self.out.append(msg)
@@ -260,7 +344,7 @@ class Session:
             if n is not None:
                 with self.lock:
                     if not self.finished:
-                        self.got.add(n); self._recount(); self._save_state()
+                        self.got.add(n); self._recount(); self._log({"session": self.index, "n": n}); self.flush_if_due(False)
             raise
         with self.lock:
             if self.deleted:
@@ -272,7 +356,7 @@ class Session:
             ts = round(float(photo.get("timestamp") or 0), 4)
             if ts and ts in self.stamps:
                 if n is not None:
-                    self.got.add(n); self._recount(); self._save_state()
+                    self.got.add(n); self._recount(); self._log({"session": self.index, "n": n}); self.flush_if_due(False)
                 return self.acked
             name = f"p{self.next_num:03d}"
             self.next_num += 1
@@ -291,27 +375,27 @@ class Session:
             stored = None
             if self.aligned:
                 stored = entry if self.T is None else registration.apply([entry], self.T)[0]
-                photos = _photos(self.d)
-                photos.append(stored)
-                _save_photos(self.d, photos)
+                self.photos.append(stored)
                 if self.patch:
                     self.mine.setdefault("frames", []).append(entry)       # the raw one is kept too
             else:
                 self.mine.setdefault("frames", []).append(entry)
                 self.pending.append(entry)
+            # the frame's files are written; this line makes its pose safe too. Only then is it acknowledged
+            self._log({"session": self.index, "n": n, "raw": entry, "stored": True if stored is entry else stored, "keep_raw": self.patch})
             if ts:
                 self.stamps.add(ts)
             if n is not None:
                 self.got.add(n)
                 self._recount()
-            self._save_state()
+            self.flush_if_due(False)
             ack = self.acked
         if self.engine is not None:
             self.jobs.put((entry, stored, depth, jpeg))
         return ack
 
     def photo_count(self) -> int:
-        return len(_photos(self.d)) + len(self.pending)
+        return len(self.photos) + len(self.pending)
 
     def touch_meta(self) -> None:
         """Keep the scan list's photo count about right (not on every frame)."""
@@ -328,7 +412,9 @@ class Session:
     def _seed(self) -> None:
         """Start from what the scan already covers: the old scan for a patch session, the session's own frames after a restart.
         photos.json only ever holds frames in the scan's frame, so all of it goes in; a patch session's unmatched frames go to pending_engine."""
-        for eng, entries in ((self.engine, _photos(self.d)), (self.pending_engine, list(self.pending))):
+        with self.lock:
+            mine = list(self.photos), list(self.pending)
+        for eng, entries in ((self.engine, mine[0]), (self.pending_engine, mine[1])):
             for p in entries if eng is not None else ():
                 try:
                     eng.add_frame(p, _depth_map(self.d, p))
@@ -338,7 +424,14 @@ class Session:
     def _work(self) -> None:
         self._seed()
         while True:
-            job = self.jobs.get()
+            try:
+                job = self.jobs.get(timeout=FLUSH_S / 2)
+            except queue.Empty:          # nothing new: a good moment to bring photos.json up to date
+                try:
+                    self.flush_if_due()
+                except Exception as e:
+                    print(f"live flush {self.id}: {type(e).__name__}: {e}", flush=True)
+                continue
             if job is None:
                 self.jobs.task_done()
                 break
@@ -360,6 +453,11 @@ class Session:
                 print(f"live frame {self.id}: {type(e).__name__}: {e}", flush=True)
             finally:
                 self.jobs.task_done()
+            if self.jobs.empty():
+                try:
+                    self.flush_if_due()
+                except Exception as e:
+                    print(f"live flush {self.id}: {type(e).__name__}: {e}", flush=True)
 
     def _maybe_register(self) -> None:
         """A registration takes seconds: try only when the worker has caught up, so frames do not pile up in memory meanwhile."""
@@ -374,7 +472,7 @@ class Session:
             with self.lock:
                 if self.aligned:
                     return {"ok": True, "message": "already matched", "rms_mm": self.mine.get("rms_mm")}
-                old = [p for p in _photos(self.d) if p.get("session", 1) != self.index]
+                old = [p for p in self.photos if p.get("session", 1) != self.index]
                 new = list(self.pending)
             try:
                 res = registration.register(self.d, old, new)
@@ -392,13 +490,11 @@ class Session:
             self.T = T
             self.push(msg)               # in the same locked step as T: no map in the old frame can be sent before `aligned`
             moved = registration.apply(self.pending, T)
-            photos = _photos(self.d)
-            have = {p["file"] for p in photos}
-            photos += [p for p in moved if p["file"] not in have]
-            _save_photos(self.d, photos)
+            have = {p["file"] for p in self.photos}
+            self.photos += [p for p in moved if p["file"] not in have]
             raw, self.pending = list(self.pending), []
             self.mine["rms_mm"] = rms_mm
-            self._save_state()
+            self._flush()                # at once: the journal's lines for these frames have no `stored` entry
             self.pending_engine = None
         if self.engine is not None:
             for p in raw:
@@ -444,6 +540,17 @@ class Session:
 
 
 # ---------------------------------------------------------------- registry
+
+def settle(d: Path, scan_id: str) -> None:
+    """Make photos.json whole before something reads it to build: flush the running session, or, after a crash, put the frames
+    the journal still holds back into it (a Session restores itself from the journal when it is made)."""
+    with SESSIONS_LOCK:
+        s = SESSIONS.get(scan_id)
+    if s is not None:
+        s.flush()
+    elif (d / JOURNAL).exists():
+        Session(d, scan_id, engine=False)
+
 
 def get_session(scan_id: str) -> Session:
     with SESSIONS_LOCK:
@@ -609,7 +716,7 @@ def _finish_now(d: Path, scan_id: str, info: dict | None) -> None:
 def _build(d: Path, scan_id: str, info: dict | None) -> None:
     sess = SESSIONS.get(scan_id)
     live = _read(d / "live.json", {})
-    if sess is None and live.get("patch"):
+    if sess is None and (live.get("patch") or (d / JOURNAL).exists()):
         sess = Session(d, scan_id, engine=False)        # after a restart: the unmatched frames of a patch still get their chance
     try:
         if scan_id in DELETED:
@@ -618,6 +725,7 @@ def _build(d: Path, scan_id: str, info: dict | None) -> None:
             sess.jobs.join()
             if not sess.aligned and sess.pending:
                 sess.try_register()
+            sess.flush()
         meta = _meta(d)
         if info:
             meta["phone"] = {**(meta.get("phone") or {}), **info}
@@ -671,7 +779,7 @@ def start_finish(scan_id: str, info: dict | None = None) -> dict:
         if s is not None:
             with s.lock:                 # no frame is stored after this, and no later write puts finish: false back
                 s.finished = True
-                s._save_state()
+                s._flush()
         else:
             live = _read(d / "live.json", {})
             live["finish"] = True
@@ -887,6 +995,7 @@ def append_frames(scan_id: str, photos: list[UploadFile] = File(default=[]), pho
     sess = get_session(scan_id)
     added, skipped = _store_batch(sess, entries, photos)
     sess.jobs.join()
+    sess.flush()
     return {"added": added, "skipped": skipped, "total": sess.photo_count()}
 
 
@@ -902,6 +1011,7 @@ def add_to_scan(scan_id: str, photos: list[UploadFile] = File(default=[]), photo
     sess = Session(d, scan_id, index=index, patch=True, kind=_old_kind(meta, "room"), engine=False)
     added, skipped = _store_batch(sess, entries, photos)
     res = sess.try_register()
+    sess.flush()                         # matched or not, the frames are kept (sessions.json)
     out = {"aligned": bool(res.get("ok")), "rms_mm": res.get("rms_mm"), "message": res.get("message", ""), "added": added, "skipped": skipped}
     if res.get("ok"):
         meta = _meta(d)
@@ -929,7 +1039,8 @@ def recover_builds() -> list[str]:
     """At server start: a scan whose meta says "building" but has no build running here was cut off by a restart (a crash, a
     redeploy). Its frames are all on disk, and a build only reads them and rewrites its own outputs, so it is started again once.
     If that one is cut off too, or there is nothing to build from, the scan is set to "error" with `interrupted: true`, so the
-    page's Re-convert and "Build what I have" (POST /api/scans/{id}/finish) work on it. Returns the ids it started again."""
+    page's Re-convert and "Build what I have" (POST /api/scans/{id}/finish) work on it. Captures and builds both get the frames
+    that were only in the journal (frames.jsonl) put back into photos.json first. Returns the ids it started again."""
     root = ctx.data()
     started = []
     if root is None or not root.is_dir():
@@ -937,8 +1048,11 @@ def recover_builds() -> list[str]:
     for d in sorted(root.iterdir()):
         try:
             meta = _meta(d)
-            if meta.get("status") != "building" or d.name in BUILDING or d.name in DELETED:
+            if meta.get("status") not in ("building", "capturing") or d.name in BUILDING or d.name in DELETED:
                 continue
+            settle(d, d.name)            # frames a crash left only in the journal go back into photos.json first
+            if meta.get("status") != "building":
+                continue                 # a capture: the phone resumes it, or the janitor builds it
             tries = int(meta.get("resume_tries", 0))
             can = (d / "live.json").exists() and any(p.get("depth_file") for p in _photos(d))
             if can and tries < RESUME_TRIES:
@@ -962,6 +1076,7 @@ def recover_builds() -> list[str]:
 def abandon(d: Path, scan_id: str) -> None:
     """A capture nobody has touched for IDLE_S: build what there is. A patch goes through the same finish, which tries its
     unmatched frames once more and puts the old status back if nothing could be added."""
+    settle(d, scan_id)
     live = _read(d / "live.json", {})
     if not live.get("patch") and not _photos(d):
         meta = _meta(d)

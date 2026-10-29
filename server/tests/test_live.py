@@ -206,6 +206,9 @@ def test_live_roundtrip_ack_resume_finish_equals_batch(client, rendered):
         assert maps[-1]["percent"] >= 80 and maps[-1]["grid"]["w"] > 0
         assert [m["seq"] for m in maps] == sorted(m["seq"] for m in maps)
 
+        early = json.loads((main.DATA / sid / "photos.json").read_text())["photos"]   # whole, maybe a few frames behind
+        assert 0 < len(early) <= len(photos)
+        live.SESSIONS[sid].flush()                                                # (it is rewritten every 2 s or so)
         stored = json.loads((main.DATA / sid / "photos.json").read_text())["photos"]
         assert len(stored) == len(photos)
         assert len({p["file"] for p in stored}) == len(photos) and len({p["timestamp"] for p in stored}) == len(photos)
@@ -392,6 +395,7 @@ def test_patch_over_the_socket_aligns_rewrites_and_rebuilds(client, rendered):
         ws.send_json({"type": "hello", "resume_after": len(b), "app": "test"})     # a map now (maps are only sent when something changed)
         you = wait_message(ws, "map")["you"]                                      # in the phone's OWN frame, not the old scan's
         assert np.linalg.norm(np.array(you) - (Tno @ np.r_[b_specs[-1][2], 1])[:3]) < 0.05, you
+        live.SESSIONS[sid].flush()                    # the files on disk trail the frames by up to about 2 s while capturing
         sessions = json.loads((main.DATA / sid / "sessions.json").read_text())["sessions"]
         s2 = next(s for s in sessions if s["index"] == 2)
         T = np.array(s2["transform"]).reshape(4, 4)
@@ -605,3 +609,89 @@ def test_a_build_cut_off_twice_is_an_error_that_reconvert_and_build_what_i_have_
     assert client.post(f"/api/scans/{b}/finish").json()["status"] == "building"
     assert wait_status(client, b) == "ok"
     assert client.post(f"/api/scans/{b}/finish").status_code == 409  # only an interrupted (or capturing) scan can be finished
+
+
+# ------------------------------------------------------------------ photos.json is not rewritten for every frame
+
+FAKE_FRAME = '''
+def fake_photo(i):
+    """A photos.json entry about the size of a real one (pose, intrinsics, exposure, ...), with a 4 x 3 depth map."""
+    return {"file": f"x{i}.jpg", "depth_file": f"x{i}.depth", "timestamp": 1000.0 + i * 0.5, "width": 1920, "height": 1440,
+            "depth_width": 4, "depth_height": 3, "intrinsics": [[1400.123456, 0, 0], [0, 1400.123456, 0], [960.5, 720.25, 1]],
+            "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0.1 * i, 1.3, -0.01 * i, 1]], "exposure_duration": 0.008333,
+            "exposure_offset": 0.0, "iso": 400.0, "lens": "wide", "tracking": "normal", "brightness": 412.5, "colour_temp": 5600.0}
+
+DEPTH = bytes(48)
+'''
+exec(FAKE_FRAME)
+
+
+def open_capture(root, sid="many"):
+    d = root / sid
+    (d / "photos").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"id": sid, "status": "capturing", "kind": "mesh"}))
+    (d / "live.json").write_text(json.dumps({"kind": "room", "session": 1, "patch": False, "got": [], "finish": False}))
+    return d
+
+
+def test_400_frames_cost_the_same_each_and_photos_json_is_always_whole(tmp_path, monkeypatch):
+    d = open_capture(tmp_path)
+    written = {}
+    real_write = live._write
+
+    def counting_write(p, obj):
+        real_write(p, obj)
+        written[p.name] = written.get(p.name, 0) + p.stat().st_size
+        if p.name == "photos.json":
+            json.loads(p.read_text())                                  # every version a reader can find is a whole file
+    monkeypatch.setattr(live, "_write", counting_write)
+    s = live.Session(d, "many", engine=False)
+    times = []
+    for i in range(1, 401):
+        t0 = time.perf_counter()
+        assert s.store_frame(i, fake_photo(i), b"jpg", DEPTH) == i
+        times.append(time.perf_counter() - t0)
+    s.flush()
+    final = (d / "photos.json").stat().st_size
+    assert len(json.loads((d / "photos.json").read_text())["photos"]) == 400
+    # rewriting the whole file per frame wrote about 200 times its final size; now a few times
+    assert written["photos.json"] < 8 * final, (written["photos.json"], final)
+    assert written["live.json"] < 30 * (d / "live.json").stat().st_size
+    first, last = sum(times[:100]) / 100, sum(times[-100:]) / 100
+    assert last < 3 * first + 0.002, (first, last)                    # per-frame cost does not grow with the scan
+    assert not (d / live.JOURNAL).exists()
+
+
+def test_a_killed_server_loses_no_acknowledged_frame(tmp_path):
+    import signal
+    import subprocess
+    d = open_capture(tmp_path, "killed")
+    server = Path(__file__).resolve().parent.parent
+    code = f"""
+import os, signal, sys
+sys.path.insert(0, {str(server)!r})
+from pathlib import Path
+from app import live
+{FAKE_FRAME}
+s = live.Session(Path({str(d)!r}), "killed", engine=False)
+for i in range(1, 251):
+    s.store_frame(i, fake_photo(i), b"jpg", DEPTH)
+print("stored", flush=True)
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert r.returncode == -signal.SIGKILL and "stored" in r.stdout, r.stderr
+    on_disk = json.loads((d / "photos.json").read_text())["photos"]  # whole, but behind: the last frames are only in the journal
+    assert len(on_disk) < 250 and (d / live.JOURNAL).exists()
+    with open(d / live.JOURNAL, "a") as f:
+        f.write('{"session": 1, "n": 251, "raw": {"file": "p25')            # the line a crash cut off (never acknowledged)
+    s = live.Session(d, "killed", engine=False)                          # the server starts again
+    photos = json.loads((d / "photos.json").read_text())["photos"]
+    assert [p["file"] for p in photos] == [f"p{i:03d}.jpg" for i in range(1, 251)]
+    assert s.acked == 250 and not (d / live.JOURNAL).exists()
+    assert json.loads((d / "live.json").read_text())["acked"] == 250
+    assert s.store_frame(250, fake_photo(250), b"jpg", DEPTH) == 250     # the phone resends what it was not sure about
+    assert s.store_frame(251, fake_photo(251), b"jpg", DEPTH) == 251
+    s.flush()
+    photos = json.loads((d / "photos.json").read_text())["photos"]
+    assert len(photos) == 251 and photos[-1]["file"] == "p251.jpg"
