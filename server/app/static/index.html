@@ -736,9 +736,11 @@ async function show(id) {
         const camList = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform);
         const camPos = camList.map(p => new THREE.Vector3(p.transform[3][0], p.transform[3][1], p.transform[3][2]));
         const camMid = camPos.length ? camPos.reduce((a, b) => a.add(b), new THREE.Vector3()).multiplyScalar(1 / camPos.length) : null;
-        const onSpot = camMid && camPos.every(v => v.distanceTo(camMid) < 0.35);   // turned on the spot: the arrows would pile up into a red star
+        // Turned on the spot: the arrows would pile up into a red star. A room built as a sweep (room.json) counts even when the
+        // hand swung the phone further than 35 cm (seen: 64 cm), the same as the server's rule (the phone says it was a sweep).
+        const onSpot = camMid && (room || meta.phone?.sweep === true || camPos.every(v => v.distanceTo(camMid) < 0.35));
         const cams = onSpot ? [youHere(camMid, ext)] : camList.map(p => {
-          const m = photoMarker(id, p); m.scale.setScalar(Math.max(0.05, ext / 8) / 0.25); return m;
+          const m = photoMarker(id, p); m.scale.setScalar(Math.min(0.4, Math.max(0.05, ext / 8)) / 0.25); return m;   // at most 40 cm long
         });
         if (room) { for (const o of roomLabels(room, ext)) cams.push(o); showRoomBox(room); } else showRoomBox(null);
         const withBox = o => { const g = new THREE.Group(); g.add(o); if (box3) { const b = box3.clone(); b.userData.nofit = true; g.add(b); } for (const m of cams) { const c = m.clone(); c.userData.nofit = true; g.add(c); } return g; };
@@ -981,11 +983,13 @@ function showRoomBox(room) {
   const b = $("roomBox");
   if (!room) { b.hidden = true; return; }
   const f = v => v == null ? "not seen" : `${v.toFixed(2)} m`;
-  const rows = ["front", "right", "back", "left"].map(n => `<td>${n}</td><td><b>${f(room.walls?.[n]?.wall_m)}</b></td><td class="hint">nearest ${f(room.walls?.[n]?.nearest_m)}</td>`);
+  // one row per surface: fits the narrow side column
+  const row = (n, d, note) => `<tr><td>${n}</td><td style="text-align:right;padding:2px 14px"><b>${f(d)}</b></td><td class="hint">${note}</td></tr>`;
   b.innerHTML = `<b>Room measured from where you stood</b> <span class="hint">(${Math.round((room.depth_coverage ?? 0) * 100)}% of the directions around you were seen; front = where you first pointed the phone)</span>` +
-    `<div style="margin:6px 0;font-size:1.05rem">${room.width_m ? `width <b>${room.width_m.toFixed(2)} m</b>` : "width not seen"} · ${room.length_m ? `length <b>${room.length_m.toFixed(2)} m</b>` : "length not seen"} · ${room.height_m ? `height <b>${room.height_m.toFixed(2)} m</b>` : "height not seen"}</div>` +
-    `<table style="border-collapse:collapse;font-size:13px"><tr>${rows.slice(0, 2).join("<td style='padding-left:18px'></td>")}</tr><tr>${rows.slice(2).join("<td style='padding-left:18px'></td>")}</tr>` +
-    `<tr><td>floor</td><td><b>${f(room.floor?.wall_m)}</b></td><td class="hint">below the phone</td><td style='padding-left:18px'>ceiling</td><td><b>${f(room.ceiling?.wall_m)}</b></td><td class="hint">above the phone</td></tr></table>` +
+    `<div style="margin:8px 0 10px;font-size:1.05rem;line-height:1.6">${room.width_m ? `width <b>${room.width_m.toFixed(2)} m</b>` : "width not seen"} · ${room.length_m ? `length <b>${room.length_m.toFixed(2)} m</b>` : "length not seen"} · ${room.height_m ? `height <b>${room.height_m.toFixed(2)} m</b>` : "height not seen"}</div>` +
+    `<table style="border-collapse:collapse;font-size:13px;white-space:nowrap">` +
+    ["front", "right", "back", "left"].map(n => row(n, room.walls?.[n]?.wall_m, `nearest ${f(room.walls?.[n]?.nearest_m)}`)).join("") +
+    row("floor", room.floor?.wall_m, "below the phone") + row("ceiling", room.ceiling?.wall_m, "above the phone") + `</table>` +
     (room.depth_coverage < 0.6 ? `<div class="hint" style="margin-top:6px">Walls marked "not seen" were not in the sweep. Turn the whole way round (and tip the phone up and down) from one spot to measure them.</div>` : "");
   b.hidden = false;
 }
