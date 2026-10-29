@@ -10,6 +10,8 @@
 	<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key><true/>
+	<key>UIFileSharingEnabled</key><true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key><true/>
 	<key>UILaunchScreen</key><dict/>
 	<key>UIRequiredDeviceCapabilities</key><array><string>arkit</string></array>
 	<key>NSCameraUsageDescription</key><string>Camera and LiDAR are used to scan rooms and objects.</string>

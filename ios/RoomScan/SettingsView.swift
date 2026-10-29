@@ -45,6 +45,7 @@ struct SettingsView: View {
             Section(footer: Text("Show the room in the web UI while you scan.")) {
                 Toggle("Live preview", isOn: $liveStream)
             }
+            StorageSection()
         }
         .navigationTitle("Settings")
         .task(id: serverURL) { serverVersion = await Self.fetchServerVersion(serverURL) }
