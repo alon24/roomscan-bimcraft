@@ -391,7 +391,16 @@ def reconvert(scan_id: str, scale: Annotated[float | None, Query(gt=0, lt=SCALE_
         meta["scale"] = scale
         meta.pop("real_height_mm", None)  # a scale typed by hand wins over the one worked out from the real height
         _save_meta(d, meta)
+    if (d / "live.json").exists() and (meta.get("interrupted") or not (d / "scan.ply").exists()):
+        try:                              # a live build cut off by a restart: the point cloud is made from the frames first
+            live_mod.build_cloud(d)
+        except ValueError as e:
+            meta.update(status="error", log=str(e))
+            _save_meta(d, meta)
+            return meta
     meta = _convert(d)
+    if meta.pop("interrupted", None) is not None:
+        _save_meta(d, meta)
     from_thread.run(hub.broadcast, {"type": "scan", "id": scan_id, "status": meta["status"]})
     return meta
 

@@ -32,6 +32,8 @@ router = APIRouter(tags=["live"])
 ctx = SimpleNamespace(data=lambda: None, hub=None, convert=None, loop=None)
 SESSIONS: dict[str, "Session"] = {}
 SESSIONS_LOCK = threading.Lock()
+BUILDING: set[str] = set()  # scans with a build running in this process (a "building" scan not in here was left by a stopped server)
+RESUME_TRIES = 1            # a build interrupted by a restart is started again this many times, then marked error (no crash loop)
 DELETED: set[str] = set()   # scans deleted while this server runs: nothing may recreate their folders (ids are never reused)
 FINISH_LOCK = threading.Lock()   # the socket, the web page and the janitor may all ask to finish the same scan at once
 MAP_EVERY = 1.5            # seconds between map messages (only sent when something changed)
@@ -50,6 +52,10 @@ def setup(data_fn, hub, convert) -> None:
 
 async def startup() -> None:
     ctx.loop = asyncio.get_running_loop()
+    try:
+        recover_builds()
+    except Exception as e:
+        print(f"live recover: {type(e).__name__}: {e}", flush=True)
     asyncio.create_task(_janitor())
 
 
@@ -581,12 +587,26 @@ def build_cloud(d: Path, max_points: int = 500_000) -> int:
     if len(P) > max_points:
         k = np.random.default_rng(0).choice(len(P), max_points, replace=False)
         P, C = P[k], C[k]
-    trimesh.PointCloud(P, colors=np.c_[C, np.full(len(C), 255, np.uint8)]).export(d / "scan.ply")
+    tmp = d / "scan.ply.tmp"            # a build stopped half way must not leave a cut-off scan.ply behind
+    trimesh.PointCloud(P, colors=np.c_[C, np.full(len(C), 255, np.uint8)]).export(tmp, file_type="ply")
+    tmp.replace(d / "scan.ply")
     return len(P)
 
 
 def _finish_now(d: Path, scan_id: str, info: dict | None) -> None:
     """Build the model from the stored frames (runs in its own thread: it survives the socket dropping)."""
+    BUILDING.add(scan_id)
+    try:
+        _build(d, scan_id, info)
+    finally:
+        BUILDING.discard(scan_id)
+        meta = _meta(d)
+        if scan_id not in DELETED and meta.get("status") != "building" and "resume_tries" in meta:
+            meta.pop("resume_tries")     # the build got to its end (well or not): a later restart starts counting again
+            _save_meta(d, meta)
+
+
+def _build(d: Path, scan_id: str, info: dict | None) -> None:
     sess = SESSIONS.get(scan_id)
     live = _read(d / "live.json", {})
     if sess is None and live.get("patch"):
@@ -611,6 +631,8 @@ def _finish_now(d: Path, scan_id: str, info: dict | None) -> None:
         _save_meta(d, meta)
         build_cloud(d)
         meta = ctx.convert(d)
+        if meta.pop("interrupted", None) is not None:
+            _save_meta(d, meta)
         _push(sess, {"type": "state", "status": "ready" if meta.get("status") == "ok" else "error", "scan_id": scan_id,
                      "message": meta.get("log", "")[:300]})
     except Exception as e:
@@ -642,7 +664,7 @@ def start_finish(scan_id: str, info: dict | None = None) -> dict:
         meta = _meta(d)
         if meta.get("status") == "building":
             return {"status": "building"}
-        if meta.get("status") != "capturing":
+        if meta.get("status") != "capturing" and not (meta.get("status") == "error" and meta.get("interrupted")):
             raise HTTPException(409, f"this scan is {meta.get('status')}, not capturing")
         with SESSIONS_LOCK:
             s = SESSIONS.get(scan_id)
@@ -902,6 +924,40 @@ def add_to_scan(scan_id: str, photos: list[UploadFile] = File(default=[]), photo
 
 
 # ---------------------------------------------------------------- abandoned captures
+
+def recover_builds() -> list[str]:
+    """At server start: a scan whose meta says "building" but has no build running here was cut off by a restart (a crash, a
+    redeploy). Its frames are all on disk, and a build only reads them and rewrites its own outputs, so it is started again once.
+    If that one is cut off too, or there is nothing to build from, the scan is set to "error" with `interrupted: true`, so the
+    page's Re-convert and "Build what I have" (POST /api/scans/{id}/finish) work on it. Returns the ids it started again."""
+    root = ctx.data()
+    started = []
+    if root is None or not root.is_dir():
+        return started
+    for d in sorted(root.iterdir()):
+        try:
+            meta = _meta(d)
+            if meta.get("status") != "building" or d.name in BUILDING or d.name in DELETED:
+                continue
+            tries = int(meta.get("resume_tries", 0))
+            can = (d / "live.json").exists() and any(p.get("depth_file") for p in _photos(d))
+            if can and tries < RESUME_TRIES:
+                meta["resume_tries"] = tries + 1
+                meta["log"] = "The server restarted during the build: building again from the stored frames."
+                _save_meta(d, meta)
+                threading.Thread(target=_finish_now, args=(d, d.name, None), daemon=True).start()
+                started.append(d.name)
+            else:
+                meta.pop("resume_tries", None)
+                meta["status"], meta["interrupted"] = "error", True
+                meta["log"] = ("The server stopped while this scan was being built" + (" (twice)." if can else ".")
+                               + " The frames are kept: use Re-convert or Build what I have to try again.")
+                _save_meta(d, meta)
+            _notify({"type": "scan", "id": d.name, "status": meta["status"]})
+        except Exception as e:
+            print(f"live recover {d.name}: {type(e).__name__}: {e}", flush=True)
+    return started
+
 
 def abandon(d: Path, scan_id: str) -> None:
     """A capture nobody has touched for IDLE_S: build what there is. A patch goes through the same finish, which tries its

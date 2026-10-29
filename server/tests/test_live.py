@@ -554,3 +554,54 @@ def test_delete_all_closes_every_live_session(client, rendered):
         assert "deleted" in wait_state(ws, "error")["message"]
     assert not live.SESSIONS and not list(main.DATA.iterdir())
     assert client.post(f"/api/scans/{b['scan_id']}/finish").status_code == 404
+
+
+# ------------------------------------------------------------------ a restart in the middle of a build
+
+def building_scan(root, d, photos, resume_tries=0):
+    """A live scan as a server that stopped mid-build leaves it: every frame on disk, meta.status still "building"."""
+    import shutil
+    sid = f"cut{resume_tries}{int(time.time() * 1000) % 100000}"
+    s = root / sid
+    shutil.copytree(d / "photos", s / "photos")
+    (s / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+    meta = {"id": sid, "name": "cut off", "kind": "mesh", "scale": 1.0, "photo_count": len(photos), "created_at": time.time(),
+            "status": "building", "live": {"kind": "sweep"}, "phone": {"sweep": True, "scan type": "Sweep from one spot"}}
+    if resume_tries:
+        meta["resume_tries"] = resume_tries
+    (s / "meta.json").write_text(json.dumps(meta))
+    (s / "live.json").write_text(json.dumps({"kind": "sweep", "session": 1, "patch": False, "got": list(range(1, len(photos) + 1)), "finish": True}))
+    (s / "scan.ply").write_text("ply\nformat ascii 1.0\nelement vert")          # cut off half way through
+    return sid
+
+
+def test_a_build_cut_off_by_a_restart_is_started_again_at_startup(tmp_path, monkeypatch, rendered):
+    d, photos = sweep_source(rendered)
+    root = tmp_path / "scans"
+    root.mkdir()
+    monkeypatch.setattr(main, "DATA", root)
+    live.SESSIONS.clear()
+    sid = building_scan(root, d, photos)
+    with TestClient(main.app) as c:                                  # the server starts: it finds the scan and builds it again
+        assert wait_status(c, sid) == "ok", c.get(f"/api/scans/{sid}").json()["log"]
+        meta = c.get(f"/api/scans/{sid}").json()
+        assert "resume_tries" not in meta and "interrupted" not in meta
+        assert (root / sid / "scan.ply").stat().st_size > 10_000 and not (root / sid / "scan.ply.tmp").exists()
+    live.SESSIONS.clear()
+
+
+def test_a_build_cut_off_twice_is_an_error_that_reconvert_and_build_what_i_have_fix(client, rendered):
+    d, photos = sweep_source(rendered)
+    a = building_scan(main.DATA, d, photos, resume_tries=1)          # it was started again once already and cut off again
+    assert live.recover_builds() == []
+    meta = client.get(f"/api/scans/{a}").json()
+    assert meta["status"] == "error" and meta["interrupted"] is True and "Re-convert" in meta["log"]
+    r = client.post(f"/api/scans/{a}/convert")                      # the point cloud is remade from the frames first
+    assert r.status_code == 200 and r.json()["status"] == "ok", r.json()["log"]
+    assert "interrupted" not in client.get(f"/api/scans/{a}").json()
+
+    b = building_scan(main.DATA, d, photos, resume_tries=1)
+    live.recover_builds()
+    assert client.post(f"/api/scans/{b}/finish").json()["status"] == "building"
+    assert wait_status(client, b) == "ok"
+    assert client.post(f"/api/scans/{b}/finish").status_code == 409  # only an interrupted (or capturing) scan can be finished
