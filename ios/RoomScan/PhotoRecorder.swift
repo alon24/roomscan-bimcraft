@@ -55,6 +55,7 @@ final class PhotoRecorder {
     init() {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-photos-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        TempFiles.hold(dir)      // never cleaned up while its scan uses it; the scan's screen deletes it when done
     }
 
     /// Blocks until every accepted frame is on disk (or failed). Quick: at most two frames are ever queued.

@@ -12,7 +12,8 @@ enum Uploader {
         // The body goes to a file and is sent from there: a 400-frame ring scan is about 240 MB, too much to hold in memory.
         let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(boundary).multipart")
         guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else { throw URLError(.cannotCreateFile) }
-        defer { try? FileManager.default.removeItem(at: bodyURL) }
+        TempFiles.hold(bodyURL)
+        defer { TempFiles.remove(bodyURL) }
         let out = try FileHandle(forWritingTo: bodyURL)
         var closed = false
         defer { if !closed { try? out.close() } }

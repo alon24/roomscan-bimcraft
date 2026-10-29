@@ -20,6 +20,9 @@ final class ObjectScanModel: ObservableObject {
     private var cancelled = false
 
     private var imagesDir: URL?
+    private var savedCopy: SavedScan?      // after Save the screen works from the phone's copy, and the temp folder is gone
+    private var uploads = 0
+    private var toDelete: [URL] = []
     private var watcher: Task<Void, Never>?
     private var feedbackWatcher: Task<Void, Never>?
 
@@ -37,7 +40,10 @@ final class ObjectScanModel: ObservableObject {
         releaseSession()
         state = .initializing
         usdzURL = nil; status = ""; progress = 0; feedback = ""
+        dispose(imagesDir?.deletingLastPathComponent())      // the last scan's folder; a saved copy is in the phone's storage
+        savedCopy = nil; photoURLs = []; photosMetaURL = nil
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("object-\(UUID().uuidString)")
+        TempFiles.hold(base)
         let images = base.appendingPathComponent("Images")
         try? FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
         imagesDir = images
@@ -121,6 +127,9 @@ final class ObjectScanModel: ObservableObject {
         photoSession?.cancel()
         session?.cancel()
         releaseSession()
+        // A cancelled build may still be closing its files: leave that folder to the clean-up at launch.
+        if reconstructing { TempFiles.release(imagesDir?.deletingLastPathComponent()) } else { dispose(imagesDir?.deletingLastPathComponent()) }
+        imagesDir = nil; savedCopy = nil
         reconstructing = false
         feedback = ""
         resetResult()
@@ -196,18 +205,51 @@ final class ObjectScanModel: ObservableObject {
     }
 
     func saveOnPhone() {
+        if savedCopy != nil { status = "Already saved on the phone (Models tab, On this phone)"; return }
         guard let package else { return }
-        status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+        status = keepOnPhone(package) ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+    }
+
+    /// Copy into the phone's storage, then work from that copy and delete the temp folder.
+    private func keepOnPhone(_ p: ScanPackage) -> Bool {
+        guard let s = try? LocalStore.save(p) else { return false }
+        savedCopy = s
+        let q = LocalStore.package(s)
+        usdzURL = q.usdz; photoURLs = q.photos; photosMetaURL = q.photosMeta
+        dispose(imagesDir?.deletingLastPathComponent())
+        imagesDir = nil
+        return true
+    }
+
+    /// Delete a temp folder, but only once no upload is reading from it.
+    private func dispose(_ url: URL?) {
+        if let url { toDelete.append(url) }
+        guard uploads == 0 else { return }
+        toDelete.forEach { TempFiles.remove($0) }
+        toDelete = []
     }
 
     func upload(server: String) async {
+        uploads += 1
+        defer { uploads -= 1; dispose(nil) }
+        if let s = savedCopy {
+            status = "Uploading…"
+            do {
+                _ = try await LocalStore.upload(s, server: server)
+                status = "Uploaded"
+            } catch {
+                status = "Upload failed: \(error.localizedDescription). It is saved on the phone: upload it later from Models, On this phone."
+                Reporter.report(tab: "object", message: "Upload failed", detail: "\(error)")
+            }
+            return
+        }
         guard let package else { return }
         status = "Uploading…"
         do {
             _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
-            let saved = (try? LocalStore.save(package)) != nil
+            let saved = keepOnPhone(package)
             status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "object", message: "Upload failed", detail: "\(error)")
         }

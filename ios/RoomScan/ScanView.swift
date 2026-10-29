@@ -26,6 +26,9 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     private var recorder: PhotoRecorder?
     private var photoTimer: Timer?
     private var result: CapturedRoom?
+    private var savedCopy: SavedScan?      // after Save the screen works from the phone's copy, and the temp folder is gone
+    private var uploads = 0
+    private var toDelete: [URL] = []
     private var lastLive = Date.distantPast
     @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @AppStorage("liveStream") private var liveStream = true
@@ -142,7 +145,8 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         scanning = false; quick = false; quickLeft = nil
         jsonURL = nil; usdzURL = nil; result = nil; liveRoom = nil
         status = ""; hud = ""; wallCount = 0
-        photoURLs = []; photosMetaURL = nil; recorder = nil
+        dispose(recorder?.dir)
+        photoURLs = []; photosMetaURL = nil; recorder = nil; savedCopy = nil
         live3D.reset()
         Reporter.log("room: reset by user")
     }
@@ -159,7 +163,8 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
             return
         }
         DispatchQueue.main.async { [live3D] in live3D.update(processedResult) }
-        let dir = FileManager.default.temporaryDirectory
+        // In the scan's own temp folder, deleted with it (Reset, Save, the next scan, or the clean-up at launch).
+        let dir = recorder?.dir ?? FileManager.default.temporaryDirectory
         let json = dir.appendingPathComponent("scan.json")
         let usdz = dir.appendingPathComponent("scan.usdz")
         do {
@@ -187,18 +192,50 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     }
 
     func saveOnPhone() {
+        if savedCopy != nil { status = "Already saved on the phone (Models tab, On this phone)"; return }
         guard let package else { return }
-        status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+        status = keepOnPhone(package) ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+    }
+
+    /// Copy into the phone's storage, then work from that copy and delete the temp folder.
+    private func keepOnPhone(_ p: ScanPackage) -> Bool {
+        guard let s = try? LocalStore.save(p) else { return false }
+        savedCopy = s
+        let q = LocalStore.package(s)
+        jsonURL = q.json; usdzURL = q.usdz; photoURLs = q.photos; photosMetaURL = q.photosMeta
+        dispose(recorder?.dir)
+        return true
+    }
+
+    /// Delete a temp folder, but only once no upload is reading from it.
+    private func dispose(_ url: URL?) {
+        if let url { toDelete.append(url) }
+        guard uploads == 0 else { return }
+        toDelete.forEach { TempFiles.remove($0) }
+        toDelete = []
     }
 
     @MainActor func upload(server: String) async {
+        uploads += 1
+        defer { uploads -= 1; dispose(nil) }
+        if let s = savedCopy {
+            status = "Uploading…"
+            do {
+                _ = try await LocalStore.upload(s, server: server)
+                status = "Uploaded"
+            } catch {
+                status = "Upload failed: \(error.localizedDescription). It is saved on the phone: upload it later from Models, On this phone."
+                Reporter.report(tab: "room", message: "Upload failed", detail: "\(error)")
+            }
+            return
+        }
         guard let package else { return }
         status = "Uploading…"
         do {
             _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
-            let saved = (try? LocalStore.save(package)) != nil
+            let saved = keepOnPhone(package)
             status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "room", message: "Upload failed", detail: "\(error)")
         }

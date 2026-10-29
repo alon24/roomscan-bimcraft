@@ -23,6 +23,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     var canBuildOnPhone: Bool { ring.enabled && !outlining && !maskURLs.isEmpty && !buildingOnPhone && phoneResult == nil }
     @Published var modelScene: SCNScene?
     private var recorder: PhotoRecorder?
+    private var savedCopy: SavedScan?      // after Save the screen works from the phone's copy, and the temp folder is gone
+    private var uploads = 0
+    private var toDelete: [URL] = []
     private var timer: Timer?
     private var ticks = 0
     struct Dot { var x: Float; var y: Float; var color: SIMD3<Float> }
@@ -104,6 +107,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false; phoneResult = nil
+        dispose(recorder?.dir)      // an earlier scan that produced nothing
+        savedCopy = nil
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         ring.begin()
@@ -186,7 +191,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         ringActive = false
         cloud = []; cloudColours = []; occupied = []; cloudGen += 1
         lock.lock(); meshAnchors = [:]; lock.unlock()
-        recorder = nil
+        dispose(recorder?.dir)
+        TempFiles.remove(phoneResult?.stl)
+        recorder = nil; savedCopy = nil
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
         scanning = false
         hud = ""; status = ""
@@ -217,8 +224,10 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
         status = "Saving…"
         let rec = recorder
+        // In the scan's own temp folder, deleted with it (New scan, Save, the next scan, or the clean-up at launch).
+        let plyDir = rec?.dir ?? FileManager.default.temporaryDirectory
         DispatchQueue.global().async { [weak self] in
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("scan.ply")
+            let url = plyDir.appendingPathComponent("scan.ply")
             // ARKit's mesh when it produced one, otherwise the depth point cloud (the server meshes it).
             let ok = anchors.isEmpty ? self?.writeCloudPLY(to: url) ?? false : Self.writePLY(anchors, to: url)
             let scene = anchors.isEmpty ? self?.cloudScene() ?? SCNScene() : Self.modelScene(anchors)
@@ -298,6 +307,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 Screen.awake(false)
                 if let r {
                     self.phoneResult = r
+                    TempFiles.hold(r.stl)      // the STL button shares it
                     self.modelScene = r.scene
                     self.serverOnly = false
                     self.status = String(format: "Built on the phone from %d photos: %.1f × %.1f × %.1f mm", r.views, r.sizeMM.x, r.sizeMM.y, r.sizeMM.z)
@@ -318,11 +328,32 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     func saveOnPhone() {
         if outlining { status = "Still outlining the part in the photos, save again in a moment"; return }
+        if savedCopy != nil { status = "Already saved on the phone (Models tab, On this phone)"; return }
         guard let package else { return }
-        status = (try? LocalStore.save(package)) != nil ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+        status = keepOnPhone(package) ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+    }
+
+    /// Copy into the phone's storage, then work from that copy (Upload, Build here) and delete the temp folder.
+    private func keepOnPhone(_ p: ScanPackage) -> Bool {
+        guard let s = try? LocalStore.save(p) else { return false }
+        savedCopy = s
+        let q = LocalStore.package(s)
+        plyURL = q.mesh; photoURLs = q.photos; photosMetaURL = q.photosMeta; maskURLs = q.masks
+        dispose(recorder?.dir)
+        return true
+    }
+
+    /// Delete a temp folder, but only once no upload is reading from it.
+    private func dispose(_ url: URL?) {
+        if let url { toDelete.append(url) }
+        guard uploads == 0 else { return }
+        toDelete.forEach { TempFiles.remove($0) }
+        toDelete = []
     }
 
     @MainActor func upload(server: String) async {
+        uploads += 1
+        defer { uploads -= 1; dispose(nil) }
         // Scanned with the live link: the frames are (nearly) all on the server already, so only the build is left. If that cannot be
         // done (the connection never came back), fall through to the ordinary upload from the phone, which always works.
         if live.scanID != nil, let rec = recorder {
@@ -338,6 +369,17 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 live.abandon()
             }
         }
+        if let s = savedCopy {
+            status = "Uploading…"
+            do {
+                _ = try await LocalStore.upload(s, server: server)
+                status = "Uploaded"
+            } catch {
+                status = "Upload failed: \(error.localizedDescription). It is saved on the phone: upload it later from Models, On this phone."
+                Reporter.report(tab: "mesh", message: "Upload failed", detail: "\(error)")
+            }
+            return
+        }
         guard let package else { return }
         if outlining { status = "Still outlining the part in the photos, upload again in a moment"; return }
         status = "Uploading…"
@@ -345,7 +387,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
-            let saved = (try? LocalStore.save(package)) != nil
+            let saved = keepOnPhone(package)
             status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "mesh", message: "Upload failed", detail: "\(error)")
         }

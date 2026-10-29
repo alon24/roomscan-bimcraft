@@ -37,7 +37,13 @@ struct RoomScanApp: App {
                 .toolbarBackground(.visible, for: .tabBar)
                 .tint(Theme.accent)
                 .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gear") } }
-                .task { Reporter.log("app launched"); await Reporter.flush(); await Self.syncRing() }
+                .task {
+                    Reporter.log("app launched")
+                    // Scan temp files left behind (the app was closed mid-scan, or a result was never saved or reset). Nothing is in
+                    // use yet at launch; saved and waiting scans are in Documents and are not touched.
+                    Task.detached(priority: .utility) { TempFiles.purge(olderThan: 24 * 3600) }
+                    await Reporter.flush(); await Self.syncRing()
+                }
                 .overlay(alignment: .bottom) { UploadProgressLine().padding(.bottom, 56).allowsHitTesting(false) }
                 .overlay(alignment: .bottomLeading) {
                     Text(AppVersion.text).font(.system(size: 9)).foregroundStyle(.white)
