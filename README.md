@@ -44,7 +44,7 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
 2. Aim the crosshair at a wall. The big number is the distance in m, cm and mm.
    - Green dot: steady, trust it. Orange: hold still. Red: too close (under 25 cm) or too far (over 5 m).
 3. **The bullseye in the middle makes the pin.** Aim it at the spot (the picture can be zoomed to place it exactly), then
-   **tap the bullseye** (or the viewfinder-plus button). The pin stays **fixed on that spot in the room** while you move.
+   press the big **Pin here** button (or tap the bullseye). The pin stays **fixed on that spot in the room** while you move.
    Tapping anywhere else on the picture does nothing, so you can't pin by accident. Pins are numbered and **independent**:
    nothing is joined unless you say so. A pin out of view gets an **arrow at the screen edge** pointing the way to turn.
    **Tap a pin's bullseye** to open its menu: select, measure from it to the crosshair, keep a line to the selected pin,
@@ -334,6 +334,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.44.x (app, Measure) | A big **Pin here** button drops a pin where the crosshair points, so you no longer have to tap the bullseye with your finger. |
 | 0.44.x (server, review fixes 2) | Deleting a scan during a live capture tells the phone and closes its connection (late frames refused, no folder comes back); a restart in the middle of a build builds the scan again once, then marks it error so **Re-convert** or **Build what I have** work; live frames are journaled and `photos.json` is rewritten every couple of seconds instead of after every frame (no slowdown on long captures, nothing acknowledged is lost in a crash); live maps arrive in order; matching a patch session to the old scan is about 4 times faster; depth pixels are unprojected at their centres (about 5 mm closer on synthetic rooms); a native crash in the test run is logged for the next run. |
 | 0.44.x (server, web) | **Storage** panel (paths to copy, sizes, clear temp / rebuildable files / all scans) and `tools/open-data.sh`; errors show in a message bar instead of a browser alert; a scan opened by a click or link is no longer replaced by a live capture (a **Live capture running: show it** button appears instead); cuts through many islands cap their connectors; colour suggestions say when a model has no colours. |
 | 0.44.x (app, review fixes) | Upload checks free space first and says how much it needs; a failed upload moves the scan into On this phone; Save on a live scan says honestly whether the server draft was removed and retries offline deletes at the next start; Delete temp files keeps shared zips and Models downloads for a day and asks first; camera hand-off between tabs is order-safe; New scan during Saving drops the late result; Measure: deleted pins no longer return from the old map, no pin-number clash before the saved room is found, Move keeps the pin, a large calibration offset is flagged; saved scans with old or partial manifests still upload. |

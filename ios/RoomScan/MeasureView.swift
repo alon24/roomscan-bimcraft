@@ -615,7 +615,7 @@ struct MeasureView: View {
                 let t = Self.text(d, .wall)
                 Text(t.big).font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
-                Text("Aim the bullseye at a spot and tap it to pin. Tap two pins to measure between them.").font(.caption2).foregroundStyle(.secondary)
+                Text("Aim the crosshair at a spot and press Pin here (or tap the bullseye). Tap two pins to measure between them.").font(.caption2).foregroundStyle(.secondary)
             } else {
                 Text("—").font(.system(size: 44, weight: .bold, design: .rounded))
             }
@@ -639,17 +639,22 @@ struct MeasureView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 10) {
-            Button { model.showDepth.toggle(); if !model.showDepth { model.overlay = nil } } label: { Image(systemName: model.showDepth ? "eye.fill" : "eye.slash") }
-                .buttonStyle(CaptureButtonStyle())
-            Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised").lineLimit(1) }
-                .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil || model.holding)
-            Button { model.pinAtCrosshair() } label: { Image(systemName: "plus.viewfinder") }
-                .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil)
-            Button { showPins = true } label: { Label("\(model.pins.count)", systemImage: "mappin.and.ellipse").lineLimit(1) }
-                .buttonStyle(CaptureButtonStyle())
-            Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet").lineLimit(1) }
-                .buttonStyle(CaptureButtonStyle())
+        VStack(spacing: 10) {
+            // The main action: drops a pin where the crosshair points, so no finger has to hit the bullseye.
+            Button { model.pinAtCrosshair() } label: {
+                Label("Pin here", systemImage: "plus.viewfinder").font(.title3.bold()).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil)
+            HStack(spacing: 10) {
+                Button { model.showDepth.toggle(); if !model.showDepth { model.overlay = nil } } label: { Image(systemName: model.showDepth ? "eye.fill" : "eye.slash") }
+                    .buttonStyle(CaptureButtonStyle())
+                Button { model.freeze() } label: { Label("Hold", systemImage: "hand.raised").lineLimit(1) }
+                    .buttonStyle(CaptureButtonStyle()).disabled(model.distance == nil || model.holding)
+                Button { showPins = true } label: { Label("\(model.pins.count)", systemImage: "mappin.and.ellipse").lineLimit(1) }
+                    .buttonStyle(CaptureButtonStyle())
+                Button { showList = true } label: { Label("\(model.saved.count)", systemImage: "list.bullet").lineLimit(1) }
+                    .buttonStyle(CaptureButtonStyle())
+            }
         }
         .padding(.bottom, 52)
     }
@@ -765,7 +770,7 @@ struct MeasurementList: View {
                 }
                 .onDelete { model.remove($0.map { model.saved[$0].id }) }
             }
-            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nAim the bullseye and tap it to pin a spot, tap two pins, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
+            .overlay { if model.saved.isEmpty { Text("Nothing saved yet.\nAim the crosshair and press Pin here, tap two pins, then Hold and Save.").multilineTextAlignment(.center).foregroundStyle(.secondary) } }
             .navigationTitle("Measurements")
             .toolbar { Button("Done") { dismiss() } }
         }
