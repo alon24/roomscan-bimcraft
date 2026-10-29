@@ -239,7 +239,7 @@ class Session:
             with self.lock:
                 self._flush()
         if engine:
-            threading.Thread(target=self._work, daemon=True).start()
+            threading.Thread(target=self._work, daemon=True, name=f"live-work-{scan_id}").start()
 
     # -- state
 
@@ -787,7 +787,7 @@ def start_finish(scan_id: str, info: dict | None = None) -> dict:
         meta["status"] = "building"
         _save_meta(d, meta)
     _notify({"type": "scan", "id": scan_id, "status": "building"})
-    threading.Thread(target=_finish_now, args=(d, scan_id, info), daemon=True).start()
+    threading.Thread(target=_finish_now, args=(d, scan_id, info), daemon=True, name=f"live-build-{scan_id}").start()
     return {"status": "building"}
 
 
@@ -1059,7 +1059,7 @@ def recover_builds() -> list[str]:
                 meta["resume_tries"] = tries + 1
                 meta["log"] = "The server restarted during the build: building again from the stored frames."
                 _save_meta(d, meta)
-                threading.Thread(target=_finish_now, args=(d, d.name, None), daemon=True).start()
+                threading.Thread(target=_finish_now, args=(d, d.name, None), daemon=True, name=f"live-build-{d.name}").start()
                 started.append(d.name)
             else:
                 meta.pop("resume_tries", None)
