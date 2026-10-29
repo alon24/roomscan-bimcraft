@@ -1342,17 +1342,19 @@ const heat = (d, lim, signed) => {   // blue = inside the reference, red = outsi
   return t >= 0 ? [1, 1 - t, 1 - t] : [1 + t, 1 + t, 1];
 };
 
-let fitRend = null;   // the deviation viewer: one WebGL context at a time
-function clearFit() { fitRend?.dispose(); fitRend?.forceContextLoss(); fitRend = null; $("fitOut").replaceChildren(); $("fitHint").textContent = ""; }
+let fitRend = null, fitSeq = 0;   // the deviation viewer: one WebGL context at a time; fitSeq: only the newest compare draws
+function clearFit() { fitSeq++; fitRend?.dispose(); fitRend?.forceContextLoss(); fitRend = null; $("fitOut").replaceChildren(); $("fitHint").textContent = ""; }
 
 async function fitCheck(id, file, against) {
   const out = $("fitOut"), hint = $("fitHint");
   clearFit(); hint.textContent = "Lining the reference up and measuring (about 10 seconds)…";
+  const seq = fitSeq, stale = () => current !== id || seq !== fitSeq;   // a second compare (or another scan) started meanwhile
   const f = new FormData(); if (against) f.append("against", against); else f.append("reference", file);
   const r = await fetch(`/api/scans/${id}/fit`, { method: "POST", body: f });
-  if (current !== id) return;
+  if (stale()) return;
   if (!r.ok) { hint.textContent = "Could not compare: " + ((await r.json().catch(() => ({}))).detail || r.status); return; }
   const m = await r.json();
+  if (stale()) return;
   const lim = Math.max(0.5, m.p95_mm);
   hint.textContent = "";
   const holder = document.createElement("div"); holder.style.cssText = "flex:2;min-width:240px;height:320px;border:1px solid var(--line);border-radius:6px";

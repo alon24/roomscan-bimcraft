@@ -117,18 +117,24 @@ async function load(file) {
   c.getContext("2d").drawImage(bmp, 0, 0, W, H);
   img = c; cv.width = W; cv.height = H;
   blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.92));
-  meas = []; pending = null; $("flatOut").replaceChildren();
+  meas = []; pending = null; flatSeq++; $("flatOut").replaceChildren();
   $("work").hidden = false; $("results").hidden = false;
   await detect();
 }
 $("cam").onchange = e => load(e.target.files[0]);
 $("pick").onchange = e => load(e.target.files[0]);
 
+// Every request that sets the corners or the scale takes a number; an answer that comes back after a newer request was sent
+// (the reference changed, another photo, a corner dragged) is thrown away instead of overwriting the newer state.
+let reqSeq = 0;
+
 async function detect() {
+  const seq = ++reqSeq;
   $("status").textContent = "Looking for the reference…"; $("warn").textContent = "";
   const f = refBody(); f.append("file", blob, "photo.jpg");
   const r = await fetch("/api/photo/detect", { method: "POST", body: f });
   const j = await r.json().catch(() => ({}));
+  if (seq !== reqSeq) return;
   if (!r.ok) { $("status").textContent = "Problem: " + (j.detail || r.status); return; }
   if (j.found) {
     corners = j.corners; Hm = j.H;
@@ -146,9 +152,11 @@ let hTimer = 0;
 function newH() {
   clearTimeout(hTimer);
   hTimer = setTimeout(async () => {
+    const seq = ++reqSeq;
     const r = await fetch("/api/photo/homography", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ corners, ...refJson() }) });
     const j = await r.json().catch(() => ({}));
+    if (seq !== reqSeq) return;
     if (!r.ok) { $("status").textContent = "Problem: " + (j.detail || r.status); return; }
     Hm = j.H; $("warn").textContent = j.warning || ""; $("status").textContent = "Reference set. Tap two points to measure.";
     meas.forEach(m => m.mm = dist(m.a, m.b)); draw(); list();
@@ -225,13 +233,17 @@ window.onresize = () => draw();
 
 $("undo").onclick = () => { if (pending) pending = null; else meas.pop(); draw(); list(); };
 $("clear").onclick = () => { meas = []; pending = null; draw(); list(); };
-let flatUrl = null;
+let flatUrl = null, flatSeq = 0;
 $("flatBtn").onclick = async () => {
+  const seq = ++flatSeq;
   const out = $("flatOut"); out.textContent = "Straightening…";
   const f = refBody(); f.append("file", blob, "photo.jpg"); f.append("corners", JSON.stringify(corners));
   const r = await fetch("/api/photo/rectify", { method: "POST", body: f });
+  if (seq !== flatSeq) return;   // pressed again (or a new photo) while this one was on its way
   if (!r.ok) { out.textContent = "Could not straighten: " + ((await r.json().catch(() => ({}))).detail || r.status); return; }
-  const ppm = r.headers.get("X-Px-Per-Mm"), url = URL.createObjectURL(await r.blob());
+  const data = await r.blob();
+  if (seq !== flatSeq) return;
+  const ppm = r.headers.get("X-Px-Per-Mm"), url = URL.createObjectURL(data);
   if (flatUrl) URL.revokeObjectURL(flatUrl);   // each straightened image is a few MB held by its blob URL
   flatUrl = url;
   const im = Object.assign(document.createElement("img"), { id: "flat", src: url, alt: "Top-down view" });
