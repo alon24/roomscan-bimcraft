@@ -41,7 +41,7 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
 
 1. Open **Measure**. The camera is live and LiDAR depth is painted over it
    (**red = near, blue = far**, up to about 4 m).
-2. Aim the crosshair at a wall. The big number is the distance in m, cm and mm.
+2. Aim the crosshair at a wall. The big number (in a see-through card at the top, so the middle stays clear) is the distance in m, cm and mm.
    - Green dot: steady, trust it. Orange: hold still. Red: too close (under 25 cm) or too far (over 5 m).
 3. **The bullseye in the middle makes the pin.** Aim it at the spot (the picture can be zoomed to place it exactly), then
    press the big **Pin here** button (or tap the bullseye). The pin stays **fixed on that spot in the room** while you move.
@@ -64,7 +64,7 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
    saved place…" turns green and everything reappears. Deleting the last pin forgets the saved room.
 7. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
 8. The **eye** button hides or shows the depth colours.
-9. **Pinch to zoom** (or the +/- at the top, 1× to 4×) to magnify the picture and place a pin precisely on a corner.
+9. **Pinch to zoom** (1× to 4×) to magnify the picture and place a pin precisely on a corner.
    Zoom is display only: the reading at the crosshair and your pins do not change.
 
 #### Calibrate it against your tape (you stay in control)
@@ -334,7 +334,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
-| 0.44.x (app, Measure) | A big **Pin here** button drops a pin where the crosshair points, so you no longer have to tap the bullseye with your finger. |
+| 0.44.x (app, Measure) | A big **Pin here** button drops a pin where the crosshair points, so you no longer have to tap the bullseye with your finger. The reading moved to the top in a see-through card, and the +/- zoom buttons are gone (pinch to zoom). |
 | 0.44.x (server, review fixes 2) | Deleting a scan during a live capture tells the phone and closes its connection (late frames refused, no folder comes back); a restart in the middle of a build builds the scan again once, then marks it error so **Re-convert** or **Build what I have** work; live frames are journaled and `photos.json` is rewritten every couple of seconds instead of after every frame (no slowdown on long captures, nothing acknowledged is lost in a crash); live maps arrive in order; matching a patch session to the old scan is about 4 times faster; depth pixels are unprojected at their centres (about 5 mm closer on synthetic rooms); a native crash in the test run is logged for the next run. |
 | 0.44.x (server, web) | **Storage** panel (paths to copy, sizes, clear temp / rebuildable files / all scans) and `tools/open-data.sh`; errors show in a message bar instead of a browser alert; a scan opened by a click or link is no longer replaced by a live capture (a **Live capture running: show it** button appears instead); cuts through many islands cap their connectors; colour suggestions say when a model has no colours. |
 | 0.44.x (app, review fixes) | Upload checks free space first and says how much it needs; a failed upload moves the scan into On this phone; Save on a live scan says honestly whether the server draft was removed and retries offline deletes at the next start; Delete temp files keeps shared zips and Models downloads for a day and asks first; camera hand-off between tabs is order-safe; New scan during Saving drops the late result; Measure: deleted pins no longer return from the old map, no pin-number clash before the saved room is found, Move keeps the pin, a large calibration offset is flagged; saved scans with old or partial manifests still upload. |

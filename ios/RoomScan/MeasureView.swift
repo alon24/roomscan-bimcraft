@@ -58,6 +58,8 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     var camPos = SIMD3<Float>(0, 0, 0)
     var zoom: CGFloat = 1                // display zoom, so a tap can be matched to a pin
+    @Published var uiTop: CGFloat = 0    // the readout card covers the screen above this (points from the top)
+    @Published var uiBottom: CGFloat = 0 // and the buttons cover this much at the bottom; taps and pins stay clear of both
     private var pinAnchors: [String: ARAnchor] = [:]
     private var gone = Set<UUID>()             // anchors removed by Move or Delete: a late update must not bring them back
     private var savedHighest = 0               // highest pin number in the saved room, so a new pin never reuses one not found yet
@@ -299,10 +301,10 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         let p = g.location(in: sceneView)
-        // The readout card and buttons sit at the bottom; a tap there is not on the picture. (Compared on screen: the view is
-        // magnified about its centre, so its own y is `zoom` times closer to the middle.)
-        let midY = sceneView.bounds.midY
-        guard midY + (p.y - midY) * zoom < sceneView.bounds.height - 300 else { return }
+        // The readout card sits at the top and the buttons at the bottom; a tap there is not on the picture. (Compared on
+        // screen: the view is magnified about its centre, so its own y is `zoom` times closer to the middle.)
+        let midY = sceneView.bounds.midY, y = midY + (p.y - midY) * zoom
+        guard y > uiTop && y < sceneView.bounds.height - uiBottom else { return }
         // Only the bullseye in the middle creates a pin: aim it at the spot, then tap it. (The screen is magnified about
         // its centre, so a distance on screen is `zoom` times the distance in the camera view's own coordinates.)
         let centre = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
@@ -546,10 +548,17 @@ struct MeasureView: View {
                     Text("No LiDAR on this phone: readings use the camera only and are less exact.")
                         .font(.caption).padding(8).background(.red.opacity(0.8), in: RoundedRectangle(cornerRadius: 8)).foregroundStyle(.white)
                 }
-                ZoomControl(zoom: $zoom)
-                Spacer()
                 readout
+                    .background(GeometryReader { g in
+                        Color.clear.onAppear { model.uiTop = g.frame(in: .global).maxY }
+                            .onChange(of: g.frame(in: .global)) { _, f in model.uiTop = f.maxY }
+                    })
+                Spacer()
                 controls
+                    .background(GeometryReader { g in
+                        Color.clear.onAppear { model.uiBottom = UIScreen.main.bounds.height - g.frame(in: .global).minY }
+                            .onChange(of: g.frame(in: .global)) { _, f in model.uiBottom = UIScreen.main.bounds.height - f.minY }
+                    })
             }
             .padding(.horizontal, 16).padding(.bottom, 8)
         }
@@ -635,7 +644,11 @@ struct MeasureView: View {
                 }.padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity).padding(12).card()
+        // Only a light tint, no blur, so the room stays visible behind the numbers.
+        .frame(maxWidth: .infinity).padding(12)
+        .shadow(color: .black.opacity(0.6), radius: 2)
+        .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .environment(\.colorScheme, .dark)
     }
 
     private var controls: some View {
@@ -668,7 +681,8 @@ private struct PinLayer: View {
     let zoom: CGFloat
 
     private var screen: ScreenProjector {
-        ScreenProjector(view: model.sceneView, size: size, zoom: zoom, side: 10, top: 60, bottom: 280, arrowBand: 220, arrowInset: 70)
+        ScreenProjector(view: model.sceneView, size: size, zoom: zoom, side: 10, top: model.uiTop + 10, bottom: model.uiBottom + 10,
+                       arrowBand: model.uiBottom - model.uiTop, arrowInset: model.uiTop + 30)
     }
     private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) { screen.project(w) }
     private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool { screen.onScreen(q) }
