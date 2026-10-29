@@ -4,7 +4,8 @@ Every ARKit session has its own world, but gravity is shared: Y is up in both. S
 about Y and a shift in X, Y and Z (4 numbers). They are found in two steps:
   1. a search over the turn: for every 3 degrees, the top-down wall/furniture density of the new points is correlated with the old
      one (FFT) to give the best shift for that turn;
-  2. the best two turns that are clearly different are refined with ICP restricted to those 4 numbers.
+  2. every candidate turn gets a short ICP restricted to those 4 numbers on a small sample of the points, and the best three a full
+     one (most of the time used to go into 40 rounds of full ICP for all six candidates).
 Two candidates that fit about equally well (a symmetric empty room, the same view from two sides) are reported as ambiguous
 instead of guessed."""
 import math
@@ -22,6 +23,8 @@ GRID = 0.05
 MAX_RMS = 0.08        # metres: a good fit is a few cm (LiDAR noise); worse than this is not the same room
 MIN_INLIERS = 0.35    # share of points within 10 cm of the other cloud
 AMBIGUOUS = 1.10      # another clearly different turn that fits within 10% as well as the best one: do not guess
+SEARCH_R = 0.5        # metres: ICP pairs a point only with an old point this close (the search stops there, which is much faster)
+COARSE_PTS, COARSE_ITERS, REFINE = 3000, 12, 3
 
 
 def cloud(d, photos: list[dict], max_frames: int = 60, per_frame: int = 600, seed: int = 0) -> np.ndarray:
@@ -116,12 +119,18 @@ def _transform(yaw: float, shift_xz: np.ndarray, cb: np.ndarray, ca: np.ndarray,
 
 
 def _icp(old_tree: cKDTree, old: np.ndarray, new: np.ndarray, T: np.ndarray, iters: int = 40, trim: float = 0.75):
-    """Refine T (turn about Y + shift) with trimmed point-to-point ICP. Returns (T, rms, inlier share)."""
+    """Refine T (turn about Y + shift) with trimmed point-to-point ICP. Returns (T, rms, inlier share).
+    Pairs further apart than SEARCH_R are left out (they were never among the kept 75% of a fit worth having)."""
     rms, inl = np.inf, 0.0
     for _ in range(iters):
         P = new @ T[:3, :3].T + T[:3, 3]
-        d, j = old_tree.query(P)
-        keep = d <= np.quantile(d, trim)
+        d, j = old_tree.query(P, distance_upper_bound=SEARCH_R)
+        fin = np.flatnonzero(np.isfinite(d))
+        if len(fin) < 50:
+            return T, np.inf, 0.0
+        k = min(int(trim * (len(d) - 1)), len(fin) - 1)   # the same 75% of ALL points as a search without the limit would keep
+        thr = np.partition(d[fin], k)[k]
+        keep = fin[d[fin] <= thr]
         p, q = P[keep], old[j[keep]]
         pc, qc = p.mean(axis=0), q.mean(axis=0)
         # 2D Procrustes for the turn about Y, plain mean difference for the height
@@ -156,14 +165,22 @@ def register(d, old_photos: list[dict], new_photos: list[dict]) -> dict:
     dy = lo_o - lo_n
     cands = _candidates(old, new)
     tree = cKDTree(old)
+    rng = np.random.default_rng(3)
+    sub = new[rng.choice(len(new), min(len(new), 12000), replace=False)]
+    small = sub[:COARSE_PTS]                              # (already a random order)
+
+    def score(T, pts):
+        d, _ = tree.query(pts @ T[:3, :3].T + T[:3, 3], distance_upper_bound=0.10)
+        return float(np.minimum(d, 0.10).mean())          # truncated mean distance: rewards matches, punishes parts that disagree
+    coarse = []
+    for _, deg, shift, cb, ca in cands:
+        T, _, _ = _icp(tree, old, small, _transform(math.radians(deg), shift, cb, ca, dy), iters=COARSE_ITERS)
+        coarse.append((score(T, small), T))
+    coarse.sort(key=lambda c: c[0])
     fitted = []
-    sub = new[np.random.default_rng(3).choice(len(new), min(len(new), 12000), replace=False)]
-    for score, deg, shift, cb, ca in cands:
-        T0 = _transform(math.radians(deg), shift, cb, ca, dy)
+    for _, T0 in coarse[:REFINE]:                         # the ambiguity test below only ever needs the best few
         T, rms, inl = _icp(tree, old, sub, T0)
-        d, _ = tree.query(sub @ T[:3, :3].T + T[:3, 3])
-        tm = float(np.minimum(d, 0.10).mean())            # truncated mean distance: rewards matches, punishes parts that disagree
-        fitted.append((tm, rms, inl, T))
+        fitted.append((score(T, sub), rms, inl, T))
     fitted.sort(key=lambda f: f[0])
     best = fitted[0]
     yaw = yaw_of(best[3])

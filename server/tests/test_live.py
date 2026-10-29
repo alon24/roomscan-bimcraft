@@ -695,3 +695,23 @@ os.kill(os.getpid(), signal.SIGKILL)
     s.flush()
     photos = json.loads((d / "photos.json").read_text())["photos"]
     assert len(photos) == 251 and photos[-1]["file"] == "p251.jpg"
+
+
+def test_registration_recovers_the_turn_and_shift_to_millimetres(rendered, tmp_path):
+    """The 0.4 cm / 0.05 degree recovery the fast registration must keep (it took about 6 s a try before, about 1.3 s now)."""
+    import shutil
+    (tmp_path / "photos").mkdir()
+    for yaw, shift in ((137.0, (1.3, 0.2, -0.7)), (212.0, (-0.4, 0.1, 0.9)), (45.0, (0.5, -0.1, 0.2)), (300.0, (2.0, 0.0, -1.5))):
+        a_dir, a, b_dir, b, _, Tno = patch_frames(rendered, yaw=yaw, shift=shift)
+        for p in a:
+            for f in (p["file"], p["depth_file"]):
+                shutil.copy(a_dir / "photos" / f, tmp_path / "photos" / f)
+        b2 = []
+        for p in b:
+            for f in (p["file"], p["depth_file"]):
+                shutil.copy(b_dir / "photos" / f, tmp_path / "photos" / f"b{f}")
+            b2.append({**p, "file": f"b{p['file']}", "depth_file": f"b{p['depth_file']}"})
+        res = registration.register(tmp_path, a, b2)
+        assert res["ok"], res
+        E = res["T"] @ Tno
+        assert np.linalg.norm(E[:3, 3]) < 0.004 and abs(registration.yaw_of(E)) < 0.05, (yaw, E[:3, 3], registration.yaw_of(E))
