@@ -767,6 +767,7 @@ async function show(id) {
         if (stale()) return;
         const first = views.pano ? "pano" : views.surface && !meta.ring ? "surface" : texturable ? "textured" : views.surface ? "surface" : "points";
         const box = $("modes");
+        let shown = false;
         const pick = async k => {
           if (k === "textured" && !views.textured) {
             $("log").textContent = "Loading the photos onto the surface…\n" + $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
@@ -784,7 +785,8 @@ async function show(id) {
             b.onclick = () => pick(x);
             return b;
           }).concat(middle));
-          show3d(views[k], V && k !== first);
+          show3d(views[k], shown);   // switching views keeps the camera where it is (also when going back to the first view)
+          shown = true;
         };
         box.hidden = !((views.points ? 1 : 0) + (views.surface ? 1 : 0) + (texturable ? 1 : 0) > 1 || room);
         pick(first);

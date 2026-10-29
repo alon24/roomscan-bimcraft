@@ -340,6 +340,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.46.1 (server, web) | Switching between 3D views keeps the camera where it is (going back to the first view no longer jumps outside the room). |
 | 0.46.0 (server, web) | Swept rooms open in a new **360° photo** view: the room shape coloured straight from the 360 panorama, much sharper than the per-point colours (Solid surface is still there). "You stood here" is a ring on the floor instead of a ball in front of your eyes; the misleading mesh box size is hidden for rooms (the room panel gives width, length, height). |
 | 0.45.2 (app, Measure) | With two pins selected, **Calibrate: real length…** right under the reading: type the tape length and every pin-to-pin length is corrected from then on. |
 | 0.45.1 (server, web) | A sweep where the hand moved the phone more than 35 cm no longer shows a big red star of camera arrows (one "you stood here" marker instead); camera arrows on walked scans are at most 40 cm long; the room distances list one surface per row. |
