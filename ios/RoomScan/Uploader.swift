@@ -9,24 +9,38 @@ enum Uploader {
             throw URLError(.badURL)
         }
         let boundary = UUID().uuidString
-        var body = Data()
+        // The body goes to a file and is sent from there: a 400-frame ring scan is about 240 MB, too much to hold in memory.
+        let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(boundary).multipart")
+        guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else { throw URLError(.cannotCreateFile) }
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+        let out = try FileHandle(forWritingTo: bodyURL)
+        var closed = false
+        defer { if !closed { try? out.close() } }
 
-        func field(_ key: String, _ value: String) {
-            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+        func put(_ text: String) throws { try out.write(contentsOf: Data(text.utf8)) }
+        func field(_ key: String, _ value: String) throws {
+            try put("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(value)\r\n")
         }
         func file(_ key: String, _ fileURL: URL, _ filename: String, _ type: String) throws {
-            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"; filename=\"\(filename)\"\r\nContent-Type: \(type)\r\n\r\n".data(using: .utf8)!)
-            body.append(try Data(contentsOf: fileURL))
-            body.append("\r\n".data(using: .utf8)!)
+            try put("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"; filename=\"\(filename)\"\r\nContent-Type: \(type)\r\n\r\n")
+            let input = try FileHandle(forReadingFrom: fileURL)
+            defer { try? input.close() }
+            // 1 MB at a time; the pool frees each chunk before the next is read
+            while try autoreleasepool(invoking: { () throws -> Bool in
+                guard let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty else { return false }
+                try out.write(contentsOf: chunk)
+                return true
+            }) {}
+            try put("\r\n")
         }
 
-        field("name", name)
-        field("kind", kind)
-        if turntableScan { field("turntable_scan", "true") }
-        if ringScan { field("ring_scan", "true") }
-        if let info, let data = try? JSONSerialization.data(withJSONObject: info), let text = String(data: data, encoding: .utf8) { field("info", text) }
-        if let h = realHeightMM, h > 0 { field("real_height_mm", String(h)) }
-        field("project", UserDefaults.standard.string(forKey: "project") ?? "")  // the home this room or object belongs to
+        try field("name", name)
+        try field("kind", kind)
+        if turntableScan { try field("turntable_scan", "true") }
+        if ringScan { try field("ring_scan", "true") }
+        if let info, let data = try? JSONSerialization.data(withJSONObject: info), let text = String(data: data, encoding: .utf8) { try field("info", text) }
+        if let h = realHeightMM, h > 0 { try field("real_height_mm", String(h)) }
+        try field("project", UserDefaults.standard.string(forKey: "project") ?? "")  // the home this room or object belongs to
         if let json { try file("json", json, "scan.json", "application/json") }
         if let usdz { try file("usdz", usdz, "scan.usdz", "model/vnd.usdz+zip") }
         if let mesh { try file("mesh", mesh, "scan.ply", "application/octet-stream") }
@@ -34,7 +48,9 @@ enum Uploader {
         for p in photos { try file("photos", p, p.lastPathComponent, p.pathExtension == "depth" ? "application/octet-stream" : "image/jpeg") }
         for m in masks { try file("masks", m, m.lastPathComponent, "image/png") }
         if let photosMeta { try file("photos_meta", photosMeta, "photos.json", "application/json") }
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        try put("--\(boundary)--\r\n")
+        try out.close()
+        closed = true
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -42,7 +58,7 @@ enum Uploader {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let progress = UploadSpeed()
         defer { DispatchQueue.main.async { UploadProgress.shared.active = false } }
-        let (data, resp) = try await URLSession.shared.upload(for: req, from: body, delegate: progress)
+        let (data, resp) = try await URLSession.shared.upload(for: req, fromFile: bodyURL, delegate: progress)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
