@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import queue
+import shutil
 import struct
 import threading
 import time
@@ -31,6 +32,7 @@ router = APIRouter(tags=["live"])
 ctx = SimpleNamespace(data=lambda: None, hub=None, convert=None, loop=None)
 SESSIONS: dict[str, "Session"] = {}
 SESSIONS_LOCK = threading.Lock()
+DELETED: set[str] = set()   # scans deleted while this server runs: nothing may recreate their folders (ids are never reused)
 FINISH_LOCK = threading.Lock()   # the socket, the web page and the janitor may all ask to finish the same scan at once
 MAP_EVERY = 1.5            # seconds between map messages (only sent when something changed)
 IDLE_S = float(os.environ.get("LIVE_IDLE_S", "600"))
@@ -55,7 +57,7 @@ async def startup() -> None:
 
 def _scan_dir(scan_id: str) -> Path:
     d = ctx.data() / scan_id
-    if not scan_id.isalnum() or not d.is_dir():
+    if not scan_id.isalnum() or not d.is_dir() or scan_id in DELETED:
         raise HTTPException(404, "scan not found")
     return d
 
@@ -125,6 +127,10 @@ def _depth_array(photo: dict, data: bytes) -> np.ndarray | None:
     return np.frombuffer(data, dtype="<f4").reshape(h, w)
 
 
+class ScanGone(ValueError):
+    """The scan was deleted: its frames are refused, never stored (that would recreate the folder)."""
+
+
 class BadFrame(ValueError):
     """A frame no resend can fix: it is dropped but still counts as received, so the cumulative ack moves past it."""
 
@@ -163,6 +169,7 @@ class Session:
         self.patch = patch if patch is not None else bool(st.get("patch", False))
         self.got: set[int] = set(st.get("got", []))
         self.finished = index is None and (bool(st.get("finish", False)) or _meta(d).get("status") != "capturing")
+        self.deleted = False
         self.acked = 0
         self._recount()
         self.sess_file = _sessions(d)
@@ -250,6 +257,8 @@ class Session:
                         self.got.add(n); self._recount(); self._save_state()
             raise
         with self.lock:
+            if self.deleted:
+                raise ScanGone("this scan was deleted on the server")
             if self.finished:
                 raise ValueError("this scan is already being built")
             if n is not None and n in self.got:
@@ -328,6 +337,9 @@ class Session:
                 self.jobs.task_done()
                 break
             raw, stored, depth, jpeg = job
+            if self.deleted:             # the scan is gone: drop what is still queued
+                self.jobs.task_done()
+                continue
             try:
                 sharp = _sharpness(jpeg)
                 if stored is not None:
@@ -455,6 +467,40 @@ def drop_session(scan_id: str, only: Session | None = None) -> None:
         ctx.hub.live_maps.pop(scan_id, None)
 
 
+def close_scan(scan_id: str, message: str = "This scan was deleted on the server.") -> None:
+    """Call BEFORE removing a scan folder. Refuses its frames from now on, stops its worker, frees the coverage engine, tells the
+    phone (`state: error` with `message`) and closes its socket with code 4410. A store in progress finishes first (the flag is set
+    under the session lock), so nothing writes into the folder once this returns. A build thread already running notices DELETED."""
+    DELETED.add(scan_id)
+    with SESSIONS_LOCK:
+        s = SESSIONS.pop(scan_id, None)
+    if ctx.hub is not None:
+        ctx.hub.live_maps.pop(scan_id, None)
+    if s is None:
+        return
+    with s.lock:
+        s.deleted = True
+        s.finished = True
+    s.stop()
+    s.engine = s.pending_engine = None
+    s.out.clear()
+    ws = s.ws
+    if ws is not None and ctx.loop is not None and ctx.loop.is_running():
+        fut = asyncio.run_coroutine_threadsafe(_close_deleted(ws, s, message), ctx.loop)
+        try:
+            fut.result(timeout=3)
+        except Exception:
+            pass                         # the phone is gone already, or slow: the folder is removed anyway
+
+
+async def _close_deleted(ws: WebSocket, s: "Session", message: str) -> None:
+    try:
+        await _send(ws, s, {"type": "state", "status": "error", "scan_id": s.id, "message": message})
+        await ws.close(code=4410)
+    except Exception:
+        pass
+
+
 def _open_for_patch(d: Path, meta: dict) -> None:
     """The checks shared by a live patch session and the offline /add route."""
     if meta.get("kind") != "mesh" or meta.get("ring") or meta.get("turntable"):
@@ -546,6 +592,8 @@ def _finish_now(d: Path, scan_id: str, info: dict | None) -> None:
     if sess is None and live.get("patch"):
         sess = Session(d, scan_id, engine=False)        # after a restart: the unmatched frames of a patch still get their chance
     try:
+        if scan_id in DELETED:
+            return
         if sess is not None:
             sess.jobs.join()
             if not sess.aligned and sess.pending:
@@ -566,12 +614,15 @@ def _finish_now(d: Path, scan_id: str, info: dict | None) -> None:
         _push(sess, {"type": "state", "status": "ready" if meta.get("status") == "ok" else "error", "scan_id": scan_id,
                      "message": meta.get("log", "")[:300]})
     except Exception as e:
-        meta = _meta(d)
-        meta["status"] = "error"
-        meta["log"] = f"live build failed: {type(e).__name__}: {e}"
-        _save_meta(d, meta)
-        _push(sess, {"type": "state", "status": "error", "scan_id": scan_id, "message": meta["log"]})
+        if scan_id not in DELETED:
+            meta = _meta(d)
+            meta["status"] = "error"
+            meta["log"] = f"live build failed: {type(e).__name__}: {e}"
+            _save_meta(d, meta)
+            _push(sess, {"type": "state", "status": "error", "scan_id": scan_id, "message": meta["log"]})
     finally:
+        if scan_id in DELETED:           # deleted while it was building: remove what the build wrote after the folder went
+            shutil.rmtree(d, ignore_errors=True)
         _notify({"type": "scan", "id": scan_id, "status": _meta(d).get("status")})
         _notify({"type": "live_end_map", "id": scan_id})
         if sess is not None:
@@ -682,6 +733,9 @@ async def _on_frame(ws: WebSocket, sess: Session, data: bytes) -> None:
     except BadFrame as e:
         await _send(ws, sess, {"type": "error", "message": f"frame {n} dropped: {e}"})
         ack = sess.acked
+    except ScanGone as e:
+        await _send(ws, sess, {"type": "state", "status": "error", "scan_id": sess.id, "message": str(e)})
+        return
     except ValueError as e:
         await _send(ws, sess, {"type": "error", "message": str(e)})
         return

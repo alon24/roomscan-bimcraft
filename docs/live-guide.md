@@ -102,3 +102,4 @@ Frames are written to a temp folder first and sent in order; if the socket drops
 
 ### 2026-10-29 Second review fixes
 - **`map.seq` follows send order** on a socket: the server computes, numbers and sends one map at a time per scan (the ticker and a `hello` used to race and could send two maps swapped). A phone may drop a map whose `seq` is not higher than the last one it drew.
+- **Deleting a scan during a capture** (`DELETE /api/scans/{id}`, `DELETE /api/scans?all=true`, or deleting its project with its scans) closes the live session first: the phone gets `{type:"state", status:"error", message:"This scan was deleted on the server."}` and the socket is closed with code **4410**. A frame that still arrives is answered with the same `state: error` and is not stored; a new socket or `POST .../frames` for that scan gets 404. The phone should stop the live upload and keep the scan locally (or discard it).

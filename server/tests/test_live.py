@@ -196,7 +196,13 @@ def test_live_roundtrip_ack_resume_finish_equals_batch(client, rendered):
         maps = [m for m in others if m["type"] == "map"]
         live.SESSIONS[sid].jobs.join()                                            # every frame is in the map; hello asks for it now
         ws.send_json({"type": "hello", "resume_after": len(photos), "app": "test"})
-        maps.append(wait_message(ws, "map"))
+        wait_message(ws, "state")
+        # a ticker map computed while the last frames were still being integrated can still be on its way (a busy machine): the
+        # engine has changed since, so a fresh map always follows it
+        for _ in range(5):
+            maps.append(wait_message(ws, "map"))
+            if maps[-1]["percent"] >= 80:
+                break
         assert maps[-1]["percent"] >= 80 and maps[-1]["grid"]["w"] > 0
         assert [m["seq"] for m in maps] == sorted(m["seq"] for m in maps)
 
@@ -507,3 +513,44 @@ def test_maps_go_out_in_seq_order_when_two_senders_race(tmp_path):
     maps = [m for m in ws.sent if m["type"] == "map"]
     assert [m["seq"] for m in maps] == [1, 2, 3]
     assert [m["call"] for m in maps] == [1, 2, 3]            # and the content is in the order it was computed
+
+
+def test_deleting_a_scan_during_capture_closes_the_session(client, rendered):
+    from starlette.websockets import WebSocketDisconnect
+    d, photos = sweep_source(rendered)
+    start = client.post("/api/live", json={"kind": "sweep", "name": "doomed"}).json()
+    sid = start["scan_id"]
+    with client.websocket_connect(start["ws"]) as ws:
+        hello(ws)
+        send_frames(ws, d, photos[:4])
+        sess = live.SESSIONS[sid]
+        assert client.delete(f"/api/scans/{sid}").status_code == 200
+        m = wait_state(ws, "error")
+        assert "deleted" in m["message"]
+        with pytest.raises(WebSocketDisconnect) as gone:
+            for _ in range(50):
+                ws.receive_json()
+        assert gone.value.code == 4410
+    assert sid not in live.SESSIONS and sess.engine is None and sess.deleted
+    assert not (main.DATA / sid).exists()
+    with pytest.raises(ValueError):                                                # a late store is refused, nothing is recreated
+        sess.store_frame(5, photos[4], b"x", b"")
+    with pytest.raises(Exception):
+        with client.websocket_connect(start["ws"]):
+            pass
+    assert post_frames(client, sid, d, photos[4:6]).status_code == 404
+    assert not (main.DATA / sid).exists()
+
+
+def test_delete_all_closes_every_live_session(client, rendered):
+    d, photos = sweep_source(rendered)
+    a = client.post("/api/live", json={"kind": "room", "name": "a"}).json()
+    b = client.post("/api/live", json={"kind": "room", "name": "b"}).json()
+    with client.websocket_connect(a["ws"]) as ws:
+        hello(ws)
+        send_frames(ws, d, photos[:2])
+        r = client.request("DELETE", "/api/scans?all=true", json={"confirm": "DELETE ALL"})
+        assert r.status_code == 200 and r.json()["deleted"] == 2
+        assert "deleted" in wait_state(ws, "error")["message"]
+    assert not live.SESSIONS and not list(main.DATA.iterdir())
+    assert client.post(f"/api/scans/{b['scan_id']}/finish").status_code == 404

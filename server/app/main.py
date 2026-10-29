@@ -447,9 +447,19 @@ async def patch_scan(scan_id: str, patch: ScanPatch):
     return meta
 
 
+def _remove_scan(d: Path) -> None:
+    """Close its live capture first (the phone is told, its frames are refused from now on), then remove the folder.
+    A second pass catches files a build thread wrote while the first one ran (the thread stops writing once it sees the flag)."""
+    live_mod.close_scan(d.name)
+    shutil.rmtree(d, ignore_errors=True)
+    if d.exists():
+        time.sleep(0.2)
+        shutil.rmtree(d)
+
+
 @app.delete("/api/scans/{scan_id}")
 async def delete_scan(scan_id: str):
-    shutil.rmtree(_dir(scan_id))
+    await anyio.to_thread.run_sync(_remove_scan, _dir(scan_id))
     await hub.broadcast({"type": "list", "deleted": scan_id})
     return {"deleted": scan_id}
 
@@ -464,8 +474,14 @@ async def delete_all_scans(body: DeleteAll, all: bool = False):
     if not all or body.confirm != "DELETE ALL":
         raise HTTPException(400, 'to delete every scan send ?all=true and {"confirm": "DELETE ALL"}')
     scans = [d for d in DATA.iterdir() if d.is_dir()] if DATA.exists() else []
-    for d in scans:
-        shutil.rmtree(d, ignore_errors=True)
+
+    def remove_all():
+        for d in scans:
+            try:
+                _remove_scan(d)
+            except OSError as e:
+                print(f"delete all: {d.name}: {e}", flush=True)
+    await anyio.to_thread.run_sync(remove_all)
     hub.live = None
     getattr(hub, "live_maps", {}).clear()
     await hub.broadcast({"type": "list"})
@@ -648,7 +664,7 @@ async def delete_project(name: str, delete_scans: bool = False):
     for d, m in _all_scans():
         if m.get("project") == name:
             if delete_scans:
-                shutil.rmtree(d)
+                await anyio.to_thread.run_sync(_remove_scan, d)
                 removed += 1
             else:
                 m["project"] = ""
