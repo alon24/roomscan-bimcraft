@@ -30,13 +30,25 @@ def mask_path(d: Path, photo: dict) -> Path:
     return d / "masks" / (Path(photo["file"]).stem + ".png")
 
 
+PIXEL_CENTRE = 0.5   # see world_points
+
+
 def world_points(photo: dict, depth: np.ndarray) -> np.ndarray:
-    """World position (H x W x 3) of every depth pixel. ARKit camera: +X right, +Y up, looks down -Z; image rows go down."""
+    """World position (H x W x 3) of every depth pixel. ARKit camera: +X right, +Y up, looks down -Z; image rows go down.
+
+    Pixel convention (used by every projection in this server): image coordinates are continuous with (0, 0) at the TOP-LEFT
+    CORNER of the top-left pixel, so pixel (i, j) is the square [i, i+1) x [j, j+1) and its centre is (i + 0.5, j + 0.5). ARKit's
+    principal point and focal length are taken in these coordinates. Reasons: scaling the intrinsics to the depth map's size by
+    w / width (Apple's advice, and what all of this code does) is exact only in this convention; Apple's point-cloud sample
+    unprojects a camera-pixel position with the inverse intrinsics and samples the depth at that same position divided by the image
+    size (a texture coordinate, whose texel centres are at (i + 0.5) / w); and the GPU texture lookups in the web viewer use it too.
+    Going from a projected (u, v) back to a pixel index is then floor(u); OpenCV and Open3D put pixel centres at whole numbers, so
+    their principal point is cx - 0.5 (see tsdf_room, ring.ring_pose, panorama._colours)."""
     h, w = depth.shape
     k = np.array(photo["intrinsics"], dtype=float)  # columns [fx,0,0],[0,fy,0],[cx,cy,1] for the photo size
     sx, sy = w / photo["width"], h / photo["height"]
     fx, fy, cx, cy = k[0][0] * sx, k[1][1] * sy, k[2][0] * sx, k[2][1] * sy
-    u, v = np.meshgrid(np.arange(w), np.arange(h))
+    u, v = np.meshgrid(np.arange(w) + PIXEL_CENTRE, np.arange(h) + PIXEL_CENTRE)
     cam = np.stack([(u - cx) * depth / fx, -(v - cy) * depth / fy, -depth, np.ones_like(depth)], axis=-1)
     return (cam.reshape(-1, 4) @ _mat(photo["transform"]).T)[:, :3].reshape(h, w, 3)
 
@@ -181,7 +193,8 @@ def tsdf_room(d: Path, scale: float = 1.0, voxel: float = 0.02) -> tuple[bool, s
             o3d.geometry.Image(col), o3d.geometry.Image(dm), depth_scale=1.0, depth_trunc=4.5, convert_rgb_to_intensity=False)
         k = np.array(ph["intrinsics"], dtype=float)
         sx, sy = dw / ph["width"], dh / ph["height"]
-        intr = o3d.camera.PinholeCameraIntrinsic(dw, dh, k[0][0] * sx, k[1][1] * sy, k[2][0] * sx, k[2][1] * sy)
+        # Open3D puts pixel centres at whole numbers: the principal point moves half a pixel (see world_points)
+        intr = o3d.camera.PinholeCameraIntrinsic(dw, dh, k[0][0] * sx, k[1][1] * sy, k[2][0] * sx - 0.5, k[2][1] * sy - 0.5)
         vol.integrate(rgbd, intr, np.linalg.inv(_mat(ph["transform"]) @ flip))
         used += 1
     if used < 3:

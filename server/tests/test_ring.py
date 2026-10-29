@@ -40,7 +40,8 @@ def ring_photo(tex, M, px_mm=4.0):
     S, c = tex.shape[0], tex.shape[0] / 2
     corners = np.array([[(0 - c) / px_mm, c / px_mm, 0], [(S - c) / px_mm, c / px_mm, 0], [(S - c) / px_mm, (c - S) / px_mm, 0], [(0 - c) / px_mm, (c - S) / px_mm, 0]])
     dst, _ = project(M, to_world(corners))
-    Hm = cv2.getPerspectiveTransform(np.float32([[0, 0], [S, 0], [S, S], [0, S]]), np.float32(dst))
+    # warpPerspective puts pixel centres at whole numbers; `project` has (0, 0) at the image corner like ARKit (frames.world_points)
+    Hm = cv2.getPerspectiveTransform(np.float32([[0, 0], [S, 0], [S, S], [0, S]]), np.float32(dst - 0.5))
     return cv2.warpPerspective(tex, Hm, (W, H), flags=cv2.INTER_AREA, borderValue=170)
 
 

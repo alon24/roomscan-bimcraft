@@ -93,3 +93,21 @@ def test_routes_serve_the_panorama_and_the_room_numbers(scan, tmp_path, monkeypa
     r = c.get("/api/scans/abc123abc123/panorama.jpg?width=1024")
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content[:2] == b"\xff\xd8"
     assert c.get("/api/scans/abc123abc123/panorama.json?width=100").status_code == 400
+
+
+def test_depth_pixels_land_on_the_walls_with_the_pixel_centre_convention():
+    """The renderers cast rays through pixel centres (i + 0.5) with the principal point at w / 2, like ARKit's intrinsics
+    (frames.world_points). Unprojecting the noise-free depth must give points on the room's walls; with whole-pixel coordinates
+    they were off by half a depth pixel (about 4 mm at 2 m here)."""
+    import math
+    from app import frames
+    W, H, fx, dw, dh = 640, 480, 500.0, 256, 192
+    worst = 0.0
+    for yaw, pitch in ((0, 0), (37, 20), (130, -35), (250, 10)):
+        M = boxroom.pose(math.radians(yaw), math.radians(pitch), boxroom.CAM + np.array([0.05, -0.02, 0.03]))
+        _, depth = boxroom.render(M, dw, dh, fx * dw / W)
+        photo = {"width": W, "height": H, "intrinsics": [[fx, 0, 0], [0, fx, 0], [W / 2, H / 2, 1]], "transform": M.T.tolist()}
+        P = frames.world_points(photo, depth).reshape(-1, 3)
+        off = np.minimum(np.abs(P - boxroom.LO), np.abs(P - boxroom.HI)).min(axis=1)      # distance to the nearest wall plane
+        worst = max(worst, float(off.max()))
+    assert worst < 1e-4, worst

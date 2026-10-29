@@ -91,7 +91,8 @@ def _colours(img: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
     rows = -(-n // 2048)
     pad = rows * 2048 - n
     mu, mv = np.pad(u, (0, pad)).reshape(rows, 2048), np.pad(v, (0, pad)).reshape(rows, 2048)
-    return cv2.remap(img, mu, mv, cv2.INTER_LINEAR).reshape(-1, 3)[:n].astype(np.float32)
+    # (u, v) has (0, 0) at the corner of the image (frames.world_points); OpenCV's pixel centres are at whole numbers
+    return cv2.remap(img, mu - 0.5, mv - 0.5, cv2.INTER_LINEAR).reshape(-1, 3)[:n].astype(np.float32)
 
 
 def _radius(depth: np.ndarray | None, w: int, h: int) -> np.ndarray:
@@ -99,7 +100,7 @@ def _radius(depth: np.ndarray | None, w: int, h: int) -> np.ndarray:
     if depth is None or not np.isfinite(depth).any():
         return np.full(w * h, 3.0, np.float32)
     dh, dw = depth.shape
-    r = depth[(np.arange(h) * dh // h)[:, None], (np.arange(w) * dw // w)[None, :]]
+    r = depth[((2 * np.arange(h) + 1) * dh // (2 * h))[:, None], ((2 * np.arange(w) + 1) * dw // (2 * w))[None, :]]   # cell centres
     r = np.where(np.isfinite(r), r, np.nanmedian(depth))
     return r.reshape(-1).astype(np.float32)
 

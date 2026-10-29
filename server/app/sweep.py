@@ -301,8 +301,8 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     img = pano["_image"]
     ph, pw = img.shape[:2]
     h, w = D2.shape
-    cu = (np.arange(w) * pw // w)[None, :].repeat(h, 0)
-    cv_ = (np.arange(h) * ph // h)[:, None].repeat(w, 1)
+    cu = ((2 * np.arange(w) + 1) * pw // (2 * w))[None, :].repeat(h, 0)     # the panorama pixel under each cell's centre
+    cv_ = ((2 * np.arange(h) + 1) * ph // (2 * h))[:, None].repeat(w, 1)
     col = img[cv_, cu]
     mesh = depth_mesh(D2, centre, col)
     if mesh is None or len(mesh.faces) == 0:

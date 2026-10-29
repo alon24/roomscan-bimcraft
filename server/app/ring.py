@@ -72,6 +72,8 @@ def ring_pose(img: np.ndarray, photo: dict, cfg: dict, det) -> tuple[np.ndarray,
     if len(obj) < 4:
         return None
     k = np.array(photo["intrinsics"], dtype=float).T   # columns -> 3x3
+    k[0, 2] -= 0.5                                     # ArUco corners are in OpenCV pixels (centres at whole numbers), the
+    k[1, 2] -= 0.5                                     # intrinsics have (0, 0) at the image corner (frames.world_points)
     obj, im = np.array(obj, dtype=np.float64), np.array(im, dtype=np.float64)
     ok, rvec, tvec = cv2.solvePnP(obj, im, k, None, flags=cv2.SOLVEPNP_ITERATIVE if len(obj) > 4 else cv2.SOLVEPNP_IPPE_SQUARE)
     if not ok:
