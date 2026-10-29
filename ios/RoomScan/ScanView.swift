@@ -317,7 +317,7 @@ struct ScanView: View {
             // RoomPlan's session must not keep running behind another tab's camera: stop as the Stop button does (the result is kept).
             if model.scanning {
                 model.stop()
-                model.stopNote = "Stopped because you left the scan screen. What was captured is kept: Upload or Save it."
+                model.stopNote = "Stopped because you left the scan screen."
                 Reporter.log("room: stopped, the scan screen was left")
             }
         }

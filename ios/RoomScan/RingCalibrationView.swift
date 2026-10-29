@@ -31,6 +31,7 @@ final class RingCalibrationModel: NSObject, ObservableObject {
     func pause() { sceneView.session.pause() }
 
     func reset() {
+        TempFiles.remove(recorder.dir)      // the last set of calibration photos
         recorder = PhotoRecorder()
         recorder.maxSide = 1920
         recorder.maxPhotos = 12

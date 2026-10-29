@@ -207,7 +207,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     /// and say why: the timers and the AR session must not run behind another tab that uses the camera.
     func stop(leftScreen: Bool = false) {
         if leftScreen {
-            stopNote = "Stopped because you left the scan screen. What was captured is kept: Upload or Save it."
+            stopNote = "Stopped because you left the scan screen."
             Reporter.log("mesh: stopped, the scan screen was left")
         }
         timer?.invalidate(); timer = nil
