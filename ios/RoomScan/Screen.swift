@@ -31,3 +31,39 @@ enum Screen {
         saved = nil
     }
 }
+
+/// Only one screen's camera session may run. A tab switch can run the new tab's onAppear before the old tab's onDisappear, so a
+/// screen claims the camera before it starts its session: the screen that had it is stopped first (session paused, screen-awake
+/// off), then the new one runs. A late onDisappear of a screen that no longer owns the camera does nothing, so it can never pause or
+/// dim the screen that is now showing. Main thread only.
+enum CameraOwner {
+    private static var owner: ObjectIdentifier?
+    private static var leave: (() -> Void)?
+
+    /// Call before starting a session. `leave` stops this screen's camera work; it runs when another screen claims the camera, or
+    /// when this screen calls `release`.
+    static func claim(_ who: AnyObject, leave: @escaping () -> Void) {
+        let id = ObjectIdentifier(who)
+        if let o = owner, o != id, let previous = Self.leave {
+            owner = nil; Self.leave = nil
+            previous()
+        }
+        owner = id
+        Self.leave = leave
+    }
+
+    static func owns(_ who: AnyObject) -> Bool { owner == ObjectIdentifier(who) }
+
+    /// The screen went away: run its `leave`, but only if it still owns the camera.
+    static func release(_ who: AnyObject) {
+        guard owns(who) else { return }
+        let l = leave
+        owner = nil; leave = nil
+        l?()
+    }
+
+    /// Give the camera up without running `leave` (the screen already stopped itself).
+    static func drop(_ who: AnyObject) {
+        if owns(who) { owner = nil; leave = nil }
+    }
+}

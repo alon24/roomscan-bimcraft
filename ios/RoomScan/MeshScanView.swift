@@ -71,17 +71,24 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         guard previewOn, !scanning, plyURL == nil else { return }
         let cfg = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
-        sceneView.session.run(cfg)
+        run(cfg)
+    }
+
+    /// Every session start goes through here: the screen that had the camera is stopped first (CameraOwner).
+    private func run(_ cfg: ARConfiguration, options: ARSession.RunOptions = []) {
+        CameraOwner.claim(self) { [weak self] in self?.leaveScreen() }
+        sceneView.session.run(cfg, options: options)
+    }
+
+    /// Another screen took the camera, or this one went away: a scan stops as with Stop (the result is kept), a preview pauses.
+    func leaveScreen() {
+        if scanning { stop(leftScreen: true) } else { sceneView.session.pause() }
     }
 
     func setPreview(_ on: Bool) {
         previewOn = on
         UserDefaults.standard.set(on, forKey: "previewOn")
         if on { startPreview() } else if !scanning { sceneView.session.pause() }
-    }
-
-    func pausePreview() {
-        if !scanning { sceneView.session.pause() }
     }
 
     /// Project the stored points into the current camera view. Plain 2D dots cannot fail to render the way 3D geometry can.
@@ -137,7 +144,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         cfg.sceneReconstruction = .mesh
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
         Reporter.log("mesh start: supportsMesh=\(Self.supported) supportsDepth=\(ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)) reconstruction=\(cfg.sceneReconstruction.rawValue)")
-        sceneView.session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
+        run(cfg, options: [.resetTracking, .removeExistingAnchors])
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
         scanning = true
         Screen.awake(true)   // keep the screen on while scanning
@@ -798,6 +805,6 @@ struct MeshScanView: View {
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
         .onAppear { model.sweepMode = sweepMode; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
-        .onDisappear { if model.scanning { model.stop(leftScreen: true) } else { model.pausePreview() } }
+        .onDisappear { CameraOwner.release(model) }      // stops it only if it still has the camera (another tab may have taken it)
     }
 }

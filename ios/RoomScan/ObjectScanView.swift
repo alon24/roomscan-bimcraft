@@ -47,6 +47,7 @@ final class ObjectScanModel: ObservableObject {
         let images = base.appendingPathComponent("Images")
         try? FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
         imagesDir = images
+        CameraOwner.claim(self) { [weak self] in MainActor.assumeIsolated { self?.leftScreen() } }   // the screen that had the camera stops first
         let s = ObjectCaptureSession()
         var config = ObjectCaptureSession.Configuration()
         config.checkpointDirectory = base.appendingPathComponent("Snapshots")
@@ -360,6 +361,6 @@ struct ObjectScanView: View {
             }
             .padding()
         }
-        .onDisappear { model.leftScreen() }
+        .onDisappear { CameraOwner.release(model) }      // runs leftScreen only if it still has the camera
     }
 }

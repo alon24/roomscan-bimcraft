@@ -25,10 +25,11 @@ final class RingCalibrationModel: NSObject, ObservableObject {
     func start() {
         let cfg = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
+        CameraOwner.claim(self) { [weak self] in self?.sceneView.session.pause() }
         sceneView.session.run(cfg)
     }
 
-    func pause() { sceneView.session.pause() }
+    func pause() { CameraOwner.release(self) }      // pauses only if it still has the camera
 
     func reset() {
         TempFiles.remove(recorder.dir)      // the last set of calibration photos

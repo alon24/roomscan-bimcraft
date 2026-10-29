@@ -55,6 +55,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         recorder = PhotoRecorder()
         recorder?.maxPhotos = 80
         photoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateHUD(); self?.capturePhoto() }
+        CameraOwner.claim(self) { [weak self] in self?.leaveScreen() }      // the screen that had the camera stops first
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         scanning = true
         Screen.awake(true)   // keep the screen on while scanning
@@ -109,6 +110,15 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
             return
         }
         stop()
+    }
+
+    /// Another screen took the camera, or this one went away: RoomPlan's session must not keep running behind another tab's camera.
+    /// Stop as the Stop button does (the result is kept).
+    func leaveScreen() {
+        guard scanning else { return }
+        stop()
+        stopNote = "Stopped because you left the scan screen."
+        Reporter.log("room: stopped, the scan screen was left")
     }
 
     func stop() {
@@ -313,14 +323,7 @@ struct ScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: mode == 0)
-        .onDisappear {
-            // RoomPlan's session must not keep running behind another tab's camera: stop as the Stop button does (the result is kept).
-            if model.scanning {
-                model.stop()
-                model.stopNote = "Stopped because you left the scan screen."
-                Reporter.log("room: stopped, the scan screen was left")
-            }
-        }
+        .onDisappear { CameraOwner.release(model) }      // stops it only if it still has the camera (another tab may have taken it)
     }
 }
 
