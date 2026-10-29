@@ -23,9 +23,16 @@ Open **Settings (gear, top right)** and type your server address, e.g. `http://1
   An Object Capture that was capturing is finished and built from the photos taken so far; one that had not started is cancelled.
 - **Storage (Settings, at the bottom).** Shows where the app keeps saved scans, temp files and caches (tap **Copy** for a path) and
   how much space each takes. **Show in Files** opens the Files app at On My iPhone, RoomScan (saved scans are in `SavedScans`).
-  **Delete temp files** and **Delete all saved scans** (asks twice: confirm, then type DELETE) each say first how much they free.
-  A scan you are still working on is never deleted; temp files older than a day are deleted when the app starts, and a scan's temp
-  files go as soon as you Save it or start a new one.
+  **Delete temp files** (asks once) and **Delete all saved scans** (asks twice: confirm, then type DELETE) each say first how much they free.
+  Delete temp files removes the photos, depth and upload files of scans you did not save; a zip you made to share and a model
+  downloaded in Models are kept for a day. A scan you are still working on is never deleted; everything in temp older than a day is
+  deleted when the app starts, and a scan's temp files go as soon as you Save it or start a new one.
+- **Not enough space to upload?** An upload first needs room for one more copy of the scan. If the phone has too little, Upload says
+  so at once ("need about N MB, have M MB") instead of failing halfway, and the scan is kept in Models, On this phone (moved there,
+  which needs no extra space). Free some space and upload again, or copy its folder from the Files app
+  (On My iPhone, RoomScan, SavedScans) to a computer.
+- **Switching tabs hands the camera over cleanly.** The tab you open stops the old tab's camera before starting its own, so a slow
+  tab switch can no longer freeze the new camera or turn off the keep-screen-on of the new scan.
 
 ### Measure tab: live distance, no scanning
 Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
@@ -52,9 +59,9 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
      **Clear selection** unpicks everything but keeps the pins.
 5. **Manage pins** (the pin button, bottom row): tick pins to select, swipe a pin to **name** it ("left wall") or delete it,
    link or unlink the two ticked pins, see all kept lines, untick all, delete all pins.
-6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links when you leave the Measure
-   tab or close the app. Come back to the same room and move slowly: "Looking for your saved place…" turns green and
-   everything reappears.
+6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links a moment after you place, move or
+   delete a pin, and when you leave the Measure tab or close the app. Come back to the same room and move slowly: "Looking for your
+   saved place…" turns green and everything reappears. Deleting the last pin forgets the saved room.
 7. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
 8. The **eye** button hides or shows the depth colours.
 9. **Pinch to zoom** (or the +/- at the top, 1× to 4×) to magnify the picture and place a pin precisely on a corner.
@@ -70,8 +77,8 @@ Tap the small underlined line under the reading ("uncalibrated · tap to calibra
    how well the phone tracked while you moved.
 3. The screen shows every check with its error before and after the correction, and the typical error ("±1.2 cm"),
    which then appears under every reading. Swipe a check to delete it. **Use the correction** switches it off.
-4. If the fitted scale is more than 10% from 1 it is almost always a mistyped tape value: it is **not applied** unless
-   you switch on "Apply even if it looks wrong".
+4. If the fitted scale is more than 10% from 1, or the fitted offset more than 5 cm, it is almost always a mistyped tape value:
+   it is **not applied** unless you switch on "Apply even if it looks wrong".
 
 **Hold** now averages about a second and shows the spread ("2.317 m ± 0.4 cm"). Saved readings keep the raw sensor value
 too, so a later recalibration can recompute them. Low-confidence depth pixels are ignored, and glass, mirrors and shiny
@@ -108,7 +115,9 @@ stays on the server. Because the frames are already on the server when you stop,
   frames with `POST /api/scans/{id}/frames` (used by `tools/live_replay.py --offline-after`), but the app does not use it.
 - **Save on the phone instead.** Tapping **Save** after a live scan removes its draft on the server, so it is not built there after
   10 minutes and then uploaded a second time from the phone. Upload it later from Models, On this phone. If the server had already
-  started building it (you tapped Upload first), the draft is kept.
+  started building it (you tapped Upload first), the draft is kept. The line under the buttons says what really happened: "removed",
+  or, when the server cannot be reached, that the draft is not removed yet; the app then removes it the next time it starts and
+  reaches the server (if the server built it by itself meanwhile, that built copy is removed, so the phone's copy is the one you upload).
 - **Watch it on the web page.** Open the scan page while someone scans: the scan appears by itself with a **Live capture** panel:
   the top-down map (green = seen well, orange = thin or far, blue = floor looked across, white dot = the phone), the percent
   covered, the numbered things to capture next, and **Build what I have** for a capture that was left unfinished (it also builds
@@ -326,6 +335,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 | Version | What was added |
 |---|---|
 | 0.44.x (server, web) | **Storage** panel (paths to copy, sizes, clear temp / rebuildable files / all scans) and `tools/open-data.sh`; errors show in a message bar instead of a browser alert; a scan opened by a click or link is no longer replaced by a live capture (a **Live capture running: show it** button appears instead); cuts through many islands cap their connectors; colour suggestions say when a model has no colours. |
+| 0.44.x (app, review fixes) | Upload checks free space first and says how much it needs; a failed upload moves the scan into On this phone; Save on a live scan says honestly whether the server draft was removed and retries offline deletes at the next start; Delete temp files keeps shared zips and Models downloads for a day and asks first; camera hand-off between tabs is order-safe; New scan during Saving drops the late result; Measure: deleted pins no longer return from the old map, no pin-number clash before the saved room is found, Move keeps the pin, a large calibration offset is flagged; saved scans with old or partial manifests still upload. |
 | 0.44.x (app, later) | Leaving the tab mid-scan stops the scan and keeps it; Save on a live scan removes the server draft (no duplicate); **Storage** in Settings (paths, sizes, Show in Files, delete temp files / all saved scans); temp photo folders are deleted after Save, New scan and at launch; Upload after Save marks the saved copy uploaded; big uploads stream from a file instead of memory; photos, the depth cloud and the ring speed are worked out off the main thread. |
 | 0.44.x (app) | After Stop, a live room scan shows what the link is doing (sending the last frames, building, server errors); live guidance, problem reports and ring sync work before the server address was ever changed in Settings; no repeated frames when another tab takes the camera. Removed scan modes no tab could open (guided object, LiDAR turntable, photo turntable). |
 | 0.44.x (server) | Floor plans: L-shaped rooms and rooms whose walls do not close now convert (**Re-convert** scans that failed before); walls now run clockwise so they face out. Photo Measure routes answer 400 for bad corners instead of failing. |
