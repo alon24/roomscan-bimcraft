@@ -246,3 +246,30 @@ def test_connector_that_does_not_fit_is_a_clear_400(client):
     r = client.post("/api/scans/small/cut/plane", json={"planes": [{"origin": [0, 0, 0], "normal": [0, 0, 1]}],
                                                         "connector": {"type": "dowel", "size": 10}})
     assert r.status_code == 400 and "does not fit on this cut face" in r.json()["detail"]
+
+
+def test_broadcast_does_not_wait_for_a_slow_viewer(monkeypatch):
+    import asyncio, time
+
+    class Viewer:
+        def __init__(self, delay=0.0, fail=False):
+            self.delay, self.fail, self.got, self.closed = delay, fail, [], False
+
+        async def send_json(self, msg):
+            if self.fail:
+                raise RuntimeError("gone")
+            await asyncio.sleep(self.delay)
+            self.got.append(msg)
+
+        async def close(self):
+            self.closed = True
+
+    hub = main.Hub()
+    monkeypatch.setattr(main.Hub, "SEND_TIMEOUT", 0.3)
+    fast, slow, dead = Viewer(), Viewer(delay=5), Viewer(fail=True)
+    hub.viewers |= {fast, slow, dead}
+    t = time.monotonic()
+    asyncio.run(hub.broadcast({"type": "list"}))
+    assert time.monotonic() - t < 1.5                       # not 5 s behind the slow one
+    assert fast.got == [{"type": "list"}] and hub.viewers == {fast}
+    assert slow.closed and dead.closed

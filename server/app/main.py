@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import io
 import json
@@ -67,12 +68,20 @@ class Hub:
         self.viewers: set[WebSocket] = set()
         self.live: dict | None = None
 
+    SEND_TIMEOUT = 2.0   # seconds: a viewer slower than this (a sleeping phone, a dead link) is dropped, it reloads the list when it comes back
+
+    async def _send(self, ws: WebSocket, msg: dict):
+        try:
+            await asyncio.wait_for(ws.send_json(msg), self.SEND_TIMEOUT)
+        except Exception:
+            self.viewers.discard(ws)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws.close(), 0.5)
+
     async def broadcast(self, msg: dict):
-        for ws in list(self.viewers):
-            try:
-                await ws.send_json(msg)
-            except Exception:
-                self.viewers.discard(ws)
+        """To every viewer at once, so one slow viewer does not hold up the others (or the live capture that sends this)."""
+        if self.viewers:
+            await asyncio.gather(*(self._send(ws, msg) for ws in list(self.viewers)))
 
 
 hub = Hub()
