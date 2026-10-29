@@ -5,78 +5,201 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RoomScan</title>
 <style>
-  :root { --bg:#fff; --fg:#1b1f24; --mute:#6b7380; --line:#d8dce2; --acc:#2563eb; --err:#c62828; --ok:#2e7d32; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --fg:#e6e9ee; --mute:#8b94a1; --line:#2a2f37; --acc:#6ea0ff; --err:#ef7b7b; --ok:#6fcf7a; } }
+  /* One teal accent, shared with the phone app. Neutrals lean very slightly green so the grey isn't dead. */
+  :root {
+    color-scheme: light dark;
+    --bg:#f3f5f4; --surface:#ffffff; --sunk:#e9ecea; --line:#dde2df; --line-strong:#c4cbc7;
+    --fg:#141917; --mute:#5c6562; --acc:#0b7b80; --acc-fg:#ffffff; --acc-soft:color-mix(in srgb, var(--acc) 12%, transparent);
+    --err:#b42318; --ok:#17784a; --warn:#a15c07; --stage:#e2e7e4;
+    --r:10px; --r-sm:7px; --shadow:0 1px 2px rgb(16 24 20 / .06), 0 4px 14px rgb(16 24 20 / .06);
+    --shadow-lg:0 2px 6px rgb(0 0 0 / .08), 0 24px 60px rgb(0 0 0 / .22);
+    --ease:cubic-bezier(.23,1,.32,1);
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#0e1112; --surface:#161a1b; --sunk:#0b0d0e; --line:#252b2c; --line-strong:#364040;
+    --fg:#e6ebe9; --mute:#93a09c; --acc:#38c0c2; --acc-fg:#04201f; --acc-soft:color-mix(in srgb, var(--acc) 15%, transparent);
+    --err:#f2766b; --ok:#4cc27a; --warn:#e5a84a; --stage:#1c2223;
+    --shadow:0 1px 2px rgb(0 0 0 / .4), 0 6px 18px rgb(0 0 0 / .25); --shadow-lg:0 2px 8px rgb(0 0 0 / .5), 0 30px 80px rgb(0 0 0 / .6);
+  } }
   * { box-sizing: border-box; }
   [hidden] { display:none !important; }
-  body { margin:0; font:15px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--fg); display:grid; grid-template-columns:260px 1fr; min-height:100vh; }
-  @media (max-width:700px) { body { grid-template-columns:1fr; } }
-  aside { border-right:1px solid var(--line); padding:16px; }
-  main { padding:16px; min-width:0; }
-  h1 { font-size:18px; margin:0 0 12px; }
-  ul { list-style:none; padding:0; margin:0; }
-  li { display:flex; align-items:center; gap:4px; border-radius:6px; border-left:3px solid transparent; }
-  li button { all:unset; display:block; flex:1; min-width:0; padding:8px; border-radius:6px; cursor:pointer; }
-  li:hover, li button.sel { background:color-mix(in srgb, var(--acc) 14%, transparent); }
-  li.picked { background:color-mix(in srgb, var(--acc) 30%, transparent); border-left-color:var(--acc); }
-  .tick { appearance:none; -webkit-appearance:none; flex:none; width:22px; height:22px; margin:0 0 0 6px; border:2px solid var(--mute); border-radius:50%; cursor:pointer; display:grid; place-content:center; opacity:.7; }
-  .tick:hover { border-color:var(--acc); opacity:1; }
-  .tick:checked { background:var(--acc); border-color:var(--acc); opacity:1; }
-  .tick:checked::after { content:"✓"; color:#fff; font-size:14px; font-weight:700; line-height:1; }
-  .tick:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
-  .grp .tick { margin-left:0; width:18px; height:18px; }
-  .grp .tick:checked::after { font-size:12px; }
+  html { scrollbar-color: var(--line-strong) transparent; }
+  ::selection { background: color-mix(in srgb, var(--acc) 30%, transparent); }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--fg); caret-color:var(--acc);
+         display:grid; grid-template-columns:288px minmax(0,1fr); min-height:100vh; -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums; }
+  @media (max-width:760px) { body { grid-template-columns:1fr; } }
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; border-radius:var(--r-sm); }
+  a { color:var(--acc); text-underline-offset:3px; }
+  h1, h2, h3 { text-wrap:balance; letter-spacing:-.01em; }
+  h3 { font-size:15px; margin:28px 0 10px; }
+  code, pre { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  svg.i { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* ---- sidebar */
+  aside { background:var(--surface); border-right:1px solid var(--line); padding:18px 14px 12px; display:flex; flex-direction:column; gap:12px;
+          position:sticky; top:0; height:100vh; overflow-y:auto; }
+  @media (max-width:760px) { aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); } }
+  .brand { display:flex; flex-direction:column; gap:1px; padding:0 4px; }
+  .brand h1 { font-size:17px; font-weight:700; margin:0; }
+  .brand small { color:var(--mute); font-size:12px; }
+  .side-actions { display:grid; grid-template-columns:1fr auto; gap:6px; }
+  .side-links { display:flex; gap:2px; flex-wrap:wrap; margin:-4px 0 0; }
+  .side-links a { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border-radius:var(--r-sm); color:var(--mute); text-decoration:none; font-size:13px; }
+  .side-links a:hover { background:var(--sunk); color:var(--fg); }
+  .search { position:relative; }
+  .search svg { position:absolute; left:10px; top:50%; translate:0 -50%; color:var(--mute); pointer-events:none; }
+  #search { width:100%; height:34px; padding:0 10px 0 32px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--sunk); color:var(--fg); font:inherit; }
+  #search::placeholder { color:var(--mute); }
+  #search:focus { background:var(--surface); border-color:var(--acc); outline:none; box-shadow:0 0 0 3px var(--acc-soft); }
+  #list { flex:1; min-height:0; }
+  .side-foot { display:flex; align-items:center; gap:4px; border-top:1px solid var(--line); padding-top:10px; margin:0 -2px; }
+  .side-foot .btn { border-color:transparent; background:none; padding:0 8px; color:var(--mute); }
+  .side-foot .btn:hover { background:var(--sunk); color:var(--fg); }
+  #ver { display:none; }   /* the version is under the name at the top */
+
+  ul { list-style:none; padding:0; margin:0 0 6px; }
+  li { display:flex; align-items:center; gap:2px; border-radius:var(--r-sm); }
+  li button { all:unset; display:grid; grid-template-columns:18px minmax(0,1fr); column-gap:8px; align-items:start; flex:1; min-width:0; padding:7px 8px; border-radius:var(--r-sm); cursor:pointer; overflow-wrap:anywhere; }
+  li button > svg { margin-top:2px; color:var(--mute); }
+  li button small { grid-column:2; color:var(--mute); display:block; font-size:12px; }
+  li:hover { background:var(--sunk); }
+  li button.sel { background:var(--acc-soft); }
+  li button.sel > svg { color:var(--acc); }
+  li button.sel span { font-weight:600; }
+  li.picked { background:var(--acc-soft); }
+  li button:focus-visible { outline:2px solid var(--acc); outline-offset:-2px; }
+  .tick { appearance:none; -webkit-appearance:none; flex:none; width:18px; height:18px; margin:0 0 0 6px; border:1.5px solid var(--line-strong); border-radius:5px; cursor:pointer; display:grid; place-content:center;
+          background:var(--surface); opacity:0; transition:opacity .15s, background-color .15s, border-color .15s; }
+  li:hover .tick, .grp:hover .tick, .tick:checked, .tick:indeterminate, .tick:focus-visible, #list.selecting .tick { opacity:1; }
+  @media (hover:none) { .tick { opacity:1; } }
+  .tick:hover { border-color:var(--acc); }
+  .tick:checked { background:var(--acc); border-color:var(--acc); }
+  .tick:checked::after { content:""; width:10px; height:6px; border:2px solid var(--acc-fg); border-top:0; border-right:0; rotate:-45deg; translate:0 -1px; }
   .tick:indeterminate { border-color:var(--acc); }
-  .tick:indeterminate::after { content:"–"; color:var(--acc); font-weight:700; line-height:1; }
-  li small { color:var(--mute); display:block; }
-  .row { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
-  .btn { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:none; color:var(--fg); text-decoration:none; cursor:pointer; font:inherit; }
-  .btn:hover { border-color:var(--acc); }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  @media (max-width:1000px) { .grid { grid-template-columns:1fr; } }
-  #view { width:100%; height:380px; border:1px solid var(--line); border-radius:6px; }
-  img { max-width:100%; border:1px solid var(--line); border-radius:6px; background:#fff; }
-  pre { background:color-mix(in srgb, var(--fg) 6%, transparent); padding:10px; border-radius:6px; overflow:auto; max-height:240px; font-size:12px; }
-  .thumbs { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:6px; margin-top:8px; }
-  .thumbs img { width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer; }
-  dialog { border:0; padding:0; background:none; max-width:96vw; }
-  dialog::backdrop { background:rgba(0,0,0,.7); }
-  dialog img { max-width:96vw; max-height:92vh; display:block; }
-  .btn.on { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 16%, transparent); }
-  .grp { display:flex; align-items:center; gap:6px; margin:14px 0 4px; font-weight:600; }
-  .grp small { color:var(--mute); font-weight:400; }
+  .tick:indeterminate::after { content:""; width:8px; height:2px; background:var(--acc); border-radius:1px; }
+  .grp .tick { margin-left:0; }
+  .grp { display:flex; align-items:center; gap:6px; margin:14px 0 4px; padding:0 4px 0 6px; font-size:12px; font-weight:600; color:var(--mute); text-transform:uppercase; letter-spacing:.04em; }
+  .grp small { font-weight:500; background:var(--sunk); border-radius:99px; padding:0 7px; letter-spacing:0; }
   .grp .sp { flex:1; }
-  .ico { all:unset; cursor:pointer; padding:2px 6px; border-radius:4px; color:var(--mute); font-size:13px; }
-  .ico:hover { background:color-mix(in srgb, var(--acc) 14%, transparent); color:var(--fg); }
-  #search { width:100%; margin:10px 0 0; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:none; color:var(--fg); font:inherit; }
-  form label { display:block; margin:10px 0; font-size:13px; color:var(--mute); }
-  form input { display:block; width:100%; margin-top:4px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
-  #form { border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--fg); padding:16px; min-width:min(360px,90vw); }
-  #form::backdrop { background:rgba(0,0,0,.5); }
-  .danger { border-color:var(--err); color:var(--err); }
+  .ico { all:unset; cursor:pointer; display:grid; place-content:center; width:26px; height:26px; border-radius:6px; color:var(--mute); font-size:13px; }
+  .ico:hover { background:var(--sunk); color:var(--fg); }
+  .ico:focus-visible { outline:2px solid var(--acc); }
+  .ico svg.i { width:15px; height:15px; }
+  #selectBar { position:sticky; bottom:-12px; margin:8px -14px -12px !important; padding:12px 14px !important; background:var(--surface) !important;
+               border-top:1px solid var(--line) !important; box-shadow:0 -10px 24px rgb(0 0 0 / .08) !important; }
+
+  /* ---- controls */
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; align-items:center; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; height:34px; padding:0 12px; border:1px solid var(--line); border-radius:var(--r-sm);
+         background:var(--surface); color:var(--fg); text-decoration:none; cursor:pointer; font:inherit; font-weight:500; white-space:nowrap;
+         transition:background-color .15s var(--ease), border-color .15s var(--ease), transform .12s var(--ease), color .15s; }
+  .btn:hover { border-color:var(--line-strong); background:var(--sunk); }
+  .btn:active:not(:disabled) { transform:scale(.97); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .btn.primary { background:var(--acc); border-color:var(--acc); color:var(--acc-fg); }
+  .btn.primary:hover { background:color-mix(in srgb, var(--acc) 88%, var(--fg)); }
+  .btn.on { border-color:var(--acc); background:var(--acc-soft); color:var(--fg); }
+  .danger, .btn.danger { color:var(--err); }
+  .btn.danger:hover { border-color:color-mix(in srgb, var(--err) 50%, transparent); background:color-mix(in srgb, var(--err) 10%, transparent); }
+  select, input[type=number], input[type=text], input:not([type]), textarea {
+    height:32px; padding:0 8px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface); color:var(--fg); font:inherit; }
+  textarea { height:auto; padding:8px; }
+  select:focus, input[type=number]:focus, input[type=text]:focus, input:not([type]):focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-soft); }
+  input[type=checkbox], input[type=radio], input[type=range] { accent-color:var(--acc); }
+  label { cursor:pointer; }
+  .hint { font-size:12.5px; color:var(--mute); margin:4px 0 0; }
   .ok { color:var(--ok); } .error { color:var(--err); }
   .mute { color:var(--mute); }
+  img { max-width:100%; border-radius:var(--r-sm); }
+  pre { background:var(--sunk); border:1px solid var(--line); padding:12px 14px; border-radius:var(--r); overflow:auto; max-height:260px; font-size:12px; line-height:1.55; margin:0; }
+
+  /* ---- scan page */
+  main { padding:22px 28px 40px; min-width:0; }
+  @media (max-width:760px) { main { padding:16px; } }
+  #hint { display:grid; place-content:center; text-align:center; min-height:60vh; color:var(--mute); }
+  #hint svg { width:40px; height:40px; margin:0 auto 10px; stroke-width:1.4; color:var(--line-strong); }
+  .head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  #title { font-size:22px; font-weight:700; margin:0; min-width:0; overflow-wrap:anywhere; }
+  #status { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; padding:2px 9px 2px 8px; border-radius:99px; background:var(--sunk); color:var(--mute); }
+  #status::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+  #status.ok { color:var(--ok); background:color-mix(in srgb, var(--ok) 13%, transparent); }
+  #status.error { color:var(--err); background:color-mix(in srgb, var(--err) 13%, transparent); }
+  #status.converting, #status.processing, #status.pending, #status.live { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); }
+  #actions { margin:16px 0 18px; gap:6px; }
+  #actions a[download] { order:-1; height:30px; padding:0 10px; font-size:13px; background:var(--sunk); border-color:transparent; }
+  #actions a[download]::before { content:""; width:14px; height:14px; background:currentColor; opacity:.75;
+    -webkit-mask:var(--dl) center/contain no-repeat; mask:var(--dl) center/contain no-repeat; }
+  #actions a[download]:hover { border-color:var(--line-strong); }
+  #actions .danger { margin-left:auto; }
+  #actions input { width:5.5em; }
+  :root { --dl:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3'/%3E%3C/svg%3E"); }
+  .work { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,380px); gap:20px; align-items:start; }
+  @media (max-width:1180px) { .work { grid-template-columns:1fr; } }
+  .stage-col { min-width:0; }
+  .side-col { display:flex; flex-direction:column; gap:14px; min-width:0; }
+  .work:not(:has(.side-col > .panel:not([hidden]))) { grid-template-columns:minmax(0,1fr); }
+  .work:not(:has(.side-col > .panel:not([hidden]))) .side-col { display:none; }
+  #view { position:relative; width:100%; height:clamp(360px, 64vh, 760px); border-radius:var(--r); background:var(--stage); overflow:hidden; border:1px solid var(--line); }
+  #view canvas { display:block; }
+  .view-hint { margin:8px 2px 0; }
+  #plan { display:block; margin-top:16px; background:#fff; border:1px solid var(--line); border-radius:var(--r); }
+  #modes { display:inline-flex; gap:2px; padding:3px; margin:0 0 10px; background:var(--sunk); border:1px solid var(--line); border-radius:calc(var(--r-sm) + 3px); }
+  #modes .btn { height:28px; border-color:transparent; background:none; color:var(--mute); }
+  #modes .btn:hover { color:var(--fg); }
+  #modes .btn.on { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgb(0 0 0 / .12); }
+  #measureBar { margin:0 0 10px !important; }
+  .panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:16px; box-shadow:var(--shadow); }
+  .panel > b:first-child, .panel-title { display:block; font-size:14px; font-weight:650; margin-bottom:2px; }
+  .panel .row { margin:8px 0; }
+  #qScore { font-variant-numeric:tabular-nums; letter-spacing:-.02em; font-size:1.7rem !important; min-width:2.6em !important; }
+  /* in the side column: score and text side by side, the ring drawing centred under them */
+  #qualityBox > .row { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:start !important; margin:0; }
+  #qualityBox > .row > div { min-width:0 !important; }
+  #qPolar { grid-column:1 / -1; justify-self:center; }
+  .work:not(:has(.side-col > .panel:not([hidden]))) #qualityBox > .row { grid-template-columns:auto minmax(0,1fr) auto; }
+  .thumbs { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; margin-top:8px; }
+  .thumbs img { width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer; border:1px solid var(--line); transition:transform .2s var(--ease), border-color .2s; }
+  .thumbs img:hover { transform:scale(1.02); border-color:var(--acc); }
+  details summary { cursor:pointer; }
+  #log { margin-top:0; }
+
+  /* ---- dialogs: one look for all of them */
+  dialog { border:1px solid var(--line); border-radius:14px; background:var(--surface); color:var(--fg); box-shadow:var(--shadow-lg); padding:0; }
+  dialog[open] { animation:pop .22s var(--ease); }
+  @keyframes pop { from { opacity:0; transform:scale(.97) translateY(6px); } }
+  dialog::backdrop { background:rgb(5 10 9 / .55); backdrop-filter:blur(3px); }
+  dialog h3 { margin:0; }
+  #dlg { border:0; padding:0; background:none; box-shadow:none; max-width:96vw; }
+  #dlg::backdrop { background:rgb(0 0 0 / .8); }
+  #dlg img { max-width:96vw; max-height:92vh; display:block; }
+  form label { display:block; margin:10px 0; font-size:13px; color:var(--mute); }
+  form input { display:block; width:100%; margin-top:4px; }
+  #form { padding:20px; min-width:min(380px,90vw); }
+  #form h3 { font-size:16px; }
+  #formOk { background:var(--acc); border-color:var(--acc); color:var(--acc-fg); }
   body.embed { grid-template-columns:1fr; }
-  body.embed aside { border-right:0; border-bottom:1px solid var(--line); max-height:28vh; overflow:auto; padding:8px 12px; }
-  body.embed h1 { display:none; }
-  .hint { font-size:12px; color:var(--mute); margin:4px 0 0; }
-  #msgBar { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:60; max-width:min(640px,calc(100vw - 32px)); display:flex; gap:10px; align-items:flex-start;
-            padding:10px 12px; border:1px solid var(--err); border-radius:8px; background:var(--bg); color:var(--fg); box-shadow:0 6px 24px #0005; font-size:14px; }
+  body.embed aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); max-height:28vh; overflow:auto; padding:8px 12px; }
+  body.embed .brand, body.embed .side-links { display:none; }
+  #msgBar { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); z-index:60; max-width:min(640px,calc(100vw - 32px)); display:flex; gap:10px; align-items:flex-start;
+            padding:12px 12px 12px 14px; border:1px solid color-mix(in srgb, var(--err) 45%, var(--line)); border-radius:var(--r); background:var(--surface); color:var(--fg); box-shadow:var(--shadow-lg); font-size:14px;
+            animation:rise .25s var(--ease); }
+  @keyframes rise { from { opacity:0; transform:translate(-50%, 10px); } }
   #msgBar span { flex:1; min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; max-height:30vh; overflow:auto; }
+  #liveOffer { float:right; color:var(--err); border-color:color-mix(in srgb, var(--err) 45%, var(--line)); }
   /* the cut tool: a big panel over the page (about 92% of the screen), 3D view large, options docked on the right */
-  #cutStage { display:none; position:fixed; inset:4vh 4vw; z-index:50; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 60px #000a; flex-direction:column; overflow:hidden; }
-  #cutStage.open { display:flex; }
+  #cutStage { display:none; position:fixed; inset:4vh 4vw; z-index:50; background:var(--surface); color:var(--fg); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-lg); flex-direction:column; overflow:hidden; }
+  #cutStage.open { display:flex; animation:pop .22s var(--ease); }
   #cutStage.full { inset:0; border-radius:0; border:0; }
-  #cutScrim { display:none; position:fixed; inset:0; z-index:49; background:#0008; }
+  #cutScrim { display:none; position:fixed; inset:0; z-index:49; background:rgb(5 10 9 / .55); backdrop-filter:blur(3px); }
   #cutScrim.open { display:block; }
-  .cutbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line); }
+  .cutbar { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
   .cutbar b { font-size:1.05rem; }
-  .cutbody { flex:1; min-height:0; display:flex; gap:12px; padding:10px; }
+  .cutbody { flex:1; min-height:0; display:flex; gap:14px; padding:12px; }
   #cutViewCol { flex:1 1 70%; min-width:0; display:flex; flex-direction:column; }
-  #cutView { flex:1; min-height:300px; border:1px solid var(--line); border-radius:6px; position:relative; touch-action:none; overflow:hidden; }
+  #cutView { flex:1; min-height:300px; border:1px solid var(--line); border-radius:var(--r); position:relative; touch-action:none; overflow:hidden; background:var(--stage); }
   #cutView canvas { display:block; }
   #cutPanel { flex:0 0 27%; min-width:300px; max-width:440px; overflow-y:auto; padding-right:4px; }
-  #faceWrap { resize:vertical; overflow:hidden; height:230px; min-height:120px; max-height:70vh; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  #faceWrap { resize:vertical; overflow:hidden; height:230px; min-height:120px; max-height:70vh; border:1px solid var(--line); border-radius:var(--r-sm); background:#fff; }
   #faceView { width:100%; height:100%; display:block; touch-action:none; }
   @media (max-width: 800px) {
     #cutStage { inset:0; border-radius:0; }
@@ -85,17 +208,18 @@
     #cutPanel { flex:none; max-width:none; min-width:0; overflow:visible; }
     .cutbar .hint { display:none; }
   }
+  @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation:none !important; transition:none !important; } }
 </style>
 </head>
 <body>
 <aside>
-  <h1>RoomScan <small id="verTop" style="font-size:12px;font-weight:400;color:var(--mute)"></small></h1>
-  <div class="row"><button class="btn" id="newHome">+ Home</button><button class="btn" id="importBtn" title="Upload a scan by hand: a zip from this server, scan.json (floor plan), .usdz (object), .ply (3D room), or a model (.stl .3mf .obj). You can also drop files on this panel.">Upload file…</button></div>
-  <div class="row" style="margin-top:6px"><a class="btn" href="/photo.html" style="text-decoration:none">Photo Measure</a><a class="btn" href="/apps.html" style="text-decoration:none">Get the app</a></div>
+  <div class="brand"><h1>RoomScan</h1><small id="verTop"></small></div>
+  <div class="side-actions"><button class="btn primary" id="importBtn" title="Upload a scan by hand: a zip from this server, scan.json (floor plan), .usdz (object), .ply (3D room), or a model (.stl .3mf .obj). You can also drop files on this panel."><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>Upload file…</button><button class="btn" id="newHome" title="New home: a folder for the rooms of one place"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Home</button></div>
+  <nav class="side-links"><a href="/photo.html"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2M11.5 9.5l2-2M8.5 6.5l2-2M17.5 15.5l2-2"/></svg>Photo Measure</a><a href="/apps.html"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>Get the app</a></nav>
   <div class="hint" id="uploadMsg" hidden></div>
   <div class="row" hidden>
     <input type="file" id="importFile" multiple accept=".zip,.json,.usdz,.ply,.stl,.3mf,.obj,.glb,.gltf,.off" hidden></div>
-  <input id="search" placeholder="Search rooms and objects" type="search">
+  <div class="search"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" placeholder="Search rooms and objects" type="search"></div>
   <div id="list"></div>
   <datalist id="projList"></datalist>
   <div class="row" id="selectBar" hidden style="position:sticky;bottom:0;margin:8px -8px 0;padding:8px;background:var(--bg);border-top:1px solid var(--acc);box-shadow:0 -6px 12px rgba(0,0,0,.15)">
@@ -104,16 +228,14 @@
     <button class="btn" id="moveSelected">Move to home…</button><button class="btn" id="zipSelected">Download as zip</button>
     <button class="btn" id="reconvertSelected">Re-convert</button><button class="btn danger" id="deleteSelected">Delete selected</button>
   </div>
-  <p class="mute" id="empty" hidden>No scans yet. Upload from the app.</p>
-  <button class="btn" id="issuesBtn" style="margin-top:8px">Issues</button> <button class="btn" id="storageBtn" style="margin-top:8px" title="Where the scans and temp files are, and clearing them">Storage</button>
-  <p class="hint" id="ver"></p>
+  <p class="mute" id="empty" hidden>No scans yet. Scan with the app, or upload a file.</p>
+  <div class="side-foot"><button class="btn" id="issuesBtn"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></svg>Issues</button><button class="btn" id="storageBtn" title="Where the scans and temp files are, and clearing them"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>Storage</button><p class="hint" id="ver"></p></div>
 </aside>
 <main>
-  <button class="btn" id="liveOffer" hidden style="float:right;border-color:var(--err)" title="A phone is sending a scan right now">● Live capture running: show it</button>
-  <p class="mute" id="hint">Select a scan.</p>
+  <button class="btn" id="liveOffer" hidden title="A phone is sending a scan right now">Live capture running: show it</button>
+  <div id="hint"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 15l3-7 4 5 3-3"/></svg><p>Pick a scan on the left to see it in 3D.</p></div>
   <div id="detail" hidden>
-    <h1 id="title"></h1>
-    <div>Status: <b id="status"></b><span class="hint" id="appInfo"></span></div>
+    <div class="head"><h1 id="title"></h1><b id="status"></b><span class="hint" id="appInfo"></span></div>
     <div class="row" id="actions"></div>
     <!-- live guided capture (docs/live-guide.md): the map the phone is being sent, watched from here -->
     <div id="livePanel" hidden style="margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:8px">
@@ -126,9 +248,9 @@
         <ol id="liveNeeds" style="margin:0 0 0 18px;padding:0;flex:1;min-width:200px"></ol>
       </div>
     </div>
-    <div class="row" id="modes" hidden></div>
-    <div class="grid">
-      <div>
+    <div class="work">
+      <div class="stage-col">
+        <div class="row" id="modes" hidden></div>
         <div id="measureBar" class="row" hidden style="margin:6px 0;align-items:center">
           <button class="btn" id="measureBtn" title="Click two points on the model">Measure</button>
           <span class="hint" id="sizeInfo"></span>
@@ -140,14 +262,18 @@
             <button class="btn" id="clearMeasure">Clear</button>
           </span>
         </div>
-        <div id="qualityBox" hidden style="margin:6px 0 14px;padding:10px;border:1px solid var(--line);border-radius:8px">
+        <div id="view"></div><p class="hint view-hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p>
+        <img id="plan" alt="Plan">
+      </div>
+      <div class="side-col">
+        <div id="qualityBox" class="panel" hidden>
           <div class="row" style="align-items:center;gap:12px">
             <div id="qScore" style="font-size:2rem;font-weight:700;min-width:3.2em;text-align:center;border-radius:10px;padding:6px 10px"></div>
             <div style="flex:1;min-width:200px"><b>Scan quality</b> <span class="hint" id="qSummary"></span><ul id="qTips" style="margin:6px 0 0 18px;padding:0"></ul></div>
             <svg id="qPolar" width="170" height="170" viewBox="-85 -85 170 170" role="img" aria-label="Where the phone was round the part"></svg>
           </div>
         </div>
-        <div id="printBar" hidden style="margin:6px 0 14px;padding:10px;border:1px solid var(--line);border-radius:8px">
+        <div id="printBar" class="panel" hidden>
           <b>Cut into parts</b>
           <p class="hint" style="margin:4px 0 8px">Cut the model into parts like in Orca Slicer: open the cut tool, move and tilt the plane with the mouse, see both parts, choose connectors, then <b>Perform cut</b>.</p>
           <div class="row" style="align-items:center;margin:4px 0">
@@ -246,8 +372,9 @@
           <div id="featOut" class="hint" style="margin:6px 0"></div>
           <div id="colourOut" class="row" style="margin-top:6px"></div>
         </div>
-        <div id="view"></div><p class="hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p></div>
-      <div><img id="plan" alt="Plan"></div>
+        <div id="roomBox" class="panel" hidden></div>
+        <details id="settingsBox" class="panel" hidden><summary><b>Settings used for this model</b></summary><pre id="settingsPre" style="margin:10px 0 0"></pre></details>
+      </div>
     </div>
     <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs"></div></div>
     <div id="framesBox" hidden>
@@ -256,8 +383,6 @@
       <div id="frameGrid" class="thumbs"></div>
       <div class="row" style="margin-top:8px"><button class="btn" id="detectAll">Auto-detect all frames</button><button class="btn" id="rebuildBtn">Rebuild from frames</button></div>
     </div>
-    <details id="settingsBox" hidden open style="margin:8px 0"><summary><b>Settings used for this model</b></summary><pre id="settingsPre" style="margin:6px 0"></pre></details>
-    <div id="roomBox" hidden style="margin:10px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px"></div>
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
@@ -294,7 +419,7 @@
       <button class="btn" id="edSave">Save</button><button class="btn" id="edSaveNext">Save &amp; next</button>
     </div>
   </div></dialog>
-<div id="msgBar" role="alert" hidden><span id="msgText"></span><button class="ico" id="msgClose" title="Close">✕</button></div>
+<div id="msgBar" role="alert" hidden><span id="msgText"></span><button class="ico" id="msgClose" title="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
 <dialog id="form"><form method="dialog">
   <h3 id="formTitle" style="margin:0 0 8px"></h3><div id="formFields"></div>
   <div class="row" style="justify-content:flex-end"><button class="btn" type="button" onclick="document.getElementById('form').close('cancel')">Cancel</button><button class="btn" id="formOk" type="submit" value="ok"></button></div>
@@ -303,7 +428,7 @@
 import * as THREE from "./three.module.min.js";
 
 const $ = id => document.getElementById(id);
-let current = null, renderer = null, raf = 0;
+let current = null, renderer = null, raf = 0, viewRO = null;
 
 /** A message at the bottom of the page that does not stop anything (alert() would block the page and any script driving it). */
 let msgTimer = 0;
@@ -341,9 +466,21 @@ function ask(title, fields, okLabel = "Save", danger = false) {
   });
 }
 
+// Line icons (24-unit grid, stroked with the text colour).
+const ICON = {
+  edit: '<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+  close: '<path d="M18 6 6 18M6 6l12 12"/>',
+  object: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>',
+  mesh: '<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 15l3-7 4 5 3-3"/>',
+  room: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 10h7v11M14 3v7h7"/>',
+};
+const icon = name => { const t = document.createElement("template"); t.innerHTML = `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`; return t.content.firstChild; };
 function icoBtn(label, title, fn) {
   const b = document.createElement("button");
-  b.className = "ico"; b.textContent = label; b.title = title; b.onclick = fn;
+  const name = { "✎": "edit", "⬇": "download", "✕": "close" }[label];
+  b.className = "ico"; b.title = title; b.setAttribute("aria-label", title); b.onclick = fn;
+  if (name) b.append(icon(name)); else b.textContent = label;
   return b;
 }
 
@@ -432,7 +569,7 @@ async function loadList() {
         for (const id of ids) cb.checked ? SEL.ids.add(id) : SEL.ids.delete(id);
         SEL.last = s.id; selCount(); loadList();
       };
-      b.textContent = (s.kind === "object" ? "◆ " : s.kind === "mesh" ? "◉ " : "▢ ") + s.name;
+      b.append(icon(s.kind === "object" ? "object" : s.kind === "mesh" ? "mesh" : "room"), Object.assign(document.createElement("span"), { textContent: s.name }));
       const small = document.createElement("small");
       small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?") + (s.tags?.length ? " · #" + s.tags.join(" #") : "");
       b.append(small);
@@ -1122,7 +1259,7 @@ async function cutViewer(id, hooks) {
   const rend = new THREE.WebGLRenderer({ antialias: true });
   rend.setSize(W, H); rend.localClippingEnabled = true; holder.append(rend.domElement);
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
+  scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue("--stage").trim());
   scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(300, -400, 500); scene.add(sun);
   const geo = new THREE.BufferGeometry();
@@ -1380,7 +1517,7 @@ async function fitCheck(id, file, against) {
   out.append(holder, side);
   const W = holder.clientWidth || 400, H = 320;
   const rend = fitRend = new THREE.WebGLRenderer({ antialias: true }); rend.setSize(W, H); holder.append(rend.domElement);
-  const scene = new THREE.Scene(); scene.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue("--stage").trim());
   scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.8));
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(m.vertices, 3));
@@ -1748,11 +1885,14 @@ function show3d(group, keepView = false) {
   renderer.setSize(W, H);
   el.append(renderer.domElement);
   const sc = new THREE.Scene();
-  sc.background = new THREE.Color(getComputedStyle(document.body).backgroundColor);
+  sc.background = new THREE.Color(getComputedStyle(el).backgroundColor);
   sc.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(3, 8, 5); sc.add(sun);
   sc.add(group);
   const cam = new THREE.PerspectiveCamera(50, W / H, 0.01, 1000);
+  viewRO?.disconnect();   // the box is sized by CSS (window height, side column): follow it
+  viewRO = new ResizeObserver(() => { const w = el.clientWidth, h = el.clientHeight; if (!w || !h) return; renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); });
+  viewRO.observe(el);
   let dist = 5, r = 5;
   const c = new THREE.Vector3();
   const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.7, 0.8, 0, "YXZ"));
@@ -1907,7 +2047,7 @@ function enterLive() {
 
 async function loadIssues() {
   const items = await (await fetch("/api/issues")).json();
-  $("issuesBtn").textContent = items.length ? `Issues (${items.length})` : "Issues";
+  $("issuesBtn").replaceChildren($("issuesBtn").querySelector("svg"), items.length ? `Issues (${items.length})` : "Issues");   // keep the icon
   const box = $("issuesList");
   box.replaceChildren();
   if (!items.length) { box.textContent = "No problems reported."; return; }

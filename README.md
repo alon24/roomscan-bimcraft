@@ -214,8 +214,12 @@ Open `http://<server>:8010` in any browser.
 ![Web page with a ring scan](docs/img/web-scan.png)
 
 - **Left**: all scans, grouped by home, with search (name, home, tag, kind). **Upload file…** adds a scan by hand.
-- **Top buttons** per scan: downloads (`colored.ply`, `model.stl`, `model.3mf`), Re-convert, Rename,
-  Tags, Move to home, Save as zip, Share link, Delete.
+  Tick boxes appear when you point at a scan (for moving, zipping or deleting several). Issues and Storage are at the bottom.
+- **Top**: the scan's name and status, then its downloads (grey, with a download arrow: `colored.ply`, `model.stl`,
+  `model.3mf`), then Re-convert, Rename, Tags, Move to home, Save as zip, Share link, and Delete on the far right.
+- **Middle**: the 3D model, big. On a wide screen the scan quality, cut and print tools and the settings sit in a
+  column on the right; on a narrow screen they follow below the model. Photos, frames and the log are at the bottom.
+- Light or dark follows the computer's setting.
 - **Points / Solid surface**: switch how the 3D view is drawn. Drag to rotate, scroll to zoom,
   right-drag to pan, double-click to reset.
 
@@ -334,6 +338,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.45.0 (server, web) | **Redesigned web page**: the 3D model is big at the top with the tools in a side column, downloads and actions grouped, drawn icons, a status badge, one look for every dialog, proper light and dark themes (teal accent like the app); the 3D view resizes with the window. |
 | 0.44.x (app, Measure) | A big **Pin here** button drops a pin where the crosshair points, so you no longer have to tap the bullseye with your finger. The reading moved to the top in a see-through card, and the +/- zoom buttons are gone (pinch to zoom). |
 | 0.44.x (server, review fixes 2) | Deleting a scan during a live capture tells the phone and closes its connection (late frames refused, no folder comes back); a restart in the middle of a build builds the scan again once, then marks it error so **Re-convert** or **Build what I have** work; live frames are journaled and `photos.json` is rewritten every couple of seconds instead of after every frame (no slowdown on long captures, nothing acknowledged is lost in a crash); live maps arrive in order; matching a patch session to the old scan is about 4 times faster; depth pixels are unprojected at their centres (about 5 mm closer on synthetic rooms); a native crash in the test run is logged for the next run. |
 | 0.44.x (server, web) | **Storage** panel (paths to copy, sizes, clear temp / rebuildable files / all scans) and `tools/open-data.sh`; errors show in a message bar instead of a browser alert; a scan opened by a click or link is no longer replaced by a live capture (a **Live capture running: show it** button appears instead); cuts through many islands cap their connectors; colour suggestions say when a model has no colours. |
@@ -363,5 +368,5 @@ Every feature or change that a person would notice gets, in the same commit:
 1. a short how-to in the right section above (what it is, how to use it, what the colours or buttons mean),
 2. a line in the Changelog,
 3. a new screenshot if the web page changed. Re-take them with headless Chrome:
-   `google-chrome --headless=new --no-sandbox --window-size=1300,2600 --screenshot=docs/img/web-scan.png "http://localhost:8010/?scan=<id>"`
+   `google-chrome --headless=new --no-sandbox --window-size=1440,1000 --screenshot=docs/img/web-scan.png "http://localhost:8010/?scan=<id>"`
    then crop. Phone pictures in `docs/img/*.svg` are illustrations; replace them with real screenshots when you have some.
