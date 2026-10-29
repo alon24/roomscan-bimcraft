@@ -739,31 +739,45 @@ async function show(id) {
         // Turned on the spot: the arrows would pile up into a red star. A room built as a sweep (room.json) counts even when the
         // hand swung the phone further than 35 cm (seen: 64 cm), the same as the server's rule (the phone says it was a sweep).
         const onSpot = camMid && (room || meta.phone?.sweep === true || camPos.every(v => v.distanceTo(camMid) < 0.35));
-        const cams = onSpot ? [youHere(camMid, ext)] : camList.map(p => {
+        const cams = onSpot ? [youHere(camMid, ext, room?.floor?.wall_m)] : camList.map(p => {
           const m = photoMarker(id, p); m.scale.setScalar(Math.min(0.4, Math.max(0.05, ext / 8)) / 0.25); return m;   // at most 40 cm long
         });
         if (room) { for (const o of roomLabels(room, ext)) cams.push(o); showRoomBox(room); } else showRoomBox(null);
         const withBox = o => { const g = new THREE.Group(); g.add(o); if (box3) { const b = box3.clone(); b.userData.nofit = true; g.add(b); } for (const m of cams) { const c = m.clone(); c.userData.nofit = true; g.add(c); } return g; };
         if (meta.ring || box3) loadFrames(id);
         if (r.points) views.points = withBox(drawPoints(await (await fetch(`/api/scans/${id}/points.bin`)).arrayBuffer(), r));
-        if (r.faces) views.surface = withBox(drawColoured(await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r));
+        const meshBuf = r.faces ? await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer() : null;
+        if (stale()) return;
+        if (meshBuf) views.surface = withBox(drawColoured(meshBuf, r));
+        if (room) $("sizeInfo").textContent = "";   // the room panel gives width, length and height; the box round the mesh includes far outliers
+        // A sweep is seen from one spot, so the 360 panorama itself is the sharpest colour for it (one photo pixel per screen pixel from the middle)
+        const panoView = room && meshBuf ? await (async () => {
+          try {
+            const pr = await fetch(`/api/scans/${id}/panorama.json`); if (!pr.ok) return null;
+            const pj = await pr.json();
+            const tex = await new Promise((ok, no) => new THREE.TextureLoader().load(`/api/scans/${id}/panorama.jpg?width=${pj.width}`, ok, undefined, no));
+            return withBox(drawPanoTextured(meshBuf, r, tex, pj.centre));
+          } catch (e) { $("log").textContent += "\n360 photo view failed: " + e; return null; }
+        })() : null;
+        if (stale()) return;
+        if (panoView) views.pano = panoView;
         // Photo texture: every triangle drawn with the photo that sees it best, projected per pixel (built when first asked for)
         let texturable = false;
         if (r.faces) { try { texturable = (await fetch(`/api/scans/${id}/texturing.json`)).ok; } catch {} }
         if (stale()) return;
-        const first = views.surface && !meta.ring ? "surface" : texturable ? "textured" : views.surface ? "surface" : "points";
+        const first = views.pano ? "pano" : views.surface && !meta.ring ? "surface" : texturable ? "textured" : views.surface ? "surface" : "points";
         const box = $("modes");
         const pick = async k => {
           if (k === "textured" && !views.textured) {
             $("log").textContent = "Loading the photos onto the surface…\n" + $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
-            try { views.textured = withBox(await drawPhotoTextured(id, await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), r)); }
+            try { views.textured = withBox(await drawPhotoTextured(id, meshBuf, r)); }
             catch (e) { views.textured = null; texturable = false; $("log").textContent += "\nPhoto texture failed: " + e; k = first; }
             if (stale()) return;
             $("log").textContent = $("log").textContent.replace(/^Loading the photos onto the surface…\n/, "");
           }
           const middle = !room ? [] : [Object.assign(document.createElement("button"), { className: "btn", textContent: "From the middle", title: "Stand where you swept the phone and look round",
             onclick: () => V.inside(room.centre, room.heading_deg || 0) }), Object.assign(document.createElement("button"), { className: "btn", textContent: "From outside", onclick: () => { V.fit(); } })];
-          box.replaceChildren(...[["points", "Points (as on the phone)"], ["surface", "Solid surface"], ["textured", "Photo texture"]]
+          box.replaceChildren(...[["pano", "360° photo"], ["points", "Points (as on the phone)"], ["surface", "Solid surface"], ["textured", "Photo texture"]]
               .filter(([x]) => x === "textured" ? texturable : views[x]).map(([x, label]) => {
             const b = document.createElement("button");
             b.className = "btn" + (x === k ? " on" : ""); b.textContent = label;
@@ -954,8 +968,15 @@ function textSprite(text, size) {   // a label that always faces the viewer
   return sp;
 }
 
-function youHere(p, ext) {   // where you stood while sweeping: one marker instead of a pile of camera arrows
+function youHere(p, ext, floorDrop) {   // where you stood while sweeping: one marker instead of a pile of camera arrows
   const g = new THREE.Group();
+  if (floorDrop > 0.2) {   // a ring on the floor under the phone: seen when you look down from the middle, and from outside
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.17, 0.22, 48), new THREE.MeshBasicMaterial({ color: 0x2a7de1, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 }));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = -floorDrop + 0.01; ring.renderOrder = 19; g.add(ring);
+    const t = textSprite("you stood here", 0.09); t.position.set(0, -floorDrop + 0.12, 0); g.add(t);
+    g.position.copy(p); g.userData.nofit = true;
+    return g;
+  }
   const s = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.03, ext * 0.012), 16, 12), new THREE.MeshBasicMaterial({ color: 0x2a7de1, depthTest: false }));
   s.renderOrder = 19; g.add(s);
   const t = textSprite("you stood here", Math.max(0.08, ext * 0.03)); t.position.set(0, Math.max(0.12, ext * 0.05), 0); g.add(t);
@@ -1154,6 +1175,37 @@ function drawColoured(buf, r) {
   g.setAttribute("color", new THREE.BufferAttribute(lin, 3));
   g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, n * 12 + colourBytes, r.faces * 3), 1));
   return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));  // ARKit world is already Y-up
+}
+
+// The sweep mesh coloured by the 360 panorama: each vertex's direction from the panorama's centre picks its pixel
+// (equirectangular, azimuth 0 = -Z, +90 deg = +X, as panorama.py draws it). Triangles across the back seam get copies of
+// their vertices one turn further on (u + 1, texture repeats), so the seam is not smeared across the whole picture.
+function drawPanoTextured(buf, r, tex, centre) {
+  const n = r.vertices, colourBytes = Math.ceil(n * 3 / 4) * 4;
+  const src = new Float32Array(buf, 0, n * 3), idx = new Uint32Array(buf, n * 12 + colourBytes, r.faces * 3);
+  const uv = new Float32Array(n * 2), [cx, cy, cz] = centre;
+  for (let i = 0; i < n; i++) {
+    const x = src[3 * i] - cx, y = src[3 * i + 1] - cy, z = src[3 * i + 2] - cz, d = Math.hypot(x, y, z) || 1;
+    uv[2 * i] = Math.atan2(x, -z) / (2 * Math.PI) + 0.5;
+    uv[2 * i + 1] = 0.5 + Math.asin(Math.max(-1, Math.min(1, y / d))) / Math.PI;
+  }
+  const extraPos = [], extraUv = [], index = new Uint32Array(idx);
+  for (let f = 0; f < index.length; f += 3) {
+    const us = [uv[2 * index[f]], uv[2 * index[f + 1]], uv[2 * index[f + 2]]];
+    if (Math.max(...us) - Math.min(...us) < 0.5) continue;
+    for (let k = 0; k < 3; k++) if (us[k] < 0.5) {
+      const v = index[f + k];
+      extraPos.push(src[3 * v], src[3 * v + 1], src[3 * v + 2]); extraUv.push(uv[2 * v] + 1, uv[2 * v + 1]);
+      index[f + k] = n + extraPos.length / 3 - 1;
+    }
+  }
+  const pos = new Float32Array(src.length + extraPos.length); pos.set(src); pos.set(extraPos, src.length);
+  const uvAll = new Float32Array(uv.length + extraUv.length); uvAll.set(uv); uvAll.set(extraUv, uv.length);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uvAll, 2));
+  g.setIndex(new THREE.BufferAttribute(index, 1));
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = THREE.RepeatWrapping; tex.anisotropy = 8;
+  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
 }
 
 // Every triangle gets the photo that sees it best; the fragment shader projects that photo onto the surface pixel by pixel,
