@@ -51,10 +51,10 @@ final class LiveLink: NSObject, ObservableObject {
     // MARK: start / stop
 
     /// Start a live session. If the server cannot be reached the scan simply goes on offline and the link keeps trying.
-    func begin(server: String, kind: String, name: String, project: String, info: [String: Any], resume: String? = nil) {
+    func begin(server: String, kind: String, name: String, project: String, info: [String: Any]) {
         end()
         self.server = server.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
-        params = ["kind": kind, "name": name, "project": project, "info": info, "resume_scan": resume.map { $0 as Any } ?? NSNull()]
+        params = ["kind": kind, "name": name, "project": project, "info": info]
         active = true; retries = 0; acked = 0; sent = 0; serverReady = false
         link = .connecting
         Task { await createSession() }
