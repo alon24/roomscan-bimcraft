@@ -62,6 +62,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     private var gone = Set<UUID>()             // anchors removed by Move or Delete: a late update must not bring them back
     private var savedHighest = 0               // highest pin number in the saved room, so a new pin never reuses one not found yet
     private var mapSave: DispatchWorkItem?
+    private var mapDirty = false               // pins changed since the map was last written
     private var recent: [Double] = []
     private var lastPoint: SIMD3<Float>?
     private var live = true
@@ -147,22 +148,29 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             CameraOwner.drop(self)
         }
         guard !pinAnchors.isEmpty, !relocalizing, let status = session.currentFrame?.worldMappingStatus,
-              status == .mapped || status == .extending else { finish(); return }
-        session.getCurrentWorldMap { map, _ in
-            if let map, let data = try? NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true) {
-                try? data.write(to: Self.mapURL, options: .atomic)
+              status == .mapped || status == .extending else {
+            // Not mapped enough yet (the first seconds of a session): try again shortly, so new pins are not lost.
+            if !thenPause, live, mapDirty, !pinAnchors.isEmpty { scheduleMapSave() }
+            finish(); return
+        }
+        session.getCurrentWorldMap { [weak self] map, _ in
+            let ok = map.flatMap { try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true) }
+                .map { (try? $0.write(to: Self.mapURL, options: .atomic)) != nil } ?? false
+            DispatchQueue.main.async {
+                if ok { self?.mapDirty = false } else if !thenPause, self?.live == true, self?.mapDirty == true { self?.scheduleMapSave() }
+                finish()
             }
-            DispatchQueue.main.async { finish() }
         }
     }
 
     /// After a pin is placed, moved or deleted: save the map a moment later (the anchor is in the session by then), so the pins
     /// come back even when leaving the tab gives no time to save.
     private func scheduleMapSave() {
+        mapDirty = true
         mapSave?.cancel()
         let w = DispatchWorkItem { [weak self] in if self?.live == true { self?.saveMap(thenPause: false) } }
         mapSave = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: w)
     }
 
     func saveMeta() {
@@ -399,6 +407,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     private func forgetSavedRoom() {
         mapSave?.cancel()
+        mapDirty = false
         savedHighest = 0
         try? FileManager.default.removeItem(at: Self.mapURL)
         try? FileManager.default.removeItem(at: Self.metaURL)

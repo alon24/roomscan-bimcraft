@@ -59,8 +59,8 @@ Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
      **Clear selection** unpicks everything but keeps the pins.
 5. **Manage pins** (the pin button, bottom row): tick pins to select, swipe a pin to **name** it ("left wall") or delete it,
    link or unlink the two ticked pins, see all kept lines, untick all, delete all pins.
-6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links a moment after you place, move or
-   delete a pin, and when you leave the Measure tab or close the app. Come back to the same room and move slowly: "Looking for your
+6. **Pins are remembered.** The phone saves a map of the room with the pins, names and links about a second after you place, move
+   or delete a pin (it keeps trying until it has seen enough of the room), and when you close the app. Come back to the same room and move slowly: "Looking for your
    saved place…" turns green and everything reappears. Deleting the last pin forgets the saved room.
 7. **Hold** freezes the number, **Save** keeps it in the list (the list button, bottom right). Swipe to delete.
 8. The **eye** button hides or shows the depth colours.
