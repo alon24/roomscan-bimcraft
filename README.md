@@ -18,6 +18,15 @@ server, with no new app to install.
 Install: build comes from GitHub Actions, sideload `RoomScan.ipa` with iloader (see `CLAUDE.md`).
 Open **Settings (gear, top right)** and type your server address, e.g. `http://192.168.1.20:8010`.
 
+- **Leaving a scan stops it.** Switching tabs (or opening Settings) in the middle of a scan stops it exactly as **Stop** does, and
+  the line "Stopped because you left the scan screen" appears: what was captured is kept, so you can still **Upload** or **Save** it.
+  An Object Capture that was capturing is finished and built from the photos taken so far; one that had not started is cancelled.
+- **Storage (Settings, at the bottom).** Shows where the app keeps saved scans, temp files and caches (tap **Copy** for a path) and
+  how much space each takes. **Show in Files** opens the Files app at On My iPhone, RoomScan (saved scans are in `SavedScans`).
+  **Delete temp files** and **Delete all saved scans** (asks twice: confirm, then type DELETE) each say first how much they free.
+  A scan you are still working on is never deleted; temp files older than a day are deleted when the app starts, and a scan's temp
+  files go as soon as you Save it or start a new one.
+
 ### Measure tab: live distance, no scanning
 Point the phone, read the distance. Works instantly: no 20 to 30 second scan.
 
@@ -97,6 +106,9 @@ stays on the server. Because the frames are already on the server when you stop,
   "building"). If the frames cannot be sent within 2 minutes, or the build fails or takes over 15 minutes, the phone deletes the half-sent scan on the server and uploads the whole
   scan the ordinary way; if even that fails it is kept on the phone (Models, On this phone). The server also accepts the missing
   frames with `POST /api/scans/{id}/frames` (used by `tools/live_replay.py --offline-after`), but the app does not use it.
+- **Save on the phone instead.** Tapping **Save** after a live scan removes its draft on the server, so it is not built there after
+  10 minutes and then uploaded a second time from the phone. Upload it later from Models, On this phone. If the server had already
+  started building it (you tapped Upload first), the draft is kept.
 - **Watch it on the web page.** Open the scan page while someone scans: the scan appears by itself with a **Live capture** panel:
   the top-down map (green = seen well, orange = thin or far, blue = floor looked across, white dot = the phone), the percent
   covered, the numbered things to capture next, and **Build what I have** for a capture that was left unfinished (it also builds
@@ -314,6 +326,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 | Version | What was added |
 |---|---|
 | 0.44.x (server, web) | **Storage** panel (paths to copy, sizes, clear temp / rebuildable files / all scans) and `tools/open-data.sh`; errors show in a message bar instead of a browser alert; a scan opened by a click or link is no longer replaced by a live capture (a **Live capture running: show it** button appears instead); cuts through many islands cap their connectors; colour suggestions say when a model has no colours. |
+| 0.44.x (app, later) | Leaving the tab mid-scan stops the scan and keeps it; Save on a live scan removes the server draft (no duplicate); **Storage** in Settings (paths, sizes, Show in Files, delete temp files / all saved scans); temp photo folders are deleted after Save, New scan and at launch; Upload after Save marks the saved copy uploaded; big uploads stream from a file instead of memory; photos, the depth cloud and the ring speed are worked out off the main thread. |
 | 0.44.x (app) | After Stop, a live room scan shows what the link is doing (sending the last frames, building, server errors); live guidance, problem reports and ring sync work before the server address was ever changed in Settings; no repeated frames when another tab takes the camera. Removed scan modes no tab could open (guided object, LiDAR turntable, photo turntable). |
 | 0.44.x (server) | Floor plans: L-shaped rooms and rooms whose walls do not close now convert (**Re-convert** scans that failed before); walls now run clockwise so they face out. Photo Measure routes answer 400 for bad corners instead of failing. |
 | 0.44.0 (server) | **Live guided capture**: two-way WebSocket with the phone (live map and what-to-capture-next), live panel and Build what I have on the scan page, patching an existing scan by registering a new session to it, offline routes `/frames` and `/add`, uploads of any size, `tools/live_replay.py`. |
