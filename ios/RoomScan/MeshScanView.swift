@@ -345,7 +345,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         if outlining { status = "Still outlining the part in the photos, save again in a moment"; return }
         if savedCopy != nil { status = "Already saved on the phone (Models tab, On this phone)"; return }
         guard let package else { return }
-        guard keepOnPhone(package) else { status = "Could not save on the phone"; return }
+        guard keepOnPhone(package, move: uploads == 0 && !buildingOnPhone) else { status = "Could not save on the phone"; return }
         status = "Saved on the phone (Models tab, On this phone)"
         // A live-guided scan also has a draft on the server, which would be built there after 10 minutes and then uploaded again
         // from the saved copy: delete the draft. Not once the server has started building it (or has finished: scanID is nil then).
@@ -356,8 +356,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     /// Copy into the phone's storage, then work from that copy (Upload, Build here) and delete the temp folder.
-    private func keepOnPhone(_ p: ScanPackage) -> Bool {
-        guard let s = try? LocalStore.save(p) else { return false }
+    private func keepOnPhone(_ p: ScanPackage, move: Bool) -> Bool {
+        guard let s = try? LocalStore.save(p, move: move) else { return false }
         savedCopy = s
         let q = LocalStore.package(s)
         plyURL = q.mesh; photoURLs = q.photos; photosMetaURL = q.photosMeta; maskURLs = q.masks
@@ -415,7 +415,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
-            let saved = keepOnPhone(package)
+            let saved = keepOnPhone(package, move: uploads == 1 && !buildingOnPhone)   // only this failed upload read the files
             status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "mesh", message: "Upload failed", detail: "\(error)")
         }

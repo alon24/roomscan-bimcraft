@@ -89,28 +89,39 @@ enum LocalStore {
     static func dir(_ id: String) -> URL { root.appendingPathComponent(id) }
 
     /// Copy a scan's files into the phone's own storage. They stay until you delete them.
+    /// `move`: the files come from the scan's own temp folder, which nothing else reads: move them instead (same disk, so it needs no
+    /// free space, which matters when an upload has just failed for lack of it). If anything fails, moved files go back and the
+    /// half-made folder is removed, so the scan is never lost or left half-saved.
     @discardableResult
-    static func save(_ p: ScanPackage) throws -> SavedScan {
+    static func save(_ p: ScanPackage, move: Bool = false) throws -> SavedScan {
         let id = UUID().uuidString
         let d = dir(id)
         let fm = FileManager.default
-        try fm.createDirectory(at: d.appendingPathComponent("photos"), withIntermediateDirectories: true)
-        try fm.createDirectory(at: d.appendingPathComponent("masks"), withIntermediateDirectories: true)
+        var moved: [(from: URL, to: URL)] = []
         func keep(_ u: URL?, _ sub: String = "") throws -> String? {
             guard let u else { return nil }
             let rel = sub.isEmpty ? u.lastPathComponent : sub + "/" + u.lastPathComponent
-            try fm.copyItem(at: u, to: d.appendingPathComponent(rel))
+            let dest = d.appendingPathComponent(rel)
+            if move { try fm.moveItem(at: u, to: dest); moved.append((u, dest)) } else { try fm.copyItem(at: u, to: dest) }
             return rel
         }
-        let s = SavedScan(id: id, name: p.name, kind: p.kind, created: Date(),
-                          json: try keep(p.json), usdz: try keep(p.usdz), mesh: try keep(p.mesh), footprint: try keep(p.footprint),
-                          photosMeta: try keep(p.photosMeta), photos: try p.photos.compactMap { try keep($0, "photos") },
-                          masks: try p.masks.compactMap { try keep($0, "masks") }, realHeightMM: p.realHeightMM,
-                          turntableScan: p.turntableScan, ringScan: p.ringScan,
-                          info: p.info.flatMap { try? JSONSerialization.data(withJSONObject: $0) }, uploadedID: nil, uploadedAt: nil)
-        try write(s)
-        NotificationCenter.default.post(name: .savedScansChanged, object: nil)
-        return s
+        do {
+            try fm.createDirectory(at: d.appendingPathComponent("photos"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: d.appendingPathComponent("masks"), withIntermediateDirectories: true)
+            let s = SavedScan(id: id, name: p.name, kind: p.kind, created: Date(),
+                              json: try keep(p.json), usdz: try keep(p.usdz), mesh: try keep(p.mesh), footprint: try keep(p.footprint),
+                              photosMeta: try keep(p.photosMeta), photos: try p.photos.compactMap { try keep($0, "photos") },
+                              masks: try p.masks.compactMap { try keep($0, "masks") }, realHeightMM: p.realHeightMM,
+                              turntableScan: p.turntableScan, ringScan: p.ringScan,
+                              info: p.info.flatMap { try? JSONSerialization.data(withJSONObject: $0) }, uploadedID: nil, uploadedAt: nil)
+            try write(s)
+            NotificationCenter.default.post(name: .savedScansChanged, object: nil)
+            return s
+        } catch {
+            for m in moved.reversed() { try? fm.moveItem(at: m.to, to: m.from) }
+            try? fm.removeItem(at: d)
+            throw error
+        }
     }
 
     static func write(_ s: SavedScan) throws {

@@ -224,12 +224,12 @@ final class ObjectScanModel: ObservableObject {
     func saveOnPhone() {
         if savedCopy != nil { status = "Already saved on the phone (Models tab, On this phone)"; return }
         guard let package else { return }
-        status = keepOnPhone(package) ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+        status = keepOnPhone(package, move: uploads == 0) ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
     }
 
     /// Copy into the phone's storage, then work from that copy and delete the temp folder.
-    private func keepOnPhone(_ p: ScanPackage) -> Bool {
-        guard let s = try? LocalStore.save(p) else { return false }
+    private func keepOnPhone(_ p: ScanPackage, move: Bool) -> Bool {
+        guard let s = try? LocalStore.save(p, move: move) else { return false }
         savedCopy = s
         let q = LocalStore.package(s)
         usdzURL = q.usdz; photoURLs = q.photos; photosMetaURL = q.photosMeta
@@ -266,7 +266,7 @@ final class ObjectScanModel: ObservableObject {
             _ = try await Uploader.upload(package, server: server)
             status = "Uploaded"
         } catch {
-            let saved = keepOnPhone(package)
+            let saved = keepOnPhone(package, move: uploads == 1)   // only this failed upload read the files
             status = "Upload failed: \(error.localizedDescription)." + (saved ? " Saved on the phone: upload it later from Models, On this phone." : "")
             Reporter.report(tab: "object", message: "Upload failed", detail: "\(error)")
         }

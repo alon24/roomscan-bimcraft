@@ -1,15 +1,39 @@
 import SwiftUI
 import Foundation
 
+enum UploadError: LocalizedError {
+    case noSpace(need: Int64, have: Int64)
+
+    var errorDescription: String? {
+        switch self {
+        case let .noSpace(need, have):
+            return "Not enough free space to upload: need about \(Self.mb(need)) MB, have \(Self.mb(have)) MB. Free some space, or Save on the phone and upload from a computer"
+        }
+    }
+
+    private static func mb(_ b: Int64) -> Int64 { max(0, (b + 999_999) / 1_000_000) }
+}
+
 enum Uploader {
+    /// The upload body is one full copy of the scan in tmp. Check there is room for it first (plus 50 MB the system needs), so the
+    /// upload says so at once instead of failing halfway through writing it.
+    static func checkSpace(for files: [URL]) throws {
+        let need = files.reduce(Int64(1 << 20)) { $0 + TempFiles.bytes($1) }
+        guard let have = try? FileManager.default.temporaryDirectory
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage else { return }
+        if have < need + 50_000_000 { throw UploadError.noSpace(need: need, have: have) }
+    }
+
     @discardableResult
     static func upload(json: URL?, usdz: URL?, name: String, server: String, kind: String = "room",
                        photos: [URL] = [], photosMeta: URL? = nil, mesh: URL? = nil, footprint: URL? = nil, realHeightMM: Double? = nil, turntableScan: Bool = false, ringScan: Bool = false, info: [String: Any]? = nil, masks: [URL] = []) async throws -> String? {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans") else {
             throw URLError(.badURL)
         }
+        try checkSpace(for: [json, usdz, mesh, footprint, photosMeta].compactMap { $0 } + photos + masks)
         let boundary = UUID().uuidString
         // The body goes to a file and is sent from there: a 400-frame ring scan is about 240 MB, too much to hold in memory.
+        // If anything fails (a full disk, a missing file, the network) the defers below close and delete the partial body.
         let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(boundary).multipart")
         guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else { throw URLError(.cannotCreateFile) }
         TempFiles.hold(bodyURL)
