@@ -1,4 +1,5 @@
 """Live guided capture (docs/live-guide.md): coverage engine, WebSocket protocol, finish, offline completion, patching a scan."""
+import asyncio
 import json
 import math
 import sys
@@ -471,3 +472,38 @@ def test_needs_words_do_not_change_when_the_phone_frame_is_turned(tmp_path):
         texts.append(sorted(n["text"] for n in eng.next_message(turn, force=True)["needs"]))
     assert any("to the left" in t or "to the right" in t for t in texts[0]), texts[0]
     assert texts[0] == texts[1]
+
+
+class _RecordingSocket:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, obj):
+        await asyncio.sleep(0)               # a real send yields to the loop
+        self.sent.append(obj)
+
+
+def test_maps_go_out_in_seq_order_when_two_senders_race(tmp_path):
+    """The ticker and a hello (or two sockets) both ask for a map: the one computed first used to get the lower seq but could be
+    sent second. Now computing, numbering and sending are one step per session, so seq follows send order."""
+    sess = live.Session(tmp_path, "race", index=1, patch=False, engine=False)
+    calls, busy = [], []
+
+    def slow_then_fast(force=False):
+        calls.append(force)
+        busy.append(1)
+        assert len(busy) == 1, "two maps computed at the same time"
+        time.sleep(0.3 if len(calls) == 1 else 0.0)          # the first map takes longer to compute
+        busy.pop()
+        return {"type": "map", "call": len(calls)}
+
+    sess.next_map = slow_then_fast
+    ws = _RecordingSocket()
+
+    async def race():
+        await asyncio.gather(live.send_map(ws, sess, force=True), live.send_map(ws, sess), live.send_map(ws, sess, force=True))
+
+    asyncio.run(race())
+    maps = [m for m in ws.sent if m["type"] == "map"]
+    assert [m["seq"] for m in maps] == [1, 2, 3]
+    assert [m["call"] for m in maps] == [1, 2, 3]            # and the content is in the order it was computed

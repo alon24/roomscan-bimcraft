@@ -185,7 +185,8 @@ class Session:
         self.out: deque = deque()
         self.ws: WebSocket | None = None
         self.last_seen = time.time()
-        self.send_lock = asyncio.Lock()
+        self.send_lock = asyncio.Lock()      # one message at a time on the socket
+        self.map_lock = asyncio.Lock()       # one map at a time: computed, numbered and sent in that order (see send_map)
         self.jobs: queue.Queue = queue.Queue()
         self.fed = 0               # pending frames the worker has put into pending_engine
         self.seq = 0
@@ -404,11 +405,7 @@ class Session:
                        "text": "Film a wall or corner you already scanned, slowly, so I can find where you are in the room."}
                 msg["needs"] = ([ask] + msg["needs"])[:5]
                 msg["summary"] = ask["text"]
-        if msg is not None:
-            with self.lock:              # one counter for the session: a patch switches engines when it is matched
-                self.seq += 1
-                msg["seq"] = self.seq
-        return msg
+        return msg                       # without `seq`: send_map numbers it when it goes out
 
     def set_pose(self, transform) -> None:
         """The phone's pose in its own session frame; an aligned patch session keeps its engine in the old scan's frame."""
@@ -627,24 +624,40 @@ async def _publish_map(sess: Session, msg: dict) -> None:
     await ctx.hub.broadcast(ctx.hub.live_maps[sess.id])
 
 
+async def send_map(ws: WebSocket, sess: Session, want_map: bool = True, force: bool = False) -> None:
+    """Compute a map (in a worker thread), then send what is queued and the map. The whole step holds the session's map_lock, so
+    two callers (the ticker and a hello, or two sockets of one session) can neither compute at the same time (the engine keeps
+    hysteresis state) nor send their maps swapped: `seq` is given in the event loop, in send order, just before the send.
+    The lock is an asyncio lock: waiting for it, or for the thread, never blocks the event loop, and acks do not wait for it."""
+    async with sess.map_lock:
+        msg = None
+        if want_map:
+            try:
+                msg = await anyio.to_thread.run_sync(sess.next_map, force)
+            except Exception as e:               # a bug in the map must not stop the other messages for good
+                print(f"live map {sess.id}: {type(e).__name__}: {e}", flush=True)
+        for m in sess.drain():                   # after computing the map: an `aligned` it already reflects goes out first
+            await _send(ws, sess, m)
+        if msg is not None:
+            sess.seq += 1                        # one counter for the session: a patch switches engines when it is matched
+            msg["seq"] = sess.seq
+            await _send(ws, sess, msg)
+            await _publish_map(sess, msg)
+
+
 async def _ticker(ws: WebSocket, sess: Session) -> None:
     last = 0.0
     try:
         while True:
             await asyncio.sleep(0.2)
-            msg = None
-            if time.time() - last >= MAP_EVERY:
+            due = time.time() - last >= MAP_EVERY
+            if due:
                 last = time.time()
                 try:
-                    msg = await anyio.to_thread.run_sync(sess.next_map)
                     await anyio.to_thread.run_sync(sess.touch_meta)
-                except Exception as e:           # a bug in the map must not stop the other messages for good
-                    print(f"live map {sess.id}: {type(e).__name__}: {e}", flush=True)
-            for m in sess.drain():               # after computing the map: an `aligned` it already reflects goes out first
-                await _send(ws, sess, m)
-            if msg is not None:
-                await _send(ws, sess, msg)
-                await _publish_map(sess, msg)
+                except Exception as e:
+                    print(f"live meta {sess.id}: {type(e).__name__}: {e}", flush=True)
+            await send_map(ws, sess, want_map=due)
     except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
         return
 
@@ -681,11 +694,7 @@ async def _on_text(ws: WebSocket, sess: Session, m: dict) -> None:
     if t == "hello":
         await _send(ws, sess, {"type": "ack", "n": sess.acked})
         await _send(ws, sess, {"type": "state", "status": _state(sess.d), "scan_id": sess.id})
-        msg = await anyio.to_thread.run_sync(lambda: sess.next_map(force=True))
-        for q in sess.drain():               # as in the ticker: a queued `aligned` goes before a map that reflects it
-            await _send(ws, sess, q)
-        if msg is not None:
-            await _send(ws, sess, msg)
+        await send_map(ws, sess, force=True)
     elif t == "pose":
         try:
             if m.get("transform") is not None:
