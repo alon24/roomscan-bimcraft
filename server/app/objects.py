@@ -9,6 +9,18 @@ import trimesh
 from pxr import Usd, UsdGeom
 
 
+def fan_corners(counts) -> np.ndarray:
+    """Fan-triangulate polygons with these vertex counts: (triangles, 3) positions in the face-vertex list, the same order as
+    `for c in counts: for k in range(1, c - 1): (i, i + k, i + k + 1)`."""
+    counts = np.asarray(counts, dtype=np.int64).reshape(-1)
+    starts = np.cumsum(counts) - counts
+    ntri = np.maximum(counts - 2, 0)
+    face = np.repeat(np.arange(len(counts)), ntri)
+    k = np.arange(int(ntri.sum())) - np.repeat(np.cumsum(ntri) - ntri, ntri) + 1
+    s = starts[face]
+    return np.stack([s, s + k, s + k + 1], axis=1)
+
+
 def load_usdz(path: Path) -> trimesh.Trimesh:
     """Merge every UsdGeom.Mesh in the stage into one triangle mesh, in mm and Z-up."""
     stage = Usd.Stage.Open(str(path))
@@ -28,11 +40,9 @@ def load_usdz(path: Path) -> trimesh.Trimesh:
             continue
         m = np.array(cache.GetLocalToWorldTransform(prim))  # row-vector convention
         pts = (np.c_[pts, np.ones(len(pts))] @ m)[:, :3]
-        i = 0
-        for c in counts:  # fan-triangulate polygons
-            for k in range(1, c - 1):
-                faces.append([base + idx[i], base + idx[i + k], base + idx[i + k + 1]])
-            i += c
+        tri = base + np.asarray(idx, dtype=np.int64)[fan_corners(counts)]
+        if len(tri):
+            faces.append(tri)
         verts.append(pts)
         base += len(pts)
     if not faces:
@@ -40,7 +50,7 @@ def load_usdz(path: Path) -> trimesh.Trimesh:
     v = np.vstack(verts) * mm
     if UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y:  # (x, y, z) -> (x, -z, y)
         v = np.c_[v[:, 0], -v[:, 2], v[:, 1]]
-    return trimesh.Trimesh(v, np.array(faces), process=False)
+    return trimesh.Trimesh(v, np.vstack(faces), process=False)
 
 
 def extract_textured(path: Path, outdir: Path) -> bool:
@@ -67,18 +77,12 @@ def extract_textured(path: Path, outdir: Path) -> bool:
     pts = np.array(mesh.GetPointsAttr().Get(), dtype=float)
     m = np.array(UsdGeom.XformCache().GetLocalToWorldTransform(prim))
     pts = (np.c_[pts, np.ones(len(pts))] @ m)[:, :3] * mm
-    idx = mesh.GetFaceVertexIndicesAttr().Get()
-    pos, uv, i = [], [], 0
-    for c in mesh.GetFaceVertexCountsAttr().Get():
-        for k in range(1, c - 1):
-            for corner in (0, k, k + 1):
-                vi = idx[i + corner]
-                ui = (i + corner) if face_varying else vi
-                if len(st_idx):
-                    ui = st_idx[ui]
-                pos.append(pts[vi])
-                uv.append(st[ui])
-        i += c
+    corners = fan_corners(mesh.GetFaceVertexCountsAttr().Get()).ravel()   # every triangle corner, in order
+    vi = np.asarray(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64)[corners]
+    ui = corners if face_varying else vi
+    if len(st_idx):
+        ui = np.asarray(st_idx, dtype=np.int64)[ui]
+    pos, uv = pts[vi], st[ui]
     image.thumbnail((2048, 2048))
     image.save(outdir / "texture.jpg", quality=85)
     (outdir / "textured.json").write_text(json.dumps({

@@ -64,3 +64,14 @@ def test_garbage_input_fails_cleanly(tmp_path):
     bad.write_bytes(b"not a usdz")
     ok, log = objects.convert_object(bad, tmp_path)
     assert not ok and log
+
+
+def test_fan_corners_match_the_polygon_loop():
+    counts = [3, 4, 5, 2, 3, 6, 1, 4]                     # triangles, quads, an n-gon and degenerate faces
+    want, i = [], 0
+    for c in counts:
+        for k in range(1, c - 1):
+            want.append([i, i + k, i + k + 1])
+        i += c
+    assert objects.fan_corners(counts).tolist() == want
+    assert objects.fan_corners([]).shape == (0, 3)
