@@ -91,25 +91,12 @@ struct LiveNeedLayer: View {
     let size: CGSize
     let zoom: CGFloat
 
-    private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) {
-        let p = view.projectPoint(SCNVector3(w.x, w.y, w.z))
-        let c = CGPoint(x: size.width / 2, y: size.height / 2)
-        return (CGPoint(x: c.x + (CGFloat(p.x) - c.x) * zoom, y: c.y + (CGFloat(p.y) - c.y) * zoom), p.z > 0 && p.z < 1)
+    private var screen: ScreenProjector {
+        ScreenProjector(view: view, size: size, zoom: zoom, side: 20, top: 120, bottom: 260, arrowBand: 100, arrowInset: 150)
     }
-
-    private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool {
-        q.front && q.pt.x > 20 && q.pt.x < size.width - 20 && q.pt.y > 120 && q.pt.y < size.height - 260
-    }
-
-    private func edge(_ q: (pt: CGPoint, front: Bool)) -> (CGPoint, Double) {
-        let c = CGPoint(x: size.width / 2, y: (size.height - 100) / 2)
-        var dx = q.pt.x - c.x, dy = q.pt.y - c.y
-        if !q.front { dx = -dx; dy = -dy }
-        if abs(dx) < 1 && abs(dy) < 1 { dy = -1 }
-        let hx = size.width / 2 - 36, hy = (size.height - 100) / 2 - 150
-        let s = min(hx / max(abs(dx), 0.001), hy / max(abs(dy), 0.001))
-        return (CGPoint(x: c.x + dx * s, y: c.y + dy * s), Double(atan2(dy, dx)) + .pi / 2)
-    }
+    private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) { screen.project(w) }
+    private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool { screen.onScreen(q) }
+    private func edge(_ q: (pt: CGPoint, front: Bool)) -> (CGPoint, Double) { screen.edge(q) }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.1)) { _ in

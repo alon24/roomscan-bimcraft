@@ -591,27 +591,12 @@ private struct PinLayer: View {
     let size: CGSize
     let zoom: CGFloat
 
-    private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) {
-        let p = model.sceneView.projectPoint(SCNVector3(w.x, w.y, w.z))
-        // Same magnification as the picture, about the screen centre.
-        let c = CGPoint(x: size.width / 2, y: size.height / 2)
-        return (CGPoint(x: c.x + (CGFloat(p.x) - c.x) * zoom, y: c.y + (CGFloat(p.y) - c.y) * zoom), p.z > 0 && p.z < 1)
+    private var screen: ScreenProjector {
+        ScreenProjector(view: model.sceneView, size: size, zoom: zoom, side: 10, top: 60, bottom: 280, arrowBand: 220, arrowInset: 70)
     }
-
-    private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool {
-        q.front && q.pt.x > 10 && q.pt.x < size.width - 10 && q.pt.y > 60 && q.pt.y < size.height - 280
-    }
-
-    /// Where the arrow sits: on the edge of the usable area, in the direction of the pin.
-    private func edge(_ q: (pt: CGPoint, front: Bool)) -> (CGPoint, Double) {
-        let c = CGPoint(x: size.width / 2, y: (size.height - 220) / 2)
-        var dx = q.pt.x - c.x, dy = q.pt.y - c.y
-        if !q.front { dx = -dx; dy = -dy }
-        if abs(dx) < 1 && abs(dy) < 1 { dy = -1 }
-        let hx = size.width / 2 - 36, hy = (size.height - 220) / 2 - 70
-        let s = min(hx / max(abs(dx), 0.001), hy / max(abs(dy), 0.001))
-        return (CGPoint(x: c.x + dx * s, y: c.y + dy * s), Double(atan2(dy, dx)) + .pi / 2)
-    }
+    private func project(_ w: SIMD3<Float>) -> (pt: CGPoint, front: Bool) { screen.project(w) }
+    private func onScreen(_ q: (pt: CGPoint, front: Bool)) -> Bool { screen.onScreen(q) }
+    private func edge(_ q: (pt: CGPoint, front: Bool)) -> (CGPoint, Double) { screen.edge(q) }
 
     /// Lines to draw: every kept link, plus the selected pair when exactly two are selected.
     private func segments() -> [(a: Pin, b: Pin, dashed: Bool)] {
