@@ -8,5 +8,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"
+    environment:
+      DATA_HOST_PATH: ${DATA_HOST_PATH:-${PWD}/data}   # the data folder on this computer, shown on the web page (Storage)
     volumes:
       - ./data:/app/data

@@ -105,7 +105,7 @@
     <button class="btn" id="reconvertSelected">Re-convert</button><button class="btn danger" id="deleteSelected">Delete selected</button>
   </div>
   <p class="mute" id="empty" hidden>No scans yet. Upload from the app.</p>
-  <button class="btn" id="issuesBtn" style="margin-top:8px">Issues</button>
+  <button class="btn" id="issuesBtn" style="margin-top:8px">Issues</button> <button class="btn" id="storageBtn" style="margin-top:8px" title="Where the scans and temp files are, and clearing them">Storage</button>
   <p class="hint" id="ver"></p>
 </aside>
 <main>
@@ -272,6 +272,13 @@
 <dialog id="issues" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(900px,96vw);max-height:90vh;overflow:auto">
   <div style="padding:16px"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Problems reported by the app</h3>
   <span><button class="btn" type="button" id="issuesClear">Delete all</button> <button class="btn" type="button" id="issuesClose">Close</button></span></div><div id="issuesList"></div></div></dialog>
+<dialog id="storage" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(720px,96vw);max-height:90vh;overflow:auto">
+  <div style="padding:16px"><div class="row" style="justify-content:space-between;margin-top:0"><h3 style="margin:0">Storage</h3><button class="btn" type="button" id="storageClose">Close</button></div>
+  <div id="storageBody">Loading…</div>
+  <p class="hint">A web page cannot open a folder on the computer: copy the path or the command and paste it in a file manager or terminal there, or run <code>tools/open-data.sh</code>.</p>
+  <div class="row"><button class="btn" type="button" id="stTemp">Delete temp files</button><button class="btn" type="button" id="stDerived">Delete rebuildable files (keeps every scan)</button>
+    <button class="btn danger" type="button" id="stAll">Delete ALL scans</button></div>
+  <div class="hint" id="storageMsg"></div></div></dialog>
 <dialog id="frameEd" style="background:var(--bg);color:var(--fg);border-radius:10px;width:min(980px,98vw);max-height:96vh;overflow:auto">
   <div style="padding:12px">
     <div class="row" style="justify-content:space-between"><strong id="edTitle"></strong><button class="btn" type="button" id="edClose">Close</button></div>
@@ -1927,6 +1934,55 @@ $("issuesClear").onclick = async () => {
   loadIssues();
 };
 loadIssues();
+
+// ---- storage: where things are kept on the server computer, how big, and clearing them (the server deletes: data/ belongs to root)
+const fmtBytes = b => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${Math.round(b / 1e3)} kB` : `${b} B`;
+async function copyText(t, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(t); ok = true; } catch {
+    const ta = Object.assign(document.createElement("textarea"), { value: t }); ta.style.cssText = "position:fixed;opacity:0";
+    btn.closest("dialog").append(ta); ta.select(); try { ok = document.execCommand("copy"); } catch {} ta.remove();   // plain http on the LAN has no clipboard API
+  }
+  const was = btn.textContent; btn.textContent = ok ? "Copied" : "Select and copy by hand"; setTimeout(() => { btn.textContent = was; }, 1500);
+}
+async function loadStorage() {
+  const box = $("storageBody");
+  const st = await api("/api/storage").catch(() => null);
+  if (!st) { box.textContent = "Could not read the storage information."; return; }
+  const line = (label, text) => {
+    const row = document.createElement("div"); row.className = "row"; row.style.cssText = "align-items:center;margin:6px 0;flex-wrap:nowrap";
+    const l = Object.assign(document.createElement("span"), { textContent: label }); l.style.cssText = "flex:0 0 120px;color:var(--mute);font-size:13px";
+    const c = Object.assign(document.createElement("code"), { textContent: text }); c.style.cssText = "flex:1;min-width:0;overflow-wrap:anywhere;font-size:13px";
+    const b = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: "Copy" }); b.onclick = () => copyText(text, b);
+    row.append(l, c, b); return row;
+  };
+  const sizes = document.createElement("div"); sizes.className = "hint"; sizes.style.margin = "10px 0";
+  sizes.textContent = `Scans: ${st.scans.count} (${fmtBytes(st.scans.bytes)}${st.scans.busy ? `, ${st.scans.busy} still being captured or built` : ""}) · ` +
+    `rebuildable files: ${st.derived.files} (${fmtBytes(st.derived.bytes)}) · app files: ${st.apps.files} (${fmtBytes(st.apps.bytes)}) · ` +
+    `temp: ${st.temp.files} files (${fmtBytes(st.temp.bytes)}, ${st.temp.removable} old ones can go)`;
+  box.replaceChildren(line("Data folder", st.host_path), line("Scans folder", st.host_scans_path), line("Open it", `xdg-open ${st.host_scans_path}`),
+    line("Inside server", st.data_dir), sizes);
+  if (st.note) box.append(Object.assign(document.createElement("div"), { className: "hint", textContent: st.note }));
+}
+$("storageBtn").onclick = () => { $("storageMsg").textContent = ""; $("storage").showModal(); loadStorage(); };
+$("storageClose").onclick = () => $("storage").close();
+const stRun = async (path, done) => {
+  $("storageMsg").textContent = "Deleting…";
+  const r = await api(path, { method: "DELETE" }).catch(() => null);
+  $("storageMsg").textContent = r ? done(r) : "Nothing was deleted.";
+  loadStorage(); loadList();
+};
+$("stTemp").onclick = () => stRun("/api/storage/temp", r => `Deleted ${r.deleted} temp entries (${fmtBytes(r.bytes)}).`);
+$("stDerived").onclick = () => stRun("/api/storage/derived", r => `Deleted ${r.deleted} rebuildable files (${fmtBytes(r.bytes)}). They are made again when needed; cut parts need a new cut.`);
+$("stAll").onclick = async () => {
+  const v = await ask("Delete every scan? This cannot be undone. Type DELETE ALL to go on.", [{ key: "confirm", label: "Type DELETE ALL", value: "" }], "Delete all scans", true);
+  if (!v) return;
+  if (v.confirm !== "DELETE ALL") { $("storageMsg").textContent = "Not deleted: type DELETE ALL exactly."; return; }
+  $("storageMsg").textContent = "Deleting…";
+  const r = await api("/api/scans?all=true", { method: "DELETE", body: JSON.stringify({ confirm: "DELETE ALL" }) }).catch(() => null);
+  if (r) { $("storageMsg").textContent = `Deleted ${r.deleted} scans.`; clearDetail(); }
+  loadStorage(); loadList();
+};
 
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`);

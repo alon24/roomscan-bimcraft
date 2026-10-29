@@ -273,3 +273,39 @@ def test_broadcast_does_not_wait_for_a_slow_viewer(monkeypatch):
     assert time.monotonic() - t < 1.5                       # not 5 s behind the slow one
     assert fast.got == [{"type": "list"}] and hub.viewers == {fast}
     assert slow.closed and dead.closed
+
+
+def test_storage_report_and_clearing(client, tmp_path, monkeypatch):
+    import time
+    from app import storage, apps
+    monkeypatch.setattr(storage, "TMP", tmp_path / "tmp")
+    monkeypatch.setattr(apps, "APPS", tmp_path / "apps")
+    monkeypatch.setenv("DATA_HOST_PATH", "/home/me/roomscan/data")
+    (tmp_path / "apps").mkdir(); (tmp_path / "apps" / "RoomScan.ipa").write_bytes(b"x" * 100)
+    (tmp_path / "tmp").mkdir()
+    old, new = tmp_path / "tmp" / "tmpold", tmp_path / "tmp" / "tmpnew"
+    old.mkdir(); (old / "w.bin").write_bytes(b"y" * 50); (new).write_bytes(b"z" * 7)
+    t = time.time() - 3600
+    os.utime(old, (t, t))
+    a, b = _upload(client, "A"), _upload(client, "B")
+    da, db = tmp_path / "scans" / a, tmp_path / "scans" / b
+    (da / "quality.json").write_text("{}"); (da / "model_part1.stl").write_bytes(b"s" * 10)
+    (db / "panorama.jpg").write_bytes(b"p" * 20)
+    meta = json.loads((db / "meta.json").read_text()); meta["status"] = "capturing"; (db / "meta.json").write_text(json.dumps(meta))
+    r = client.get("/api/storage").json()
+    assert r["host_path"] == "/home/me/roomscan/data" and r["host_scans_path"] == "/home/me/roomscan/data/scans"
+    assert r["scans"]["count"] == 2 and r["scans"]["busy"] == 1 and r["scans"]["bytes"] > 0
+    assert r["derived"]["files"] == 2 and r["derived"]["bytes"] == 12           # the capturing scan's panorama is not counted
+    assert r["apps"] == {"bytes": 100, "files": 1}
+    assert r["temp"]["files"] == 2 and r["temp"]["removable"] == 1 and "note" not in r
+    assert client.delete("/api/storage/temp").json() == {"deleted": 1, "bytes": 50}
+    assert not old.exists() and new.exists()                                    # a fresh temp file may be in use
+    assert client.delete("/api/storage/derived").json()["deleted"] == 2
+    assert not (da / "quality.json").exists() and (da / "meta.json").exists() and (db / "panorama.jpg").exists()
+    assert len(client.get("/api/scans").json()) == 2
+    assert client.request("DELETE", "/api/scans", json={"confirm": "yes"}, params={"all": "true"}).status_code == 400
+    assert client.request("DELETE", "/api/scans", json={"confirm": "DELETE ALL"}).status_code == 400
+    assert client.request("DELETE", "/api/scans", json={"confirm": "DELETE ALL"}, params={"all": "true"}).json() == {"deleted": 2}
+    assert client.get("/api/scans").json() == [] and (tmp_path / "apps" / "RoomScan.ipa").exists()
+    monkeypatch.delenv("DATA_HOST_PATH")
+    assert "DATA_HOST_PATH" in client.get("/api/storage").json()["note"]

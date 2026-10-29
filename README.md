@@ -198,6 +198,18 @@ Open `http://<server>:8010` in any browser.
 - **Points / Solid surface**: switch how the 3D view is drawn. Drag to rotate, scroll to zoom,
   right-drag to pan, double-click to reset.
 
+### Storage: find the scans folder, clear temp and rebuildable files
+
+**Storage** at the bottom of the left panel shows where the scans are on the server computer, how much room scans, rebuildable
+files, app files and temp files take, and has a **Copy** button for each path and for `xdg-open <data>/scans`. A web page cannot
+open a folder itself: paste the path in a file manager, or run `tools/open-data.sh` on the server computer.
+- **Delete temp files**: leftovers older than 10 minutes in the server's own temp folder.
+- **Delete rebuildable files (keeps every scan)**: panoramas, quality reports, features, colour suggestions, AR models and cut parts.
+  They are made again when needed (cut parts need a new cut). Scans still being captured are left alone.
+- **Delete ALL scans**: type `DELETE ALL` to confirm. The app files in `data/apps` stay.
+
+The server does the deleting, because `data/` belongs to root on the host. `deploy.sh` passes the host path as `DATA_HOST_PATH`.
+
 ### Scan quality score
 ![Quality panel](docs/img/web-quality.png)
 
@@ -301,6 +313,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.44.x (server, web) | **Storage** panel (paths to copy, sizes, clear temp / rebuildable files / all scans) and `tools/open-data.sh`; errors show in a message bar instead of a browser alert; a scan opened by a click or link is no longer replaced by a live capture (a **Live capture running: show it** button appears instead); cuts through many islands cap their connectors; colour suggestions say when a model has no colours. |
 | 0.44.x (app) | After Stop, a live room scan shows what the link is doing (sending the last frames, building, server errors); live guidance, problem reports and ring sync work before the server address was ever changed in Settings; no repeated frames when another tab takes the camera. Removed scan modes no tab could open (guided object, LiDAR turntable, photo turntable). |
 | 0.44.x (server) | Floor plans: L-shaped rooms and rooms whose walls do not close now convert (**Re-convert** scans that failed before); walls now run clockwise so they face out. Photo Measure routes answer 400 for bad corners instead of failing. |
 | 0.44.0 (server) | **Live guided capture**: two-way WebSocket with the phone (live map and what-to-capture-next), live panel and Build what I have on the scan page, patching an existing scan by registering a new session to it, offline routes `/frames` and `/add`, uploads of any size, `tools/live_replay.py`. |

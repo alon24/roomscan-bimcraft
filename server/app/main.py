@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
-from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep
+from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -53,6 +53,7 @@ async def _lifespan(_app):
 
 
 app = FastAPI(title="roomscan-bimcraft", lifespan=_lifespan)
+storage.use_own_tmp()   # temp files in their own folder, so the Storage panel can clear them without touching anything else
 
 
 @app.get("/api/version")
@@ -451,6 +452,45 @@ async def delete_scan(scan_id: str):
     shutil.rmtree(_dir(scan_id))
     await hub.broadcast({"type": "list", "deleted": scan_id})
     return {"deleted": scan_id}
+
+
+class DeleteAll(BaseModel):
+    confirm: str = Field(description='must be exactly "DELETE ALL"')
+
+
+@app.delete("/api/scans")
+async def delete_all_scans(body: DeleteAll, all: bool = False):
+    """Every scan, including one being captured. Needs ?all=true and {"confirm": "DELETE ALL"}. The apps folder stays."""
+    if not all or body.confirm != "DELETE ALL":
+        raise HTTPException(400, 'to delete every scan send ?all=true and {"confirm": "DELETE ALL"}')
+    scans = [d for d in DATA.iterdir() if d.is_dir()] if DATA.exists() else []
+    for d in scans:
+        shutil.rmtree(d, ignore_errors=True)
+    hub.live = None
+    getattr(hub, "live_maps", {}).clear()
+    await hub.broadcast({"type": "list"})
+    return {"deleted": len(scans)}
+
+
+@app.get("/api/storage")
+def storage_info():
+    """Where the scans, app files and temp files are (inside the server and on the host computer) and how much room they take."""
+    return storage.report(DATA, apps.APPS, _all_scans())
+
+
+@app.delete("/api/storage/temp")
+def storage_delete_temp():
+    """Leftover temp files and folders older than 10 minutes (newer ones may be a download or a build in progress)."""
+    return storage.delete_temp()
+
+
+@app.delete("/api/storage/derived")
+async def storage_delete_derived():
+    """Files the server makes again when asked (panorama, quality report, features, colours, AR model, cut parts). Every scan stays;
+    a scan still being captured or built is left alone."""
+    out = storage.delete_derived(_all_scans())
+    await hub.broadcast({"type": "list"})
+    return out
 
 
 def _zip_scans(ids: list[str]) -> Path:
