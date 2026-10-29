@@ -37,6 +37,7 @@ final class LiveLink: NSObject, ObservableObject {
     @Published var note = ""              // what the link is doing, in words (for the finish step)
 
     private(set) var scanID: String?
+    private(set) var finishing = false      // "finish" was sent: the server is building this scan, it must not be deleted
     private var server = ""
     private var params: [String: Any] = [:]
     private var task: URLSessionWebSocketTask?
@@ -55,7 +56,7 @@ final class LiveLink: NSObject, ObservableObject {
         end()
         self.server = server.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         params = ["kind": kind, "name": name, "project": project, "info": info]
-        active = true; retries = 0; acked = 0; sent = 0; serverReady = false
+        active = true; retries = 0; acked = 0; sent = 0; serverReady = false; finishing = false
         link = .connecting
         Task { await createSession() }
     }
@@ -252,6 +253,7 @@ final class LiveLink: NSObject, ObservableObject {
             try await Task.sleep(nanoseconds: 300_000_000)
         }
         sendJSON(["type": "finish", "info": info])
+        finishing = true
         note = "The server is building the model…"
         guard let url = URL(string: server)?.appendingPathComponent("api/scans/\(id)") else { throw LiveError.notLive }
         let buildDeadline = Date().addingTimeInterval(900)

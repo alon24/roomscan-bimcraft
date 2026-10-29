@@ -337,7 +337,14 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         if outlining { status = "Still outlining the part in the photos, save again in a moment"; return }
         if savedCopy != nil { status = "Already saved on the phone (Models tab, On this phone)"; return }
         guard let package else { return }
-        status = keepOnPhone(package) ? "Saved on the phone (Models tab, On this phone)" : "Could not save on the phone"
+        guard keepOnPhone(package) else { status = "Could not save on the phone"; return }
+        status = "Saved on the phone (Models tab, On this phone)"
+        // A live-guided scan also has a draft on the server, which would be built there after 10 minutes and then uploaded again
+        // from the saved copy: delete the draft. Not once the server has started building it (or has finished: scanID is nil then).
+        if live.scanID != nil && !live.finishing {
+            live.abandon()
+            status += ". The live draft on the server was removed; Upload sends this copy."
+        }
     }
 
     /// Copy into the phone's storage, then work from that copy (Upload, Build here) and delete the temp folder.
@@ -366,7 +373,13 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         if live.scanID != nil, let rec = recorder {
             status = "Finishing on the server…"
             do {
-                _ = try await live.complete(recorder: rec, info: scanInfo)
+                let id = try await live.complete(recorder: rec, info: scanInfo)
+                if var s = savedCopy {       // saved while the server was building: that copy is on the server now
+                    s.uploadedID = id; s.uploadedAt = Date()
+                    try? LocalStore.write(s)
+                    savedCopy = s
+                    NotificationCenter.default.post(name: .savedScansChanged, object: nil)
+                }
                 status = "Uploaded: built on the server from the live frames"
                 Notifier.scanDone(name: sweepMode ? "Sweep" : "3D room", status: "ok")
                 live.end()
