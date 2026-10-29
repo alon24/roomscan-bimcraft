@@ -108,6 +108,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
 
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false; phoneResult = nil
+        outlining = false; buildingOnPhone = false      // work still running for an earlier scan is dropped when it ends (cloudGen)
         dispose(recorder?.dir)      // an earlier scan that produced nothing
         savedCopy = nil; stopNote = ""
         recorder = PhotoRecorder()
@@ -196,6 +197,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         TempFiles.remove(phoneResult?.stl)
         recorder = nil; savedCopy = nil
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
+        outlining = false; buildingOnPhone = false      // a save, outline or phone build still running is dropped when it ends (cloudGen)
         scanning = false
         hud = ""; status = ""; stopNote = ""
         Reporter.log("mesh: reset by user")
@@ -233,13 +235,16 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         let rec = recorder
         // In the scan's own temp folder, deleted with it (New scan, Save, the next scan, or the clean-up at launch).
         let plyDir = rec?.dir ?? FileManager.default.temporaryDirectory
+        // The points are copied here: the background write must not read `cloud` while Start or New scan empties it. A result that
+        // arrives after Start or New scan (both bump cloudGen) belongs to a scan that was thrown away and is dropped.
+        let gen = cloudGen, pts = cloud, cols = cloudColours
         DispatchQueue.global().async { [weak self] in
             let url = plyDir.appendingPathComponent("scan.ply")
             // ARKit's mesh when it produced one, otherwise the depth point cloud (the server meshes it).
-            let ok = anchors.isEmpty ? self?.writeCloudPLY(to: url) ?? false : Self.writePLY(anchors, to: url)
-            let scene = anchors.isEmpty ? self?.cloudScene() ?? SCNScene() : Self.modelScene(anchors)
+            let ok = anchors.isEmpty ? Self.writeCloudPLY(pts, cols, to: url) : Self.writePLY(anchors, to: url)
+            let scene = anchors.isEmpty ? Self.cloudScene(pts, cols) : Self.modelScene(anchors)
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, gen == self.cloudGen else { return }
                 self.plyURL = ok ? url : nil
                 self.photoURLs = rec?.urls ?? []
                 self.photosMetaURL = rec?.writeManifest()
@@ -271,6 +276,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         outlining = true
         Screen.awake(true)      // the phone must not lock while it works through the photos
         status = "Outlining the part in \(photos.count) photos…"
+        let gen = cloudGen      // New scan or Start meanwhile: the outlines belong to a scan that is gone
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let ctx = CIContext()
             var out: [URL] = []
@@ -285,13 +291,14 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                         }
                     }
                 }
-                if i % 10 == 0 { DispatchQueue.main.async { self?.status = "Outlining the part: \(i + 1) of \(photos.count) photos…" } }
+                if i % 10 == 0 { DispatchQueue.main.async { if gen == self?.cloudGen { self?.status = "Outlining the part: \(i + 1) of \(photos.count) photos…" } } }
             }
             DispatchQueue.main.async {
-                self?.maskURLs = out
-                self?.outlining = false
+                guard let self, gen == self.cloudGen else { return }
+                self.maskURLs = out
+                self.outlining = false
                 Screen.awake(false)
-                self?.status = "Scan ready (\(out.filter { !$0.lastPathComponent.contains("-labels") }.count) outlines)"
+                self.status = "Scan ready (\(out.filter { !$0.lastPathComponent.contains("-labels") }.count) outlines)"
                 Reporter.log("ring: \(out.count) outlines of \(photos.count) photos")
             }
         }
@@ -304,12 +311,13 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         Screen.awake(true)
         status = "Building on the phone…"
         let photos = photoURLs.filter { $0.pathExtension == "jpg" }, metas = rec.metas, masks = maskURLs
+        let gen = cloudGen      // New scan meanwhile: the result belongs to a scan that is gone
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let r = OnPhoneRing.build(photos: photos, metas: metas, masks: masks, ring: .current()) { text in
-                DispatchQueue.main.async { self?.status = text }
+                DispatchQueue.main.async { if gen == self?.cloudGen { self?.status = text } }
             }
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, gen == self.cloudGen else { if let stl = r?.stl { TempFiles.remove(stl) }; return }
                 self.buildingOnPhone = false
                 Screen.awake(false)
                 if let r {
@@ -487,7 +495,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         return (ix << 42) | (iy << 21) | iz
     }
 
-    private func cloudGeometry() -> SCNGeometry? {
+    private static func cloudGeometry(_ cloud: [SIMD3<Float>], _ cloudColours: [SIMD3<Float>]) -> SCNGeometry? {
         let n = cloud.count
         guard n > 0 else { return nil }
         let stride = MemoryLayout<SIMD3<Float>>.stride
@@ -510,15 +518,15 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         return g
     }
 
-    private func cloudScene() -> SCNScene {
+    private static func cloudScene(_ cloud: [SIMD3<Float>], _ colours: [SIMD3<Float>]) -> SCNScene {
         let scene = SCNScene()
         scene.background.contents = UIColor(white: 0.1, alpha: 1)
-        scene.rootNode.addChildNode(SCNNode(geometry: cloudGeometry()))
+        scene.rootNode.addChildNode(SCNNode(geometry: cloudGeometry(cloud, colours)))
         return scene
     }
 
     /// Binary little-endian PLY of points with colours, ARKit world frame (metres, Y up).
-    private func writeCloudPLY(to url: URL) -> Bool {
+    private static func writeCloudPLY(_ cloud: [SIMD3<Float>], _ cloudColours: [SIMD3<Float>], to url: URL) -> Bool {
         var data = Data("ply\nformat binary_little_endian 1.0\nelement vertex \(cloud.count)\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n".utf8)
         var body = [UInt8]()
         body.reserveCapacity(cloud.count * 15)

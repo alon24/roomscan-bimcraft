@@ -55,6 +55,30 @@ struct SavedScan: Codable, Identifiable, Hashable {
     }
 }
 
+/// Manifests written by an older app may lack keys added later: every key but the id has a default, so such a scan still lists and uploads.
+extension SavedScan {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Saved scan"
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "mesh"
+        created = (try? c.decodeIfPresent(Date.self, forKey: .created)) ?? Date.distantPast
+        json = try? c.decodeIfPresent(String.self, forKey: .json)
+        usdz = try? c.decodeIfPresent(String.self, forKey: .usdz)
+        mesh = try? c.decodeIfPresent(String.self, forKey: .mesh)
+        footprint = try? c.decodeIfPresent(String.self, forKey: .footprint)
+        photosMeta = try? c.decodeIfPresent(String.self, forKey: .photosMeta)
+        photos = (try? c.decodeIfPresent([String].self, forKey: .photos)) ?? []
+        masks = (try? c.decodeIfPresent([String].self, forKey: .masks)) ?? []
+        realHeightMM = try? c.decodeIfPresent(Double.self, forKey: .realHeightMM)
+        turntableScan = (try? c.decodeIfPresent(Bool.self, forKey: .turntableScan)) ?? false
+        ringScan = (try? c.decodeIfPresent(Bool.self, forKey: .ringScan)) ?? false
+        info = try? c.decodeIfPresent(Data.self, forKey: .info)
+        uploadedID = try? c.decodeIfPresent(String.self, forKey: .uploadedID)
+        uploadedAt = try? c.decodeIfPresent(Date.self, forKey: .uploadedAt)
+    }
+}
+
 enum LocalStore {
     static var root: URL {
         let r = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("SavedScans")
@@ -99,8 +123,12 @@ enum LocalStore {
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        return dirs.compactMap { try? dec.decode(SavedScan.self, from: Data(contentsOf: $0.appendingPathComponent("manifest.json"))) }
-            .sorted { $0.created > $1.created }
+        return dirs.compactMap { d -> SavedScan? in
+            guard var s = try? dec.decode(SavedScan.self, from: Data(contentsOf: d.appendingPathComponent("manifest.json"))) else { return nil }
+            s.id = d.lastPathComponent      // the folder is the truth: a folder copied or renamed in Files still opens and uploads
+            return s
+        }
+        .sorted { $0.created > $1.created }
     }
 
     static func delete(_ s: SavedScan) {
@@ -116,7 +144,12 @@ enum LocalStore {
 
     static func package(_ s: SavedScan) -> ScanPackage {
         let d = dir(s.id)
-        func u(_ rel: String?) -> URL? { rel.map { d.appendingPathComponent($0) } }
+        // A file that is gone (deleted in Files, or never written by an older app) is left out instead of failing the whole upload.
+        func u(_ rel: String?) -> URL? {
+            guard let rel else { return nil }
+            let url = d.appendingPathComponent(rel)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
         return ScanPackage(name: s.name, kind: s.kind, json: u(s.json), usdz: u(s.usdz), mesh: u(s.mesh), footprint: u(s.footprint),
                            photosMeta: u(s.photosMeta), photos: s.photos.compactMap { u($0) }, masks: s.masks.compactMap { u($0) },
                            realHeightMM: s.realHeightMM, turntableScan: s.turntableScan, ringScan: s.ringScan,
