@@ -11,6 +11,11 @@ import numpy as np
 import trimesh
 
 AXES = {"x": 0, "y": 1, "z": 2}
+# Every connector is two boolean operations, and a messy cut face can have hundreds of crumbs: only the biggest islands get
+# connectors, and a cut face and the whole job have a ceiling, so a cut always ends in seconds.
+MAX_ISLANDS = 8            # islands of one cut face that get connectors (largest first)
+MAX_FACE_CONNECTORS = 16   # connectors on one cut face
+MAX_CONNECTORS = 48        # connectors in one cut job
 BED_MM = [float(v) for v in os.environ.get("BED_MM", "220,220,250").split(",")]
 
 # Common filament colours: name -> sRGB. Scan colours are matched to the nearest one.
@@ -121,30 +126,41 @@ def inscribed_radius(poly) -> float:
     return float(poly.boundary.distance(polylabel(poly, tolerance=0.25)))
 
 
-def auto_points(polys, size: float, count: int) -> list[tuple[float, float]]:
-    """Where connectors go on this cut face: spread out, each with WALL_MM of material round it."""
+def auto_points(polys, size: float, count: int, log: list[str] | None = None) -> list[tuple[float, float]]:
+    """Where connectors go on this cut face: spread out, each with WALL_MM of material round it. Only the MAX_ISLANDS biggest
+    islands that fit one, and at most MAX_FACE_CONNECTORS in all (said in `log` when capped)."""
     from shapely.geometry import Point
     from shapely.ops import polylabel
     pts: list[tuple[float, float]] = []
-    for poly in polys:
+    fitting = 0
+    for poly in sorted(polys, key=lambda p: -p.area):
+        if len(pts) >= MAX_FACE_CONNECTORS:
+            break
         inset = poly.buffer(-(size / 2 + WALL_MM))
         if inset.is_empty:
             continue
+        fitting += 1
+        if fitting > MAX_ISLANDS:
+            break
         if inset.geom_type == "MultiPolygon":
             inset = max(inset.geoms, key=lambda g: g.area)
         seed = polylabel(inset, tolerance=0.25)
         chosen = [(seed.x, seed.y)]
-        if count > 1:
+        want = min(count, MAX_FACE_CONNECTORS - len(pts))
+        if want > 1:
             x0, y0, x1, y1 = inset.bounds
             step = max(0.5, max(x1 - x0, y1 - y0) / 40)
             grid = [(x, y) for x in np.arange(x0, x1 + step, step) for y in np.arange(y0, y1 + step, step)
                     if inset.contains(Point(x, y))]
-            while len(chosen) < count and grid:   # farthest from the ones already chosen
+            while len(chosen) < want and grid:   # farthest from the ones already chosen
                 far = max(grid, key=lambda g: min(np.hypot(g[0] - c[0], g[1] - c[1]) for c in chosen))
                 if min(np.hypot(far[0] - c[0], far[1] - c[1]) for c in chosen) < size * 2.5:
                     break
                 chosen.append(far)
-        pts += chosen
+        pts += chosen[:want]
+    if log is not None and (fitting > MAX_ISLANDS or len(pts) >= MAX_FACE_CONNECTORS):
+        log.append(f"the cut face has {len(polys)} separate pieces: connectors only on the biggest "
+                   f"(at most {MAX_ISLANDS} pieces, {MAX_FACE_CONNECTORS} connectors), to keep the cut quick")
     return [(float(x), float(y)) for x, y in pts]
 
 
@@ -280,6 +296,7 @@ def cut_planes(mesh: trimesh.Trimesh, planes: list[dict], kind: str = "none", sh
         if not mesh.is_watertight:
             raise ValueError("the model has holes, so connectors cannot be added: cut with 'none' or rebuild the model")
     pieces = [Piece(mesh)]
+    placed = 0
     for pl in planes:
         o, n = np.asarray(pl["origin"], dtype=float), _unit(pl["normal"])
         label = pl.get("label") or "the cut plane"
@@ -294,14 +311,23 @@ def cut_planes(mesh: trimesh.Trimesh, planes: list[dict], kind: str = "none", sh
             if kind != "none":
                 polys, basis = section_polygons(pc.mesh, o, n)
                 if pl.get("points") is None:
-                    pts = auto_points(polys, size, count)
+                    pts = auto_points(polys, size, count, log)
                 else:
                     pts = usable_points(polys, pl["points"], size)
                     if len(pts) < len(pl["points"]):
                         log.append(f"{len(pl['points']) - len(pts)} connector spot(s) too close to the edge of the cut face: skipped")
                     if not pts and pl["points"]:
                         raise ValueError(f"a {size:g} mm connector does not fit at the chosen spots (keep {size / 2 + WALL_MM:g} mm from the edge)")
-                low, high, pegged = _join(low, high, basis, kind, shape, size, depth, clearance, pts, log, pins, label)
+                left = MAX_CONNECTORS - placed
+                if pts and len(pts) > left:
+                    log.append(f"{len(pts) - left} connector(s) at {label} left out: one cut job has at most {MAX_CONNECTORS}")
+                    pts = pts[:left]
+                    capped = not pts
+                else:
+                    capped = False
+                placed += len(pts)
+                if not capped:
+                    low, high, pegged = _join(low, high, basis, kind, shape, size, depth, clearance, pts, log, pins, label)
             nxt.append(Piece(low, pc.faces + [dict(normal=n, origin=o, pegged=pegged)]))
             nxt.append(Piece(high, pc.faces + [dict(normal=-n, origin=o, pegged=False)]))
         if not crossed:

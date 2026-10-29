@@ -140,3 +140,19 @@ def test_routes_preview_and_plane_cut(tmp_path, monkeypatch):
     assert r.status_code == 400
     r = c.post("/api/scans/abc/cut/plane", json={"planes": [{"origin": [0, 0], "normal": [0, 0, 1]}]})
     assert r.status_code == 422
+
+
+def test_a_cut_through_many_islands_gets_a_bounded_number_of_connectors():
+    import time
+    cols = [trimesh.creation.box(extents=(12, 12, 40)) for _ in range(36)]
+    for i, c in enumerate(cols):                       # a 6 x 6 forest of posts: the cut face has 36 islands
+        c.apply_translation([(i % 6) * 20.0, (i // 6) * 20.0, 20.0])
+    m = trimesh.util.concatenate(cols)
+    assert m.is_watertight
+    polys, _ = pp.section_polygons(m, [0, 0, 20.0], [0, 0, 1.0])
+    assert len(polys) == 36
+    t = time.monotonic()
+    parts, pins, log, _ = pp.cut_planes(m, [dict(origin=[0, 0, 20.0], normal=[0, 0, 1.0], points=None)], "dowel", size=4, depth=4, count=2)
+    assert len(pins) <= pp.MAX_FACE_CONNECTORS and len(pins) >= pp.MAX_ISLANDS
+    assert any("36 separate pieces" in line for line in log), log
+    assert time.monotonic() - t < 60
