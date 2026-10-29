@@ -17,7 +17,8 @@ final class CalibrationStore: ObservableObject {
     static let shared = CalibrationStore()
 
     struct Fit { var a: Double; var b: Double; var n: Int; var rmsBefore: Double; var rmsAfter: Double
-        var suspicious: Bool { abs(a - 1) > 0.1 }
+        // A mistyped tape value shows as a scale far from 1, or (camera-to-wall checks over a range) as a large offset.
+        var suspicious: Bool { abs(a - 1) > 0.1 || abs(b) > 0.05 }
     }
 
     @Published var points: [CalPoint] { didSet { save() } }
@@ -156,7 +157,7 @@ struct CalibrationView: View {
                                 Text(String(format: "%d check(s): error before ±%.2f cm, after ±%.2f cm", f.n, f.rmsBefore * 100, f.rmsAfter * 100)).font(.caption)
                                 Text(String(format: "scale %.4f", f.a) + (k == .wall && f.b != 0 ? String(format: ", offset %+.1f mm", f.b * 1000) : "")).font(.caption).foregroundStyle(.secondary)
                                 if f.suspicious {
-                                    Text("The scale is more than 10% from 1. That is almost always a mistyped tape value. Delete the bad check, or turn on the switch below.")
+                                    Text("The scale is more than 10% from 1, or the offset more than 5 cm. That is almost always a mistyped tape value. Delete the bad check, or turn on the switch below.")
                                         .font(.caption).foregroundStyle(.red)
                                 }
                             }

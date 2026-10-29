@@ -27,6 +27,8 @@ private struct PinMeta: Codable {
     var links: [PinLink] = []
 }
 
+private func pinNumber(_ name: String) -> Int { Int(name.dropFirst(4)) ?? 0 }
+
 /// Point the camera, read the LiDAR distance at the crosshair. Tap to pin spots: pins are ARKit anchors, so they stay on
 /// their spot in the room while you move, and are written to a saved room map so they come back after you leave.
 /// Pins are independent: tap a pin to select it, select the ones you want to measure, link pairs you want to keep.
@@ -57,6 +59,9 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     var camPos = SIMD3<Float>(0, 0, 0)
     var zoom: CGFloat = 1                // display zoom, so a tap can be matched to a pin
     private var pinAnchors: [String: ARAnchor] = [:]
+    private var gone = Set<UUID>()             // anchors removed by Move or Delete: a late update must not bring them back
+    private var savedHighest = 0               // highest pin number in the saved room, so a new pin never reuses one not found yet
+    private var mapSave: DispatchWorkItem?
     private var recent: [Double] = []
     private var lastPoint: SIMD3<Float>?
     private var live = true
@@ -82,11 +87,12 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         sceneView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
         if let d = UserDefaults.standard.data(forKey: "measurements"), let m = try? JSONDecoder().decode([Measurement].self, from: d) { saved = m }
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.saveMap(thenPause: false)
+            if self?.live == true { self?.saveMap(thenPause: false) }      // not while another tab has the camera
         }
     }
 
     func start() {
+        CameraOwner.claim(self) { [weak self] in self?.leaveNow() }      // the screen that had the camera stops first
         let cfg = ARWorldTrackingConfiguration()
         hasLiDAR = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
         if hasLiDAR { cfg.frameSemantics.insert(.sceneDepth) }
@@ -96,11 +102,15 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
            let map = try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) {
             cfg.initialWorldMap = map   // brings the saved pins back once the phone recognises the place
             loadMeta()
+            let names = map.anchors.compactMap(\.name).filter { $0.hasPrefix("pin-") } + Array(labels.keys) + links.flatMap { [$0.a, $0.b] }
+            savedHighest = names.map(pinNumber).max() ?? 0
         } else {
             // No saved room: pin numbers start again at 1, so old names and links must not attach to new pins.
             try? FileManager.default.removeItem(at: Self.metaURL)
             labels = [:]; links = []
+            savedHighest = 0
         }
+        gone = []
         live = true
         pinAnchors = [:]
         pins = []
@@ -109,23 +119,50 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         Screen.awake(true)
     }
 
+    /// The tab went away. If another screen has already taken the camera, it stopped this one (`leaveNow`): nothing to do. Otherwise
+    /// save the map, then pause, keeping the camera until then so the pause can never land on the next tab's session.
     func stop() {
+        guard CameraOwner.owns(self) else { return }
         live = false
+        mapSave?.cancel()
+        Screen.awake(false)
         saveMap(thenPause: true)
+    }
+
+    /// Another screen takes the camera: pause now. The map was saved when the pins last changed.
+    private func leaveNow() {
+        live = false
+        mapSave?.cancel()
+        sceneView.session.pause()
         Screen.awake(false)
     }
 
-    /// Writes the room map (with the pins in it). Skipped when there are no pins or the phone has not seen enough yet,
-    /// so an older good map is never replaced by a bad one.
+    /// Writes the room map (with the pins in it). Skipped when there are no pins, while the phone is still looking for the saved place,
+    /// or before it has mapped enough, so an older good map is never replaced by a bad one.
     private func saveMap(thenPause: Bool) {
         let session = sceneView.session
-        guard !pinAnchors.isEmpty else { if thenPause { session.pause() }; return }
-        session.getCurrentWorldMap { [weak self] map, _ in
+        let finish = { [weak self] in
+            guard thenPause, let self, !self.live, CameraOwner.owns(self) else { return }
+            session.pause()
+            CameraOwner.drop(self)
+        }
+        guard !pinAnchors.isEmpty, !relocalizing, let status = session.currentFrame?.worldMappingStatus,
+              status == .mapped || status == .extending else { finish(); return }
+        session.getCurrentWorldMap { map, _ in
             if let map, let data = try? NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true) {
                 try? data.write(to: Self.mapURL, options: .atomic)
             }
-            if thenPause, self?.live == false { session.pause() }
+            DispatchQueue.main.async { finish() }
         }
+    }
+
+    /// After a pin is placed, moved or deleted: save the map a moment later (the anchor is in the session by then), so the pins
+    /// come back even when leaving the tab gives no time to save.
+    private func scheduleMapSave() {
+        mapSave?.cancel()
+        let w = DispatchWorkItem { [weak self] in if self?.live == true { self?.saveMap(thenPause: false) } }
+        mapSave = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: w)
     }
 
     func saveMeta() {
@@ -226,7 +263,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     // MARK: pins
 
-    private func number(_ name: String) -> Int { Int(name.dropFirst(4)) ?? 0 }
+    private func number(_ name: String) -> Int { pinNumber(name) }
 
     private func refreshPins() {
         pins = pinAnchors.sorted { number($0.key) < number($1.key) }.map {
@@ -240,19 +277,24 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { track(anchors) }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { track(anchors) }
     func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
-        for a in anchors { if let n = a.name, n.hasPrefix("pin-") { pinAnchors[n] = nil } }
+        // By identifier: Move removes the old anchor and adds a new one with the same name, in either order.
+        for a in anchors { if let n = a.name, n.hasPrefix("pin-"), pinAnchors[n]?.identifier == a.identifier { pinAnchors[n] = nil } }
         refreshPins()
     }
     private func track(_ anchors: [ARAnchor]) {
         var changed = false
-        for a in anchors { if let n = a.name, n.hasPrefix("pin-") { pinAnchors[n] = a; changed = true } }
+        for a in anchors where !gone.contains(a.identifier) {
+            if let n = a.name, n.hasPrefix("pin-") { pinAnchors[n] = a; changed = true }
+        }
         if changed { refreshPins() }
     }
 
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         let p = g.location(in: sceneView)
-        // The readout card and buttons sit at the bottom; a tap there is not on the picture.
-        guard p.y < sceneView.bounds.height - 300 else { return }
+        // The readout card and buttons sit at the bottom; a tap there is not on the picture. (Compared on screen: the view is
+        // magnified about its centre, so its own y is `zoom` times closer to the middle.)
+        let midY = sceneView.bounds.midY
+        guard midY + (p.y - midY) * zoom < sceneView.bounds.height - 300 else { return }
         // Only the bullseye in the middle creates a pin: aim it at the spot, then tap it. (The screen is magnified about
         // its centre, so a distance on screen is `zoom` times the distance in the camera view's own coordinates.)
         let centre = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
@@ -280,9 +322,11 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func place(_ w: SIMD3<Float>) {
-        let next = (pinAnchors.keys.map(number).max() ?? 0) + 1
+        let next = max(pinAnchors.keys.map(number).max() ?? 0, savedHighest) + 1
         let name = "pin-\(next)"
+        savedHighest = next
         sceneView.session.add(anchor: anchor(name, at: w))
+        scheduleMapSave()
         // With one pin selected, the new one joins it so the distance shows at once; otherwise it starts a new pick.
         if selected.count == 1 { selected.append(name) } else { selected = [name] }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -297,8 +341,12 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     /// Re-place an existing pin where the crosshair points now. Its number, name and links stay.
     func moveToCrosshair(_ name: String) {
         guard let p = lastPoint, let d = distance, d >= Self.minRange, d <= Self.maxRange else { fail(); return }
-        if let a = pinAnchors[name] { sceneView.session.remove(anchor: a) }
-        sceneView.session.add(anchor: anchor(name, at: p))
+        if let a = pinAnchors[name] { gone.insert(a.identifier); sceneView.session.remove(anchor: a) }
+        let moved = anchor(name, at: p)
+        pinAnchors[name] = moved
+        refreshPins()
+        sceneView.session.add(anchor: moved)
+        scheduleMapSave()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
@@ -311,13 +359,15 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     private func fail() { UINotificationFeedbackGenerator().notificationOccurred(.error) }
 
     func deletePin(_ name: String) {
-        if let a = pinAnchors[name] { sceneView.session.remove(anchor: a) }
+        if let a = pinAnchors[name] { gone.insert(a.identifier); sceneView.session.remove(anchor: a) }
         pinAnchors[name] = nil
         labels[name] = nil
         links.removeAll { $0.a == name || $0.b == name }
         selected.removeAll { $0 == name }
         refreshPins()
         saveMeta()
+        // The last pin gone: forget the saved room too, or its old map would bring the deleted pins back next time.
+        if pinAnchors.isEmpty { forgetSavedRoom() } else { scheduleMapSave() }
     }
 
     func rename(_ name: String, _ label: String) {
@@ -337,13 +387,19 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func clearPins() {
-        for a in pinAnchors.values { sceneView.session.remove(anchor: a) }
+        for a in pinAnchors.values { gone.insert(a.identifier); sceneView.session.remove(anchor: a) }
         pinAnchors = [:]
         pins = []
         selected = []
         labels = [:]
         links = []
         span = nil
+        forgetSavedRoom()
+    }
+
+    private func forgetSavedRoom() {
+        mapSave?.cancel()
+        savedHighest = 0
         try? FileManager.default.removeItem(at: Self.mapURL)
         try? FileManager.default.removeItem(at: Self.metaURL)
     }
@@ -363,20 +419,26 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
         let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
-        var px = [UInt8](repeating: 0, count: w * h * 4)
-        for y in 0..<h {
-            let row = base.advanced(by: y * rb).assumingMemoryBound(to: Float32.self)
-            for x in 0..<w {
-                let d = row[x]
-                guard d.isFinite, d > 0 else { continue }
-                let i = Int(min(max((d - 0.3) / 3.7, 0), 1) * 255)
-                let o = (y * w + x) * 4
-                px[o] = Self.ramp[i * 3] / 2; px[o + 1] = Self.ramp[i * 3 + 1] / 2; px[o + 2] = Self.ramp[i * 3 + 2] / 2; px[o + 3] = 120
+        // Filled in place and handed to the image as is (no bitmap context, no second copy). The image keeps these bytes while it is
+        // on screen, so each picture needs its own buffer; about 200 KB, every third frame.
+        var px = Data(count: w * h * 4)
+        px.withUnsafeMutableBytes { (buf: UnsafeMutableRawBufferPointer) in
+            let out = buf.bindMemory(to: UInt8.self)
+            for y in 0..<h {
+                let row = base.advanced(by: y * rb).assumingMemoryBound(to: Float32.self)
+                for x in 0..<w {
+                    let d = row[x]
+                    guard d.isFinite, d > 0 else { continue }
+                    let i = Int(min(max((d - 0.3) / 3.7, 0), 1) * 255)
+                    let o = (y * w + x) * 4
+                    out[o] = Self.ramp[i * 3] / 2; out[o + 1] = Self.ramp[i * 3 + 1] / 2; out[o + 2] = Self.ramp[i * 3 + 2] / 2; out[o + 3] = 120
+                }
             }
         }
-        guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let cg = ctx.makeImage() else { return nil }
+        guard let provider = CGDataProvider(data: px as CFData),
+              let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
         return UIImage(cgImage: cg, scale: 1, orientation: .right)
     }
 
