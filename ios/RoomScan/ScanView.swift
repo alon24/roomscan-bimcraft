@@ -10,6 +10,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
     @Published var usdzURL: URL?
     @Published var photoURLs: [URL] = []
     @Published var hud = ""
+    @Published var stopNote = ""          // why the scan stopped by itself (the screen was left)
     @Published var wallCount = 0
     /// Quick test: the scan stops itself after `quickSeconds` and uploads, to see if anything comes out.
     @Published var quickLeft: Int?
@@ -47,7 +48,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         self.quick = quick
         quickEnd = quick ? Date().addingTimeInterval(TimeInterval(Self.quickSeconds)) : .distantFuture
         quickLeft = quick ? Self.quickSeconds : nil
-        jsonURL = nil; usdzURL = nil; result = nil; status = ""
+        jsonURL = nil; usdzURL = nil; result = nil; status = ""; stopNote = ""
         photoURLs = []; photosMetaURL = nil
         live3D.reset()
         wallCount = 0; scanStarted = Date(); discarding = false
@@ -144,7 +145,7 @@ final class ScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate, Room
         if scanning { discarding = true; captureView.captureSession.stop() }   // its final result must not come back
         scanning = false; quick = false; quickLeft = nil
         jsonURL = nil; usdzURL = nil; result = nil; liveRoom = nil
-        status = ""; hud = ""; wallCount = 0
+        status = ""; hud = ""; wallCount = 0; stopNote = ""
         dispose(recorder?.dir)
         photoURLs = []; photosMetaURL = nil; recorder = nil; savedCopy = nil
         live3D.reset()
@@ -290,6 +291,7 @@ struct ScanView: View {
                 }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
+                if !model.stopNote.isEmpty, !model.scanning { Text(model.stopNote).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 HStack {
                     if model.scanning {
                         Button("Stop") { model.requestStop() }
@@ -311,6 +313,14 @@ struct ScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: mode == 0)
+        .onDisappear {
+            // RoomPlan's session must not keep running behind another tab's camera: stop as the Stop button does (the result is kept).
+            if model.scanning {
+                model.stop()
+                model.stopNote = "Stopped because you left the scan screen. What was captured is kept: Upload or Save it."
+                Reporter.log("room: stopped, the scan screen was left")
+            }
+        }
     }
 }
 

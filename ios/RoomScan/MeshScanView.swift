@@ -12,6 +12,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published var previewOn = UserDefaults.standard.object(forKey: "previewOn") as? Bool ?? true   // the live camera before Start; the icon switches it off
     @Published var status = ""
     @Published var hud = ""
+    @Published var stopNote = ""          // why the scan stopped by itself (the screen was left), shown until the next scan
     @Published var plyURL: URL?
     @Published var photoURLs: [URL] = []
     @Published var photosMetaURL: URL?
@@ -108,7 +109,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     func start() {
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; status = ""; maskURLs = []; serverOnly = false; phoneResult = nil
         dispose(recorder?.dir)      // an earlier scan that produced nothing
-        savedCopy = nil
+        savedCopy = nil; stopNote = ""
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         ring.begin()
@@ -196,13 +197,19 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         recorder = nil; savedCopy = nil
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
         scanning = false
-        hud = ""; status = ""
+        hud = ""; status = ""; stopNote = ""
         Reporter.log("mesh: reset by user")
         live.abandon()
         startPreview()      // back to the live camera at the start screen, not a paused one
     }
 
-    func stop() {
+    /// `leftScreen`: the tab was switched (or Settings opened) mid-scan. Stop exactly as the button does, so the result is kept,
+    /// and say why: the timers and the AR session must not run behind another tab that uses the camera.
+    func stop(leftScreen: Bool = false) {
+        if leftScreen {
+            stopNote = "Stopped because you left the scan screen. What was captured is kept: Upload or Save it."
+            Reporter.log("mesh: stopped, the scan screen was left")
+        }
         timer?.invalidate(); timer = nil
         cloudTimer?.invalidate(); cloudTimer = nil
         coverageTimer?.invalidate(); coverageTimer = nil
@@ -738,6 +745,7 @@ struct MeshScanView: View {
                 if model.ringActive && model.scanning { RingPanel(tracker: model.ring) }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
+                if !model.stopNote.isEmpty, !model.scanning { Text(model.stopNote).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if liveGuide { LiveNote(live: model.live) }
                 HStack {
                     if model.scanning {
@@ -762,6 +770,6 @@ struct MeshScanView: View {
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
         .onAppear { model.sweepMode = sweepMode; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
-        .onDisappear { model.pausePreview() }
+        .onDisappear { if model.scanning { model.stop(leftScreen: true) } else { model.pausePreview() } }
     }
 }

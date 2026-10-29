@@ -84,6 +84,23 @@ final class ObjectScanModel: ObservableObject {
         releaseSession()
     }
 
+    /// The tab was switched (or Settings opened): the capture must not keep the camera behind another tab. A capture in progress is
+    /// finished, so the photos so far are built into a model as with Finish; before capturing there is nothing to keep.
+    func leftScreen() {
+        guard let s = session, !reconstructing else { return }
+        switch s.state {
+        case .capturing:
+            s.finish()
+            status = "Finished because you left the scan screen: building the model from the photos taken so far."
+        case .initializing, .ready, .detecting:
+            cancel()
+            status = "Cancelled because you left the scan screen. Tap New object to start again."
+        default:
+            break
+        }
+        Reporter.log("object: scan screen left in state \(s.state)")
+    }
+
     /// Up to 120 evenly spaced shots from Object Capture's image folder, downsized to JPEG for the web gallery.
     private func samplePhotos(from dir: URL) -> [URL] {
         let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
@@ -343,5 +360,6 @@ struct ObjectScanView: View {
             }
             .padding()
         }
+        .onDisappear { model.leftScreen() }
     }
 }
