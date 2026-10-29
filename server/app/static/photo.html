@@ -61,6 +61,7 @@
       <label class="btn">Take a photo<input id="cam" type="file" accept="image/*" capture="environment" hidden></label>
       <label class="btn alt">Choose a photo<input id="pick" type="file" accept="image/*" hidden></label>
     </div>
+    <div class="warn" id="loadMsg" hidden></div>
   </div>
 
   <div class="card" id="work" hidden>
@@ -108,7 +109,8 @@ $("cw").onchange = $("ch").onchange = () => { if (img && corners) newH(); };
 async function load(file) {
   if (!file) return;
   let bmp;
-  try { bmp = await createImageBitmap(file); } catch { alert("That picture could not be opened."); return; }
+  $("loadMsg").hidden = true;
+  try { bmp = await createImageBitmap(file); } catch { $("loadMsg").textContent = "That picture could not be opened. Try another one (JPEG or PNG)."; $("loadMsg").hidden = false; return; }
   const k = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
   W = Math.round(bmp.width * k); H = Math.round(bmp.height * k);
   const c = document.createElement("canvas"); c.width = W; c.height = H;

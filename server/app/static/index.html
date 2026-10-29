@@ -60,6 +60,9 @@
   body.embed aside { border-right:0; border-bottom:1px solid var(--line); max-height:28vh; overflow:auto; padding:8px 12px; }
   body.embed h1 { display:none; }
   .hint { font-size:12px; color:var(--mute); margin:4px 0 0; }
+  #msgBar { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:60; max-width:min(640px,calc(100vw - 32px)); display:flex; gap:10px; align-items:flex-start;
+            padding:10px 12px; border:1px solid var(--err); border-radius:8px; background:var(--bg); color:var(--fg); box-shadow:0 6px 24px #0005; font-size:14px; }
+  #msgBar span { flex:1; min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; max-height:30vh; overflow:auto; }
   /* the cut tool: a big panel over the page (about 92% of the screen), 3D view large, options docked on the right */
   #cutStage { display:none; position:fixed; inset:4vh 4vw; z-index:50; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 60px #000a; flex-direction:column; overflow:hidden; }
   #cutStage.open { display:flex; }
@@ -283,6 +286,7 @@
       <button class="btn" id="edSave">Save</button><button class="btn" id="edSaveNext">Save &amp; next</button>
     </div>
   </div></dialog>
+<div id="msgBar" role="alert" hidden><span id="msgText"></span><button class="ico" id="msgClose" title="Close">✕</button></div>
 <dialog id="form"><form method="dialog">
   <h3 id="formTitle" style="margin:0 0 8px"></h3><div id="formFields"></div>
   <div class="row" style="justify-content:flex-end"><button class="btn" type="button" onclick="document.getElementById('form').close('cancel')">Cancel</button><button class="btn" id="formOk" type="submit" value="ok"></button></div>
@@ -293,9 +297,22 @@ import * as THREE from "./three.module.min.js";
 const $ = id => document.getElementById(id);
 let current = null, renderer = null, raf = 0;
 
+/** A message at the bottom of the page that does not stop anything (alert() would block the page and any script driving it). */
+let msgTimer = 0;
+function note(text, ms = 10000) {
+  $("msgText").textContent = text; $("msgBar").hidden = false;
+  clearTimeout(msgTimer); msgTimer = setTimeout(() => { $("msgBar").hidden = true; }, ms);
+}
+$("msgClose").onclick = () => { clearTimeout(msgTimer); $("msgBar").hidden = true; };
+
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : undefined });
-  if (!r.ok) { alert(`${path}: ${r.status} ${await r.text()}`); throw new Error(r.status); }
+  if (!r.ok) {
+    const t = await r.text(); let d = t;
+    try { const j = JSON.parse(t); d = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail ?? j); } catch {}
+    note(`That did not work (${r.status}): ${d}`);
+    throw new Error(r.status);
+  }
   return r.json();
 }
 
