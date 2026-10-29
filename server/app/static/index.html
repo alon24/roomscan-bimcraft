@@ -109,6 +109,7 @@
   <p class="hint" id="ver"></p>
 </aside>
 <main>
+  <button class="btn" id="liveOffer" hidden style="float:right;border-color:var(--err)" title="A phone is sending a scan right now">● Live capture running: show it</button>
   <p class="mute" id="hint">Select a scan.</p>
   <div id="detail" hidden>
     <h1 id="title"></h1>
@@ -428,7 +429,7 @@ async function loadList() {
       const small = document.createElement("small");
       small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?") + (s.tags?.length ? " · #" + s.tags.join(" #") : "");
       b.append(small);
-      b.onclick = () => { if (SEL.ids.size) cb.click(); else show(s.id); };   // while anything is ticked a tap ticks; otherwise it opens
+      b.onclick = () => { if (SEL.ids.size) cb.click(); else openScan(s.id); };   // while anything is ticked a tap ticks; otherwise it opens
       li.append(cb, b); ul.append(li);
     }
     out.push(ul);
@@ -481,7 +482,13 @@ $("importFile").onchange = e => { const fs = [...e.target.files]; e.target.value
 // Every show() (and every switch away) takes a new number; an older show() that wakes up after an await sees it is stale and stops,
 // so a slow scan cannot paint over the one picked after it, and two redraws of the same scan (button + live event) do not mix.
 let showGen = 0;
-function clearDetail() { showGen++; current = null; $("detail").hidden = true; $("hint").hidden = false; }
+function clearDetail() { showGen++; current = null; pinned = false; $("detail").hidden = true; $("hint").hidden = false; }
+
+// A scan the user opened on purpose (a click in the list, a ?scan= link) stays on screen: a live capture that starts meanwhile
+// only shows the "Live capture running" button instead of taking the page over.
+let pinned = false, liveRoom = null, offer = null;
+function openScan(id) { pinned = true; offerLive(null); return show(id); }
+function offerLive(o) { offer = o; $("liveOffer").hidden = !o; }
 
 async function show(id) {
   current = id; live = false;   // a later live frame must take the page over again, not be drawn into this scan's view
@@ -1860,11 +1867,20 @@ function liveDraw(m) {
 
 function liveMap(m) {
   liveLast = m;
-  if (!current) { show(m.id); return; }           // nothing open: jump to the capture that is running
-  if (m.id === current) { $("livePanel").hidden = false; liveDraw(m); }
+  if (!current && !live && !pinned) { show(m.id); return; }  // nothing open: jump to the capture that is running
+  if (m.id === current) { $("livePanel").hidden = false; liveDraw(m); offerLive(null); }
+  else if (!live && offer?.id !== m.id) offerLive({ id: m.id });   // another scan is open: offer the capture, do not switch
 }
 
-function liveEnd(id) { if (liveLast && liveLast.id === id) liveLast = null; }
+function liveEnd(id) { if (liveLast && liveLast.id === id) liveLast = null; if (offer?.id === id) offerLive(null); }
+
+$("liveOffer").onclick = () => {
+  const o = offer; offerLive(null); pinned = false;
+  if (!o) return;
+  if (o.id) { show(o.id); return; }
+  enterLive();
+  if (liveRoom) show3d(roomGroup({ scan: liveRoom, poses: [], mode: "lidar" }), true);
+};
 
 // ---- live updates: new scans appear by themselves; a scan in progress is drawn as it grows
 let live = false;
@@ -1917,6 +1933,8 @@ function connect() {
   ws.onmessage = async ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "live") {
+      liveRoom = m.room;
+      if (pinned) { if (!offer) offerLive({ room: true }); return; }   // the user is looking at a scan they chose
       enterLive();
       show3d(roomGroup({ scan: m.room, poses: [], mode: "lidar" }), true);
     } else if (m.type === "list") {
@@ -1929,9 +1947,10 @@ function connect() {
     } else if (m.type === "live_end_map") {
       liveEnd(m.id);
     } else if (m.type === "live_end") {
-      live = false;
+      live = false; liveRoom = null;
+      if (offer?.room) offerLive(null);
     } else if (m.type === "scan") {
-      const wasLive = live || !current;
+      const wasLive = (live || !current) && !pinned;
       live = false;
       await loadList();
       if (wasLive || m.id === current) show(m.id);
@@ -1943,7 +1962,8 @@ connect();
 
 const params = new URLSearchParams(location.search);
 if (params.get("embed")) document.body.classList.add("embed");  // inside the iPhone app: no list, just the viewer
-loadList().then(() => { if (params.get("scan")) show(params.get("scan")); });
+if (params.get("scan")) pinned = true;   // before the first live event can arrive
+loadList().then(() => { if (params.get("scan")) openScan(params.get("scan")); });
 fetch('/api/version').then(r => r.json()).then(v => { document.getElementById('ver').textContent = `Server v${v.version} · build ${v.build}`; document.getElementById('verTop').textContent = `server v${v.version} · build ${v.build}`; }).catch(() => {});
 </script>
 </body>
