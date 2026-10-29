@@ -46,6 +46,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     private var occupied = Set<Int64>()
     private var cloudTimer: Timer?
     private let ciContext = CIContext()
+    private let cloudQueue = DispatchQueue(label: "mesh.cloud", qos: .userInitiated)
+    private var cloudBusy = false      // a frame is being read on cloudQueue
+    private var cloudGen = 0           // bumped on start, stop and reset: a late result from before is dropped
     private let maxPoints = 1_000_000
     private let voxel: Float = 0.015
     private let lock = NSLock()
@@ -120,7 +123,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             self.live.pump(self.recorder, frame: self.sceneView.session.currentFrame)
         }
         ticks = 0
-        cloud = []; cloudColours = []; occupied = []
+        cloud = []; cloudColours = []; occupied = []; cloudGen += 1
         cloudTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.addPoints() }
         lock.lock(); meshAnchors = [:]; lock.unlock()
         let cfg = ARWorldTrackingConfiguration()
@@ -181,7 +184,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         Screen.awake(false)
         ring.end()
         ringActive = false
-        cloud = []; cloudColours = []; occupied = []
+        cloud = []; cloudColours = []; occupied = []; cloudGen += 1
         lock.lock(); meshAnchors = [:]; lock.unlock()
         recorder = nil
         plyURL = nil; photoURLs = []; photosMetaURL = nil; modelScene = nil; serverOnly = false; phoneResult = nil
@@ -197,6 +200,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         cloudTimer?.invalidate(); cloudTimer = nil
         coverageTimer?.invalidate(); coverageTimer = nil
         overlayTimer?.invalidate(); overlayTimer = nil
+        cloudGen += 1      // a frame still being read is not added after Stop: the cloud is written to the PLY below
         dots = []
         ring.end()
         ringActive = false
@@ -348,29 +352,55 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     // MARK: depth point cloud
+    /// Every 0.25 s: the heavy part (rendering the camera image small, unprojecting the depth map) runs on `cloudQueue`; the new
+    /// points are merged here on the main thread, which owns `cloud`, `cloudColours` and `occupied`. A frame is skipped while the
+    /// last one is still being read, and a result that arrives after Stop, Reset or a new start is dropped (`cloudGen`).
     private func addPoints() {
-        // A turning part would smear in a cloud built in room coordinates: show only the current view, in finer dots.
-        if ring.capturing { cloud = []; cloudColours = []; occupied = [] }
-        guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
+        guard !cloudBusy, let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState,
               let depth = frame.sceneDepth, let conf = depth.confidenceMap, cloud.count < maxPoints else { return }
-        let vox: Float = ring.capturing ? 0.004 : voxel
-        let dm = depth.depthMap
+        // A turning part would smear in a cloud built in room coordinates: show only the current view, in finer dots.
+        let onlyThisView = ring.capturing
+        let vox: Float = onlyThisView ? 0.004 : voxel
+        let image = frame.capturedImage, dm = depth.depthMap
+        let k = frame.camera.intrinsics, res = frame.camera.imageResolution, t = frame.camera.transform
+        let gen = cloudGen, ctx = ciContext
+        cloudBusy = true
+        cloudQueue.async { [weak self] in
+            let found = MeshScanModel.depthPoints(image: image, depth: dm, conf: conf, intrinsics: k, resolution: res, transform: t, voxel: vox, ctx: ctx)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.cloudBusy = false
+                guard self.scanning, gen == self.cloudGen else { return }
+                if onlyThisView { self.cloud = []; self.cloudColours = []; self.occupied = [] }
+                for f in found where self.cloud.count < self.maxPoints {
+                    guard self.occupied.insert(f.key).inserted else { continue }
+                    self.cloud.append(f.point)
+                    self.cloudColours.append(f.colour)
+                }
+            }
+        }
+    }
+
+    /// The depth map's points in world space with their camera colours, one per voxel key (merged into the cloud on the main thread).
+    private static func depthPoints(image: CVPixelBuffer, depth dm: CVPixelBuffer, conf: CVPixelBuffer, intrinsics k: simd_float3x3,
+                                    resolution: CGSize, transform t: simd_float4x4, voxel vox: Float, ctx: CIContext)
+        -> [(key: Int64, point: SIMD3<Float>, colour: SIMD3<Float>)] {
         let dw = CVPixelBufferGetWidth(dm), dh = CVPixelBufferGetHeight(dm)
         // camera colours at the depth map's size
         var rgba = [UInt8](repeating: 0, count: dw * dh * 4)
-        let img = CIImage(cvPixelBuffer: frame.capturedImage)
+        let img = CIImage(cvPixelBuffer: image)
         let small = img.transformed(by: CGAffineTransform(scaleX: CGFloat(dw) / img.extent.width, y: CGFloat(dh) / img.extent.height))
-        ciContext.render(small, toBitmap: &rgba, rowBytes: dw * 4, bounds: CGRect(x: 0, y: 0, width: dw, height: dh),
-                         format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        ctx.render(small, toBitmap: &rgba, rowBytes: dw * 4, bounds: CGRect(x: 0, y: 0, width: dw, height: dh),
+                   format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
         // intrinsics are for the full image; scale to the depth map
-        let k = frame.camera.intrinsics
-        let sx = Float(dw) / Float(frame.camera.imageResolution.width), sy = Float(dh) / Float(frame.camera.imageResolution.height)
+        let sx = Float(dw) / Float(resolution.width), sy = Float(dh) / Float(resolution.height)
         let fx = k[0][0] * sx, fy = k[1][1] * sy, cx = k[2][0] * sx, cy = k[2][1] * sy
-        let t = frame.camera.transform
         CVPixelBufferLockBaseAddress(dm, .readOnly); CVPixelBufferLockBaseAddress(conf, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(dm, .readOnly); CVPixelBufferUnlockBaseAddress(conf, .readOnly) }
-        guard let db = CVPixelBufferGetBaseAddress(dm), let cb = CVPixelBufferGetBaseAddress(conf) else { return }
+        guard let db = CVPixelBufferGetBaseAddress(dm), let cb = CVPixelBufferGetBaseAddress(conf) else { return [] }
         let dbpr = CVPixelBufferGetBytesPerRow(dm), cbpr = CVPixelBufferGetBytesPerRow(conf)
+        var seen = Set<Int64>()
+        var out: [(key: Int64, point: SIMD3<Float>, colour: SIMD3<Float>)] = []
         for y in stride(from: 0, to: dh, by: 2) {
             let drow = (db + y * dbpr).assumingMemoryBound(to: Float32.self)
             let crow = (cb + y * cbpr).assumingMemoryBound(to: UInt8.self)
@@ -379,13 +409,13 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 guard d > 0.15, d < 5, crow[x] >= 1 else { continue }
                 // ARKit camera: +X right, +Y up, looks down -Z; image rows go down
                 let w = t * SIMD4<Float>((Float(x) - cx) * d / fx, -(Float(y) - cy) * d / fy, -d, 1)
-                let key = Self.voxelKey(w, vox)
-                guard occupied.insert(key).inserted else { continue }
-                cloud.append(SIMD3(w.x, w.y, w.z))
+                let key = voxelKey(w, vox)
+                guard seen.insert(key).inserted else { continue }
                 let o = (y * dw + x) * 4
-                cloudColours.append(SIMD3(Float(rgba[o]), Float(rgba[o + 1]), Float(rgba[o + 2])) / 255)
+                out.append((key: key, point: SIMD3(w.x, w.y, w.z), colour: SIMD3(Float(rgba[o]), Float(rgba[o + 1]), Float(rgba[o + 2])) / 255))
             }
         }
+        return out
     }
 
     private static func voxelKey(_ p: SIMD4<Float>, _ size: Float) -> Int64 {

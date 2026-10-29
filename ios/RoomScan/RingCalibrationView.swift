@@ -42,6 +42,7 @@ final class RingCalibrationModel: NSObject, ObservableObject {
         guard let frame = sceneView.session.currentFrame else { note = "The camera is not ready yet."; return }
         let before = recorder.count
         recorder.consider(frame, force: true)
+        recorder.waitForWrites()      // the photo is written in the background; the count below must include it
         if recorder.count == before { note = "Hold the phone still for a moment and try again." } else { note = ""; count = recorder.count }
     }
 

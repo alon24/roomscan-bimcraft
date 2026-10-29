@@ -197,7 +197,8 @@ final class LiveLink: NSObject, ObservableObject {
     /// Called every 0.2 s while scanning (and while finishing): sends the camera position and any new frames.
     func pump(_ rec: PhotoRecorder?, frame: ARFrame?) {
         guard active, let rec else { return }
-        waiting = max(0, rec.count - acked)
+        let metas = rec.metas      // one snapshot: frames appear here only once their files are written
+        waiting = max(0, metas.count - acked)
         guard link == .live, let t = task else { return }
         if let f = frame, Date().timeIntervalSince(lastPose) > 0.2 {
             lastPose = Date()
@@ -205,9 +206,9 @@ final class LiveLink: NSObject, ObservableObject {
             sendJSON(["type": "pose", "t": Date().timeIntervalSince1970, "transform": (0..<4).map { c in (0..<4).map { tr[c][$0] } }])
         }
         let dir = rec.dir
-        while sent < rec.count && sent - acked < 6 {
+        while sent < metas.count && sent - acked < 6 {
             let n = sent + 1
-            let meta = rec.metas[n - 1]
+            let meta = metas[n - 1]
             sent = n
             io.async { [weak self] in
                 guard let self, let msg = Self.frameMessage(n: n, meta: meta, dir: dir) else { return }
@@ -241,6 +242,7 @@ final class LiveLink: NSObject, ObservableObject {
     @MainActor func complete(recorder rec: PhotoRecorder, info: [String: Any]) async throws -> String {
         guard active, let id = scanID else { throw LiveError.notLive }
         serverReady = false
+        rec.waitForWrites()       // the last photos may still be on their way to the disk
         let sendDeadline = Date().addingTimeInterval(120)
         while acked < rec.count {
             if !active { throw LiveError.notLive }      // New scan pressed meanwhile

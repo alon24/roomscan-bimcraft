@@ -41,21 +41,17 @@ final class RingSpeedMonitor {
     /// Call about 5 times a second. Frames that arrive while the last one is still being read are skipped.
     func feed(_ frame: ARFrame) {
         guard !busy else { return }
-        let buf = frame.capturedImage
-        CVPixelBufferLockBaseAddress(buf, .readOnly)
-        let w = CVPixelBufferGetWidthOfPlane(buf, 0) / 2, h = CVPixelBufferGetHeightOfPlane(buf, 0) / 2
-        let bpr = CVPixelBufferGetBytesPerRowOfPlane(buf, 0)
-        guard w > 0, h > 0, let base = CVPixelBufferGetBaseAddressOfPlane(buf, 0) else { CVPixelBufferUnlockBaseAddress(buf, .readOnly); return }
-        var gray = [UInt8](repeating: 0, count: w * h)
-        let src = base.assumingMemoryBound(to: UInt8.self)
-        for y in 0..<h { for x in 0..<w { gray[y * w + x] = src[2 * y * bpr + 2 * x] } }     // half size is plenty to read 20 mm markers at 25 cm
-        CVPixelBufferUnlockBaseAddress(buf, .readOnly)
+        var held: CVPixelBuffer? = frame.capturedImage
         let k = frame.camera.intrinsics
         let fx = Double(k[0][0]) / 2, fy = Double(k[1][1]) / 2, cx = Double(k[2][0]) / 2, cy = Double(k[2][1]) / 2
         let now = frame.timestamp
         busy = true
         queue.async { [weak self] in
             guard let self else { return }
+            // The half-size grey copy is made here, off the main thread; the camera buffer is let go as soon as it is copied.
+            let copy = held.flatMap { RingSpeedMonitor.halfGray($0) }
+            held = nil
+            guard let (gray, w, h) = copy else { DispatchQueue.main.async { self.busy = false }; return }
             let pose = OnPhoneRing.livePose(gray: gray, w: w, h: h, fx: fx, fy: fy, cx: cx, cy: cy, ring: .current(), flipped: &self.flipped)
             self.frameAz = nil; self.frameElev = nil
             var reading = self.update(pose, now)
@@ -66,6 +62,19 @@ final class RingSpeedMonitor {
                 if reading.level == 3 && now - self.warnedAt > 4 { self.warnedAt = now; UINotificationFeedbackGenerator().notificationOccurred(.warning) }
             }
         }
+    }
+
+    /// Every other pixel of the luma plane: half size is plenty to read 20 mm markers at 25 cm.
+    private static func halfGray(_ buf: CVPixelBuffer) -> ([UInt8], Int, Int)? {
+        CVPixelBufferLockBaseAddress(buf, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+        let w = CVPixelBufferGetWidthOfPlane(buf, 0) / 2, h = CVPixelBufferGetHeightOfPlane(buf, 0) / 2
+        let bpr = CVPixelBufferGetBytesPerRowOfPlane(buf, 0)
+        guard w > 0, h > 0, let base = CVPixelBufferGetBaseAddressOfPlane(buf, 0) else { return nil }
+        var gray = [UInt8](repeating: 0, count: w * h)
+        let src = base.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<h { for x in 0..<w { gray[y * w + x] = src[2 * y * bpr + 2 * x] } }
+        return (gray, w, h)
     }
 
     private func update(_ pose: (SIMD3<Double>, Int, Double)?, _ now: Double) -> Reading {
