@@ -38,10 +38,11 @@ def world_points(photo: dict, depth: np.ndarray) -> np.ndarray:
 
     Pixel convention (used by every projection in this server): image coordinates are continuous with (0, 0) at the TOP-LEFT
     CORNER of the top-left pixel, so pixel (i, j) is the square [i, i+1) x [j, j+1) and its centre is (i + 0.5, j + 0.5). ARKit's
-    principal point and focal length are taken in these coordinates. Reasons: scaling the intrinsics to the depth map's size by
-    w / width (Apple's advice, and what all of this code does) is exact only in this convention; Apple's point-cloud sample
-    unprojects a camera-pixel position with the inverse intrinsics and samples the depth at that same position divided by the image
-    size (a texture coordinate, whose texel centres are at (i + 0.5) / w); and the GPU texture lookups in the web viewer use it too.
+    principal point and focal length are taken in these coordinates. Main reason: scaling the intrinsics to the depth map's size by
+    w / width (what Apple recommends and all of this code does) is exact only in this convention; with whole-pixel centres it would
+    need (cx + 0.5) * s - 0.5. The GPU texture lookups in the web viewer (u / width) use it too. Apple does not state the pixel
+    origin outright, and its point-cloud Metal sample could not be checked from here; the real sweep scan cannot tell the
+    conventions apart either (frames disagree by ~14 mm at every offset), while the synthetic tests pin this one down.
     Going from a projected (u, v) back to a pixel index is then floor(u); OpenCV and Open3D put pixel centres at whole numbers, so
     their principal point is cx - 0.5 (see tsdf_room, ring.ring_pose, panorama._colours)."""
     h, w = depth.shape

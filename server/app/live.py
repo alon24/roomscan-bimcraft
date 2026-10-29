@@ -34,7 +34,8 @@ SESSIONS: dict[str, "Session"] = {}
 SESSIONS_LOCK = threading.Lock()
 BUILDING: set[str] = set()  # scans with a build running in this process (a "building" scan not in here was left by a stopped server)
 RESUME_TRIES = 1            # a build interrupted by a restart is started again this many times, then marked error (no crash loop)
-DELETED: set[str] = set()   # scans deleted while this server runs: nothing may recreate their folders (ids are never reused)
+DELETED: set[str] = set()   # scans deleted while this server runs: nothing may recreate their folders (ids are never reused:
+                            # uploads, live captures and imports all make a new random id)
 FINISH_LOCK = threading.Lock()   # the socket, the web page and the janitor may all ask to finish the same scan at once
 MAP_EVERY = 1.5            # seconds between map messages (only sent when something changed)
 IDLE_S = float(os.environ.get("LIVE_IDLE_S", "600"))
@@ -739,8 +740,8 @@ def _build(d: Path, scan_id: str, info: dict | None) -> None:
         _save_meta(d, meta)
         build_cloud(d)
         meta = ctx.convert(d)
-        if meta.pop("interrupted", None) is not None:
-            _save_meta(d, meta)
+        if [k for k in ("interrupted", "resume_tries") if meta.pop(k, None) is not None]:
+            _save_meta(d, meta)          # in the same breath as the result: a reader never sees "ok" with a stale counter
         _push(sess, {"type": "state", "status": "ready" if meta.get("status") == "ok" else "error", "scan_id": scan_id,
                      "message": meta.get("log", "")[:300]})
     except Exception as e:

@@ -588,6 +588,9 @@ def test_a_build_cut_off_by_a_restart_is_started_again_at_startup(tmp_path, monk
     sid = building_scan(root, d, photos)
     with TestClient(main.app) as c:                                  # the server starts: it finds the scan and builds it again
         assert wait_status(c, sid) == "ok", c.get(f"/api/scans/{sid}").json()["log"]
+        t0 = time.time()
+        while sid in live.BUILDING and time.time() - t0 < 30:          # the build thread ends (before this server stops)
+            time.sleep(0.1)
         meta = c.get(f"/api/scans/{sid}").json()
         assert "resume_tries" not in meta and "interrupted" not in meta
         assert (root / sid / "scan.ply").stat().st_size > 10_000 and not (root / sid / "scan.ply.tmp").exists()
