@@ -1,5 +1,6 @@
 """How good a ring scan is, and what to add: from the camera's place around the ring in every frame (the same fit and limits
 the build uses), the angles covered, the speed the tray turned at, the distance, and a score with tips."""
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -122,14 +123,34 @@ def analyse(d: Path) -> dict:
     return out
 
 
+VERSION = 1                                   # bump when analyse() changes, so old reports are made again
+
+
+def _key(d: Path) -> dict:
+    """Everything analyse() reads: the frame list, the photos (added, removed or replaced by a re-convert) and the ring
+    dimensions (a new calibration changes every pose)."""
+    def stamp(p: Path):
+        try:
+            st = p.stat()
+            return [st.st_mtime_ns, st.st_size]
+        except OSError:
+            return None
+    cfg = json.dumps(ring.config(d), sort_keys=True)
+    return {"v": VERSION, "frames": len(frames.manifest(d)), "photos_json": stamp(d / "photos.json"),
+            "photos_dir": stamp(d / "photos"), "ring": hashlib.sha1(cfg.encode()).hexdigest()}
+
+
 def cached(d: Path) -> dict:
     p = d / "quality.json"
-    n = len(frames.manifest(d))
+    key = _key(d)
     if p.exists():
-        c = json.loads(p.read_text())
-        if c.get("frames_in_manifest") == n:
+        try:
+            c = json.loads(p.read_text())
+        except ValueError:
+            c = {}
+        if c.get("cache_key") == key:
             return c
     c = analyse(d)
-    c["frames_in_manifest"] = n
+    c["cache_key"] = key
     p.write_text(json.dumps(c))
     return c

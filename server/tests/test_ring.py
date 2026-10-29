@@ -198,3 +198,24 @@ def test_quality_report_finds_the_gaps_and_the_missing_low_pass(tmp_path):
     assert any("low pass" in t for t in q["tips"])                            # all frames at one height
     assert q["grade"] in ("poor", "fair") and q["score"] < 80
     assert 50 < q["speed"]["median"] < 70                                     # 60 degrees a second in the synthetic scan
+
+
+def test_quality_cache_is_made_again_after_a_reconvert_or_a_new_ring(tmp_path, monkeypatch):
+    import json, os
+    from app import quality, ring
+    d = tmp_path / "data" / "scans" / "s1"
+    (d / "photos").mkdir(parents=True)
+    (d / "photos.json").write_text(json.dumps({"photos": [{"file": "a.jpg"}]}))
+    runs = []
+    monkeypatch.setattr(quality, "analyse", lambda _d: runs.append(1) or {"score": len(runs)})
+    assert quality.cached(d)["score"] == 1
+    assert quality.cached(d)["score"] == 1 and len(runs) == 1                 # nothing changed: served from quality.json
+    st = (d / "photos.json").stat()
+    (d / "photos.json").write_text(json.dumps({"photos": [{"file": "b.jpg"}]}))   # same frame count, new frames (a re-convert)
+    os.utime(d / "photos.json", ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    assert quality.cached(d)["score"] == 2
+    cfg = ring.config(d)
+    cfg["marker_size_mm"] += 1
+    ring.calibration_file(d.parent).write_text(json.dumps({"config": cfg}))   # the ring was measured again
+    assert quality.cached(d)["score"] == 3
+    assert quality.cached(d)["score"] == 3
