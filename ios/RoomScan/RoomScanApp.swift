@@ -42,7 +42,7 @@ struct RoomScanApp: App {
                     // Scan temp files left behind (the app was closed mid-scan, or a result was never saved or reset). Nothing is in
                     // use yet at launch; saved and waiting scans are in Documents and are not touched.
                     Task.detached(priority: .utility) { TempFiles.purge(olderThan: 24 * 3600) }
-                    await Reporter.flush(); await Self.syncRing()
+                    await Reporter.flush(); await PendingDeletes.retry(); await Self.syncRing()
                 }
                 .overlay(alignment: .bottom) { UploadProgressLine().padding(.bottom, 56).allowsHitTesting(false) }
                 .overlay(alignment: .bottomLeading) {

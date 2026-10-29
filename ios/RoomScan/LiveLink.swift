@@ -21,6 +21,43 @@ struct LiveGrid: Equatable {
 
 enum LiveError: Error { case notLive, timeout, failed(String) }
 
+/// Live drafts on the server the phone wanted deleted but could not reach (offline). Kept in UserDefaults with the server address
+/// they belong to, and retried when the app starts.
+@MainActor
+enum PendingDeletes {
+    private static let key = "pendingServerDeletes"
+
+    static var all: [[String: String]] { UserDefaults.standard.array(forKey: key) as? [[String: String]] ?? [] }
+
+    static func add(id: String, server: String) {
+        UserDefaults.standard.set(all.filter { $0["id"] != id } + [["id": id, "server": server]], forKey: key)
+    }
+
+    static func remove(id: String) {
+        UserDefaults.standard.set(all.filter { $0["id"] != id }, forKey: key)
+    }
+
+    /// True once the scan is gone: the server deleted it (2xx) or never had it / already deleted it (404).
+    nonisolated static func delete(id: String, server: String) async -> Bool {
+        guard let url = URL(string: server)?.appendingPathComponent("api/scans/\(id)") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 10
+        guard let (_, resp) = try? await URLSession.shared.data(for: req), let code = (resp as? HTTPURLResponse)?.statusCode else { return false }
+        return (200..<300).contains(code) || code == 404
+    }
+
+    static func retry() async {
+        for e in all {
+            guard let id = e["id"], let server = e["server"] else { continue }
+            if await delete(id: id, server: server) {
+                remove(id: id)
+                Reporter.log("live: deleted the pending draft \(id)")
+            }
+        }
+    }
+}
+
 /// Two-way link to the server while scanning a room: frames go up as they are taken, the server answers with a small map and what is
 /// still missing. It is an extra, never a requirement: capture does not wait for it, and without a connection everything is kept on
 /// the phone and uploaded afterwards, exactly as before.
@@ -69,13 +106,20 @@ final class LiveLink: NSObject, ObservableObject {
         percent = 0; summary = ""; needs = []; grid = nil; you = nil; waiting = 0; note = ""
     }
 
-    /// Reset pressed: throw the draft away on the server too.
-    func abandon() {
+    /// Reset or Save pressed: throw the draft away on the server too. `done(true)` once the server confirmed it is gone; if it could
+    /// not be reached the id is kept in `PendingDeletes` and removed the next time the app starts and the server answers.
+    func abandon(done: ((Bool) -> Void)? = nil) {
         let id = scanID, base = server
         end()
-        guard let id, let url = URL(string: base)?.appendingPathComponent("api/scans/\(id)") else { return }
-        var req = URLRequest(url: url); req.httpMethod = "DELETE"
-        URLSession.shared.dataTask(with: req).resume()
+        guard let id else { done?(true); return }
+        Task { @MainActor in
+            let ok = await PendingDeletes.delete(id: id, server: base)
+            if !ok {
+                PendingDeletes.add(id: id, server: base)
+                Reporter.log("live: could not delete draft \(id), will retry at the next start")
+            }
+            done?(ok)
+        }
     }
 
     // MARK: connection

@@ -349,9 +349,16 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         status = "Saved on the phone (Models tab, On this phone)"
         // A live-guided scan also has a draft on the server, which would be built there after 10 minutes and then uploaded again
         // from the saved copy: delete the draft. Not once the server has started building it (or has finished: scanID is nil then).
+        // The status says what really happened: removed, or not reachable now and removed later.
         if live.scanID != nil && !live.finishing {
-            live.abandon()
-            status += ". The live draft on the server was removed; Upload sends this copy."
+            let saved = status, gen = cloudGen
+            status = saved + ". Removing the live draft on the server…"
+            let asked = status
+            live.abandon { [weak self] ok in
+                guard let self, gen == self.cloudGen, self.status == asked else { return }    // a newer message (Upload, New scan) wins
+                self.status = saved + (ok ? ". The live draft on the server was removed; Upload sends this copy."
+                    : ". The server could not be reached, so its live draft is not removed yet (it may build it by itself meanwhile): the app removes it the next time it starts and reaches the server.")
+            }
         }
     }
 
