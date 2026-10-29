@@ -171,9 +171,18 @@ final class LiveLink: NSObject, ObservableObject {
                 }
                 self.listen(t)
             case .failure:
-                DispatchQueue.main.async { self.dropped(t) }
+                let deleted = t.closeCode.rawValue == 4410      // the server closes with 4410 when this scan was deleted there
+                DispatchQueue.main.async { if deleted { self.deletedOnServer(t) } else { self.dropped(t) } }
             }
         }
+    }
+
+    /// The scan was deleted on the server: stop reconnecting. Upload then falls back to sending from the phone, which still has everything.
+    private func deletedOnServer(_ t: URLSessionWebSocketTask) {
+        guard task === t else { return }
+        end()
+        note = "This scan was deleted on the server. It is still on the phone."
+        Reporter.log("live: the server deleted this scan")
     }
 
     private func dropped(_ t: URLSessionWebSocketTask) {
