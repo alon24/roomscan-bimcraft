@@ -7,7 +7,7 @@ struct StorageSection: View {
         var saved: Int64 = 0
         var savedCount = 0
         var temp: Int64 = 0
-        var tempFree: Int64 = 0        // what "Delete temp files" would free: everything no scan on screen still needs
+        var tempFree: Int64 = 0        // what "Delete temp files" would free: scan files no scan on screen needs, other files over a day old
         var caches: Int64 = 0
     }
 
@@ -15,6 +15,7 @@ struct StorageSection: View {
     @State private var note = ""
     @State private var busy = false
     @State private var askDelete = false
+    @State private var askTemp = false
     @State private var askAgain = false
     @State private var typed = ""
 
@@ -77,7 +78,7 @@ struct StorageSection: View {
             StoragePathRow(title: "Temp scan files", url: TempFiles.root, size: sizes.map { text($0.temp) })
             StoragePathRow(title: "Caches", url: Self.caches, size: sizes.map { text($0.caches) })
             Button { openFiles() } label: { Label("Show in Files", systemImage: "folder") }
-            Button { deleteTemp() } label: {
+            Button { askTemp = true } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Delete temp files")
                     Text("frees \(sizes.map { text($0.tempFree) } ?? "…")").font(.caption).foregroundStyle(.secondary)
@@ -96,9 +97,15 @@ struct StorageSection: View {
         } header: {
             Text("Storage")
         } footer: {
-            Text("Saved scans are in the Files app under On My iPhone, RoomScan, SavedScans. Temp files are photos and exports of scans that were not saved; a scan you are still working on is never deleted, and temp files older than a day are deleted when the app starts. The Files app cannot show the temp and cache folders.")
+            Text("Saved scans are in the Files app under On My iPhone, RoomScan, SavedScans. Temp files are the photos, depth and upload files of scans that were not saved; a scan you are still working on is never deleted. Zips made to share and models downloaded from the server are kept for a day. Everything in temp older than a day is deleted when the app starts. The Files app cannot show the temp and cache folders.")
         }
         .task { await refresh() }
+        .confirmationDialog("Delete temp files?", isPresented: $askTemp, titleVisibility: .visible) {
+            Button("Delete temp files") { deleteTemp() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes the photos, depth and upload files of scans you did not save (frees \(sizes.map { text($0.tempFree) } ?? "…")). Kept: the scan on screen, saved scans, and zips you made to share or models downloaded from the server in the last day.")
+        }
         .confirmationDialog("Delete all \(sizes?.savedCount ?? 0) saved scans from the phone?", isPresented: $askDelete, titleVisibility: .visible) {
             Button("Delete all saved scans", role: .destructive) { typed = ""; askAgain = true }
             Button("Cancel", role: .cancel) {}

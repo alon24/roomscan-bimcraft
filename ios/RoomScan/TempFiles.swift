@@ -26,15 +26,27 @@ enum TempFiles {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// Everything in tmp that no scan holds, optionally only what has not changed for `age` seconds.
+    /// Made by a scan: a photo folder, an Object Capture folder, an upload body, a phone-built STL.
+    static func isScanFile(_ u: URL) -> Bool {
+        let n = u.lastPathComponent, ext = u.pathExtension
+        return ((n.hasPrefix("mesh-photos-") || n.hasPrefix("object-")) && ext.isEmpty)
+            || (n.hasPrefix("upload-") && ext == "multipart") || (n.hasPrefix("part-") && ext == "stl")
+    }
+
+    /// Everything else in tmp (a zip made to share, a model downloaded from the server, files of the system) is kept this long, so
+    /// "Delete temp files" never pulls a file from under a share sheet or the AR viewer.
+    static let keepOthers: TimeInterval = 24 * 3600
+
+    /// What may go: no scan holds it, and it has not changed for `age` seconds (scan files: any age when nil; others: at least a day).
     static func unused(olderThan age: TimeInterval? = nil) -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         lock.lock(); let held = inUse; lock.unlock()
         return items.filter { u in
             guard !held.contains(u.lastPathComponent) else { return false }
-            guard let age else { return true }
+            let minAge = isScanFile(u) ? age : max(age ?? 0, keepOthers)
+            guard let minAge else { return true }
             let changed = (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return Date().timeIntervalSince(changed) > age
+            return Date().timeIntervalSince(changed) > minAge
         }
     }
 
