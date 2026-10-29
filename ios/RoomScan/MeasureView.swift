@@ -493,12 +493,32 @@ struct MeasureView: View {
     @State private var renaming: String?
     @State private var newName = ""
     @State private var zoom: CGFloat = 1
+    @State private var calRaw: Double?       // two-pin calibration: the raw length being corrected
+    @State private var calText = ""
+    @State private var calResult: String?
     @ObservedObject private var cal = CalibrationStore.shared
 
     /// `kind` says which correction applies to a raw sensor value; `.none` shows the number as is.
     static func text(_ raw: Double, _ kind: CalKind = .none) -> (big: String, small: String) {
         let m = kind == .wall ? CalibrationStore.shared.wall(raw) : kind == .span ? CalibrationStore.shared.leg(raw) : raw
         return (String(format: "%.3f m", m), String(format: "%.1f cm  ·  %.0f mm", m * 100, m * 1000))
+    }
+
+    /// One "between two pins" tape check from the readout, then say what it changed.
+    private func addSpanCheck(raw: Double) {
+        guard let cm = Double(calText.replacingOccurrences(of: ",", with: ".")), cm > 0, raw > 0 else { calResult = "No length typed: nothing changed."; return }
+        let cal = CalibrationStore.shared
+        cal.points.append(CalPoint(kind: .span, raw: raw, truth: cm / 100))
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        guard let f = cal.fit(.span) else { return }
+        if f.suspicious && !cal.allowOdd {
+            calResult = String(format: "Saved, but not applied: the tape says %.1f cm and the app read %.1f cm, more than 10%% apart. That is usually a typo. Check it under Calibrate.", cm, raw * 100)
+        } else if !cal.enabled {
+            calResult = "Saved. The correction is switched off under Calibrate, so readings are not changed."
+        } else {
+            calResult = String(format: "Calibrated. Now reads %.1f cm (was %.1f cm).", cal.leg(raw) * 100, raw * 100)
+                + (f.n >= 2 ? String(format: " %d checks, typical error ±%.1f cm.", f.n, f.rmsAfter * 100) : " Add a few more checks at other lengths for a better fit.")
+        }
     }
 
     private var pinTitle: String {
@@ -588,6 +608,16 @@ struct MeasureView: View {
                 Button("Delete", role: .destructive) { model.deletePin(n) }
             }
         }
+        .alert("Real length between the two pins", isPresented: Binding(get: { calRaw != nil }, set: { if !$0 { calRaw = nil } })) {
+            TextField("in cm, e.g. 80", text: $calText).keyboardType(.decimalPad)
+            Button("Calibrate") { if let r = calRaw { addSpanCheck(raw: r) }; calRaw = nil }
+            Button("Cancel", role: .cancel) { calRaw = nil }
+        } message: {
+            Text("The app reads \(String(format: "%.1f", (calRaw ?? 0) * 100)) cm before correction. Type what the tape says, in cm. Every pin-to-pin length is corrected from now on; the checks can be seen and deleted under Calibrate.")
+        }
+        .alert(calResult ?? "", isPresented: Binding(get: { calResult != nil }, set: { if !$0 { calResult = nil } })) {
+            Button("OK", role: .cancel) { calResult = nil }
+        }
         .alert("Name this pin", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("e.g. left wall, window top", text: $newName)
             Button("Save") { if let r = renaming { model.rename(r, newName) }; renaming = nil }
@@ -613,8 +643,11 @@ struct MeasureView: View {
                 Text(t.small).font(.footnote).foregroundStyle(.secondary)
                 Text("along the floor " + Self.text(st.horizontal ?? 0, .span).big + "  ·  height " + Self.text(st.vertical ?? 0, .span).big)
                     .font(.caption2).foregroundStyle(.secondary)
-                Button(model.isLinked(sel[0].name, sel[1].name) ? "Unlink these two" : "Keep a line between these two") { model.toggleLink() }
-                    .font(.caption.bold())
+                HStack(spacing: 14) {
+                    Button(model.isLinked(sel[0].name, sel[1].name) ? "Unlink these two" : "Keep a line between these two") { model.toggleLink() }
+                    Button { calRaw = s; calText = "" } label: { Label("Calibrate: real length…", systemImage: "ruler") }
+                }
+                .font(.caption.bold())
             } else if sel.count == 1, let s = model.span {
                 let t = Self.text(s, .span)
                 Text("pin \(sel[0].number) → here").font(.caption).foregroundStyle(.secondary)

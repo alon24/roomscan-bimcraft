@@ -75,6 +75,8 @@ Tap the small underlined line under the reading ("uncalibrated · tap to calibra
    straight at the wall, wait for the green dot, type what the tape says, **Add this check**. Do 0.5 m, 1 m, 2 m, 3 m.
 2. **Between two pins**: pin both ends of something you can tape (a door width) and type its length. This also tests
    how well the phone tracked while you moved.
+   Quicker: with two pins selected, tap **Calibrate: real length…** under the reading on the Measure screen, type the
+   tape length in cm, and it says what the reading is now (or that the number looks like a typo and was not applied).
 3. The screen shows every check with its error before and after the correction, and the typical error ("±1.2 cm"),
    which then appears under every reading. Swipe a check to delete it. **Use the correction** switches it off.
 4. If the fitted scale is more than 10% from 1, or the fitted offset more than 5 cm, it is almost always a mistyped tape value:
@@ -338,6 +340,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.45.2 (app, Measure) | With two pins selected, **Calibrate: real length…** right under the reading: type the tape length and every pin-to-pin length is corrected from then on. |
 | 0.45.1 (server, web) | A sweep where the hand moved the phone more than 35 cm no longer shows a big red star of camera arrows (one "you stood here" marker instead); camera arrows on walked scans are at most 40 cm long; the room distances list one surface per row. |
 | 0.45.0 (server, web) | **Redesigned web page**: the 3D model is big at the top with the tools in a side column, downloads and actions grouped, drawn icons, a status badge, one look for every dialog, proper light and dark themes (teal accent like the app); the 3D view resizes with the window. |
 | 0.44.x (app, Measure) | A big **Pin here** button drops a pin where the crosshair points, so you no longer have to tap the bullseye with your finger. The reading moved to the top in a see-through card, and the +/- zoom buttons are gone (pinch to zoom). |
