@@ -426,12 +426,15 @@ class CoverageEngine:
                 tgt = (pose_v if pose_v is not None else stand0) + np.array([0, 0, -1.0])
                 mk("blur", "The last pictures are blurry. Move the phone more slowly.", tgt, None, 1)
         needs = self.tracker.update(cands)
+        # The list above holds a satisfied need for a few updates so the phone's markers do not flicker; the summary and "done" only
+        # count what is still missing right now.
+        current = [n_ for n_ in needs if self.tracker.active[n_["id"]]["absent"] == 0]
 
-        done = pct >= 90 and not any(n_["priority"] >= 2 for n_ in needs)
+        done = pct >= 90 and not any(n_["priority"] >= 2 for n_ in current)
         if done:
             summary = f"{int(pct)}% covered. Everything looks complete: tap Stop."
-        elif needs:
-            summary = f"{int(pct)}% covered. Next: {needs[0]['text']}"
+        elif current:
+            summary = f"{int(pct)}% covered. Next: {current[0]['text']}"
         else:
             summary = f"{int(pct)}% covered. Keep going."
         return {"percent": int(round(pct)), "summary": summary,
