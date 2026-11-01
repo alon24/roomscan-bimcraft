@@ -20,8 +20,9 @@ Files (in `prints/lidar-target/`, see [prints/README.md](../prints/README.md); t
 
 ## 1. Printing it (Snapmaker U1, 4 colours)
 
-1. Open **lidar-target-v2-4colour.3mf** in Snapmaker Orca (U1 profile). It is one object with four parts, each already on its
-   filament slot. Put **matte white PLA** in slot 1, **matte black** in 2, **blue** in 3, **red** in 4. No blue or red? Set
+1. Open **lidar-target-v2-4colour.3mf** in Snapmaker Orca. It is one object with four parts (the Objects list shows white, black,
+   blue, red), each already on its filament slot, with the U1 settings inside. **Check before printing:** the model shows all four
+   colours, and after Slice the Preview shows a weight for all four filaments. Put **matte white PLA** in slot 1, **matte black** in 2, **blue** in 3, **red** in 4. No blue or red? Set
    those two parts to white: only the colour test is lost.
 2. **Matte matters most**: turn **ironing off** (it makes the top shiny) and do not use silk or glossy filament. Reflections throw
    both the LiDAR and the marker reading.
@@ -102,20 +103,22 @@ OpenCV's corner order for each marker (top-left, top-right, bottom-right, bottom
 coordinates, (cx-h, cy+h), (cx+h, cy+h), (cx+h, cy-h), (cx-h, cy-h) with h = half its side, at the top of the marker (its surface
 + 0.4). Corners at z = 5.4, 25.4 and 45.4: three heights, which pins the camera's tilt and distance apart far better than one plane.
 
-Rebuilding it in SolidCraft (what was done, every volume checked against the numbers):
+Rebuilding it in SolidCraft: the design has 18 timeline items in 2 folders and 13 parameters (`plate`, `plate_t`, `inlay`, `pad`, `pad_at`, `pad1`-`pad4`, `patch`, `wedge_in`, `wedge_run`, `wedge_w`). The marker cells are fixed numbers on purpose: they are the spec the server reads.
 
-1. `solid.box` 200 x 200 x 5 centred at (0, 0, 2.5); 4 x `solid.box` pads with `operation: join`, centre z = 5 + h/2 (360 000 mm³).
-2. Each wedge: a closed triangle `sketch.line` on plane `YZ` (wedges on ±Y; sketch x = +Y, y = +Z) or `XZ` (wedges on ±X;
-   sketch y = **-Z**), e.g. 15°: (61, 5), (91, 5), (61, 13.0384); `solid.extrude` 50, `direction: symmetric`, `operation: join`.
-   White body: 440 490.3 mm³ with all four.
-3. Each marker: `solid.box` side x side x 0.4 on its surface, `operation: new`; then one `solid.box` cut per run of white cells in a
-   row (1 mm tall cutter, `targets` = that marker).
-4. Text: `sketch.create` XY offset 5, two `sketch.text` (font `Ubuntu`, bold, height 4.5, centred), `solid.extrude` 0.4 new.
-   Ruler and the two colour patches: `solid.box` pieces 0.4 tall. Black pieces were joined with `solid.combine` (slow with
-   the letters: about 9 minutes), but the 3MF only needs one mesh per colour, so joining is optional.
-5. Check: render the top view and run OpenCV's ArUco detector on it: 40 top-left, 41 top-right, 42 bottom-right, 43 bottom-left,
-   44 right of centre at the top, 45 left of centre at the bottom. A mirrored marker does not decode.
-6. Export one STL per colour and build the 3MF with the parts on filaments 1-4 (PrusaSlicer project format, which Orca reads).
+**White shape** (body `white`)
+
+1. `Sk_Plate`, `Plate`: the outline, extruded `plate_t`.
+2. `Sk_Pads` (master sketch on top of the plate, 4 squares), `Pad1`-`Pad4`: one extrude per height, each picking its square.
+3. `Sk_Wedges_15_30`, `Wedges_15_30` and `Sk_Wedges_45_60`, `Wedges_45_60`: two triangles per sketch, on planes given as `{origin, x_dir, y_dir: [0,0,1]}` so the sketch's y is the world Z, extruded `wedge_w` symmetric, heights `wedge_run * tan(angle)`.
+
+**Colour layers** (bodies `black`, `blue`, `red`, all `inlay` thick)
+
+4. `Sk_PadTops` (master sketch at z = 0: markers 44 and 45, both patches), `BluePatch`, `RedPatch`, `Marker44`, `Marker45`: each picks its profile and starts at its pad's top with `start_offset`.
+5. `Sk_PlateTop` (markers 40-43, ruler, both text lines), `BlackOnPlate`: one extrude joined into `black`, so all the black is one body without a slow Combine.
+
+Each marker is one rectangle plus closed outlines of its white cells, every cell 0.1 mm larger so cells touching at a corner merge. Check: render the top view and run OpenCV's ArUco detector: 40 top-left, 41 top-right, 42 bottom-right, 43 bottom-left, 44 right of centre at the top, 45 left of centre at the bottom. A mirrored marker does not decode.
+
+**3MF:** export one STL per colour and write Orca's own project format (`3D/Objects` with one object per part, `Metadata/model_settings.config` with each part's `extruder`, `Metadata/project_settings.config` with the U1 settings and filament colours). The PrusaSlicer-style config does **not** work: Orca merges the parts into one and prints everything on filament 1. Place the object at the bed centre (135.5, 136), not at (0, 0).
 
 Rules if you change it: keep a white margin of at least one cell round every marker; keep tall parts away from the markers so
 they are not hidden at 55° tilt; keep everything matte.

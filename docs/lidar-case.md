@@ -25,8 +25,9 @@ Files (in `prints/lidar-case/`, see [prints/README.md](../prints/README.md); the
    270 x 270). White in slot 1, black in slot 2. The label is the first two layers (0.4 mm), flush with the top, so print the
    **first layer slowly** to keep the letters clean. 0.2 mm layers, 3 walls, **10% infill** (the sockets are big solid
    blocks in the file; the infill keeps them light), no supports: every overhang is under 2.5 mm or at 45°.
-3. Each part needs its own plate: together they don't fit on the U1's bed.
-4. Check that the four tabs came out straight and are not stuck to the lid wall: you should see light through the 1 mm gap behind each one.
+3. Check the lid in the app: the Objects list shows white and black parts and the label is black on the model. The U1 settings are inside both files.
+4. Each part needs its own plate: together they don't fit on the U1's bed.
+5. Check that the four tabs came out straight and are not stuck to the lid wall: you should see light through the 1 mm gap behind each one.
 
 ## 2. Using it
 
@@ -74,23 +75,15 @@ Nothing on the lid comes lower than z = 7, so the sockets never touch the corner
 
 ## 4. Rebuilding it in SolidCraft
 
-All boxes are `solid.box {length (x), width (y), height, center, operation, targets}`; every feature is named in the timeline.
+31 timeline items in 5 folders, 24 parameters. The print's sizes (`plate`, `pad`, `wedge_in`...) and the clearance `c` are parameters, so the sockets follow them. Tab profiles, block sizes and notch x positions are fixed numbers.
 
-1. **Tray**: box 213 x 213 x 9 at z 1.5 (`new`, body `tray`); cut the 201 x 201 pocket; join the 205 x 205 x 3 lip and cut its
-   middle back to 201; cut the two finger notches and the four latch notches.
-2. **Lid**: box 213 x 213 x 55.4 at z 33.7 (`new`, body `lid`); cut 205.6 x 205.6 from z 5 to 59. Join the centre socket
-   92 x 92 (z 7-59) and cut the four pad pockets. For each wedge: join its 36 x 56 block, then sketch the grown wedge triangle on
-   an explicit plane (`{origin, x_dir: [0,1,0] or [1,0,0], y_dir: [0,0,1]}`, so the sketch's x is the world Y or X and its y is
-   the world Z) and extrude it `symmetric` 51 as a cut.
-3. **Tabs**: for each of the four: join the tab box (it warns it doesn't touch the lid yet, that's fine), the thumb tab, then
-   the gusset triangle and the hook profile, each sketched on a plane at y = ±60 and extruded `symmetric` 16 as a join. After
-   the gusset the lid is one solid again.
-4. **Label**: sketch on XY with offset 61, two `sketch.text` (Ubuntu, bold, centred); extrude 0.4 as a cut into `lid`, then
-   extrude the same sketch 0.4 as `new` bodies for the black inlay.
-5. **Check**: the lid must report 1 shell. Load the print's four STLs with the case and intersect them: 0 mm³ of overlap.
-   Lift the print 0.6 mm and it should start touching the lid (the 0.5 clearance).
-6. Export one STL per colour and build the 3MFs: one object, one volume per colour on its filament, the lid rotated 180°
-   about X so its top lies on the bed (`prints/lidar-case/3mf/` was built that way, the same format as the target's 3MF).
+- **Tray:** `Sk_TrayOutline` + `TrayBlock`. `Sk_TrayRings` (205 and 201 squares) gives both `Lip` (the ring, starting at `tray_top`) and `Pocket` (the inner square, cut). `Sk_TrayNotches` (all 6 rectangles) gives `FingerNotches` and `LatchNotches`, each with its own `start_offset`.
+- **Lid:** `Sk_LidOutline` at the ceiling (213 and 205.6 squares) gives `LidWalls` (the ring, downward) and `LidTop` (both regions, upward).
+- **Negative of the print:** `Sk_Sockets` + `Sockets` (5 blocks, downward). `Sk_PadPockets` + `PadPocket1`-`4`, one cut per pad height. `Sk_WedgePockets_15_30` and `_45_60` + a cut each: triangles grown by `c`.
+- **Snap tabs:** `Sk_SnapTabs_North` and `_South`: one closed profile per tab (hook, foot, thumb tab and gusset together), 2 per sketch, extruded `tab_w` symmetric. Use a sketch per side, not Mirror: in SolidCraft 0.29 mirroring a symmetric extrude from an offset plane left the tabs 6 mm wide instead of 16.
+- **Label:** `Sk_Label`, `LabelCut`, `LabelInlay`, `LabelOneBody` (Combine into one `label` body; about 3 s).
+
+Result: 3 bodies (`tray`, `lid`, `label`). The lid must be 1 shell. 3MF: same format as the target's (see `docs/lidar-target.md`), lid rotated 180° about X.
 
 ## 5. What was checked
 
@@ -98,5 +91,6 @@ All boxes are `solid.box {length (x), width (y), height, center, operation, targ
   Lifted by 0.4 mm still 0; by 0.6 mm it touches. So it sits with at most 0.5 mm play.
 - The lid is a single closed solid; volumes as modelled: tray 169 cm³, lid 900 cm³ solid (the slicer's infill makes it far
   lighter), label 0.5 cm³.
+- Slicer: Snapmaker Orca loads the tray as 1 part and the lid as 2, inside the bed. The final slice has to be checked in the app (see 1.): its command line crashes on any Orca-format project, its own exports included.
 - Not yet printed. The snap tabs are the part to watch: if they are too stiff, sand the hook's lead-in; if they are loose,
   the hook depth (1.2 mm, `HookXX` sketches) can go up to 1.5.
