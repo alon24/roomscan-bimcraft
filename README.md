@@ -94,7 +94,8 @@ Apple RoomPlan. Walk round the room slowly pointing at walls, corners, doors. Ta
 The server turns it into a BIMCraft model and plan. **Quick test (30 s)** is a short scan to check things work.
 
 #### Room from one spot: sweep the phone (small or cluttered rooms)
-Room tab, **From one spot**. You don't walk round the room: stand in the middle, tap **Start scan**, and turn slowly on the spot.
+Room tab, **From one spot**. You don't walk round the room: stand in the middle, tap **Start scan**, hold the phone out in front of you
+and turn your **whole body** slowly, so you stay behind the phone. Stand up: sitting at a desk, the phone films your lap, legs and face.
 - A dial shows where the camera has looked: **outer ring = the walls** all the way round, **middle = the ceiling**, **inner = the floor**,
   and two arrows in the middle light up once you have pointed **straight up** and **straight down**.
   Fill the outer ring first (turn slowly), then tip the phone up about 45° and turn again, then down. The hint tells you what's next.
@@ -104,6 +105,8 @@ Room tab, **From one spot**. You don't walk round the room: stand in the middle,
   - **up/down**: how much higher or lower the phone is than at the start. Tip it to look up or down; don't lift it.
   - **turn speed**: about 10°/s is right (one turn in 35 to 40 s). Over 20°/s the photos blur.
   The phone buzzes once when one of them goes wrong.
+- **Photos pause** while the phone is more than 25 cm from the start (go back over it) or is looking at you: when most of what LiDAR sees
+  is closer than 80 cm, the hint says "That's you". Such photos would only spoil the model, the server leaves them out anyway.
 - Turn on every light: a brighter room means shorter exposures and sharper photos.
 - The phone keeps a photo, the LiDAR depth and the camera's direction twice a second. The server turns them into a 360° picture of
   the room and a model of it seen from that spot, with its measurements.
@@ -201,6 +204,15 @@ How good: on a synthetic box room the width, length and height come out within 2
 swept) the height was 2.3 m, the front and left walls were found, the right and back walls were not in the sweep.
 Limits: LiDAR reaches about 5 m (a bigger room shows walls as "not seen"); glass and mirrors read badly; the phone must stay within about
 35 cm of one spot (a bigger move is treated as an ordinary room scan, or set `"sweep": false` in the scan info to force that).
+<img src="docs/img/sweep-360-view.jpg" width="520">
+
+*The 360° photo view from where you stood (0.48): every screen pixel looks up the panorama, so the picture is the photo itself.*
+
+- **If you moved during the sweep**, the server builds it from the spot where most frames were taken (within 50 cm) and leaves the
+  others out; the scan log says how many. Frames that mostly see something within 80 cm (you) are left out too.
+- **Floor, ceiling and walls are the biggest flat surfaces**, not the ones with the most points: a desk top, your lap or a wardrobe front
+  near the phone used to win (one real sweep read a 1.6 m high room; it now reads 2.4 m, and three sweeps of that room agree within 10 cm on
+  height). A wall is never taken in front of nearly everything seen that way.
 Other 3D room scans (walking round) now get brightness-matched, blended photo colours too: neighbouring colour jumps are about 16% smaller
 than before and the worst ones 22% smaller.
 
@@ -347,6 +359,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.48.0 | **Cleaner sweeps**: the 360° photo view looks up the panorama per screen pixel, so from where you stood it is exactly the photo (no stretched streaks or staircase edges); parts no photo saw are shaded grey surfaces. The server builds a sweep from the spot where most frames were taken, leaves out frames pointed at you (face, lap, legs), and finds floor, ceiling and walls as the biggest flat surfaces (a desk or your lap no longer reads as the floor). App: photos pause while you are too far from the start or the phone looks at you, and the first tip says to stand and turn your whole body. **Re-convert** old sweeps to get the new numbers. |
 | 0.47.0 | **Sharper 360° pictures**: where photos overlap, the sharpest photo taken nearest the middle now wins instead of being averaged with blurry or off-centre ones (doubled edges mostly gone; old panoramas are redrawn when next opened, **Re-convert** also refreshes the room colours). **Sweep coaching** in the app: live chips for how far the phone moved (green under 10 cm), how much it went up or down, and turn speed (aim for about 10°/s), a buzz when one goes wrong, and arrows in the dial for pointing straight up and straight down. |
 | 0.46.1 (server, web) | Switching between 3D views keeps the camera where it is (going back to the first view no longer jumps outside the room). |
 | 0.46.0 (server, web) | Swept rooms open in a new **360° photo** view: the room shape coloured straight from the 360 panorama, much sharper than the per-point colours (Solid surface is still there). "You stood here" is a ring on the floor instead of a ball in front of your eyes; the misleading mesh box size is hidden for rooms (the room panel gives width, length, height). |

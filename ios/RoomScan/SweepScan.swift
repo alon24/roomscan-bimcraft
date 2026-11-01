@@ -16,13 +16,17 @@ final class SweepCoverage: ObservableObject {
     /// Turn speed: at 20 deg/s a 10 ms exposure smears about 4 px; aim for half that.
     static let speedOk = 13.0, speedBad = 20.0          // degrees per second
     static let poleAt = 70.0                            // "straight up / down" counts above this tilt
+    /// A frame with this share of its LiDAR depth nearer than 0.8 m looks at you (face, lap, legs): the same rule as the server's
+    /// sweep.looks_at_you, which leaves such frames out. Seen on a real sweep: sitting at a desk, the phone filmed the user's legs and face.
+    static let selfNear: Float = 0.8, selfShare = 0.4
+    static let startHint = "Stand up, hold the phone out in front of you and turn your whole body slowly, so you stay behind it."
     /// Cell layout matches RingCoverageDial: band 0 outer ring, 1 middle, 2 inner.
     static let bandPitch: [Double] = [0, 55, -50]       // walls (level), ceiling (up), floor (down), degrees above the horizon
 
     enum Level { case good, warn, bad }
 
     @Published var cells = [Bool](repeating: false, count: 72)
-    @Published var hint = "Stand in the middle and turn slowly on the spot."
+    @Published var hint = SweepCoverage.startHint
     @Published var moved = 0.0                // metres from the start, sideways, now
     @Published var maxMoved = 0.0             // the most it wandered during this scan
     @Published var lift = 0.0                 // metres above (+) or below (-) the start height, now
@@ -32,6 +36,7 @@ final class SweepCoverage: ObservableObject {
     @Published var downDone = false           // and straight down
     @Published var yaw = 0.0                 // where the camera points now, degrees round
     @Published var pitch = 0.0               // and degrees up
+    @Published var onYou = false             // the camera is looking at you, not the room
     private var origin: SIMD3<Float>?
     private var last: (t: TimeInterval, f: SIMD3<Float>)?
     private var speeds: [Double] = []
@@ -40,13 +45,16 @@ final class SweepCoverage: ObservableObject {
     var driftLevel: Level { moved > Self.driftBad ? .bad : moved > Self.driftOk ? .warn : .good }
     var liftLevel: Level { abs(lift) > Self.liftBad ? .bad : abs(lift) > Self.liftOk ? .warn : .good }
     var speedLevel: Level { speed > Self.speedBad ? .bad : speed > Self.speedOk ? .warn : .good }
+    /// Photos are only kept while they are any use to the server: from the start spot, of the room. It drops the others anyway
+    /// (sweep.main_spot, sweep.looks_at_you), and a frame taken 1.2 m away doubles the walls if it is kept.
+    var keepFrames: Bool { driftLevel != .bad && !onYou }
     /// Median turn speed over the scan, sent with the upload.
     var medianSpeed: Double { speeds.isEmpty ? 0 : speeds.sorted()[speeds.count / 2] }
 
     func reset() {
         cells = [Bool](repeating: false, count: 72)
-        hint = "Stand in the middle and turn slowly on the spot."
-        moved = 0; maxMoved = 0; lift = 0; maxLift = 0; speed = 0; upDone = false; downDone = false
+        hint = Self.startHint
+        moved = 0; maxMoved = 0; lift = 0; maxLift = 0; speed = 0; upDone = false; downDone = false; onYou = false
         origin = nil; last = nil; speeds = []; lastWarn = nil
     }
 
@@ -64,6 +72,7 @@ final class SweepCoverage: ObservableObject {
         lift = Double(d.y)
         maxMoved = max(maxMoved, moved)
         maxLift = max(maxLift, abs(lift))
+        onYou = Self.looksAtYou(frame)
 
         let f = -SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)        // where the camera looks (world, Y up)
         let fn = simd_normalize(f)
@@ -96,8 +105,32 @@ final class SweepCoverage: ObservableObject {
         lastWarn = warning
     }
 
+    /// Share of the LiDAR depth (every 4th pixel) nearer than `selfNear`, at least `selfShare` of it.
+    static func looksAtYou(_ frame: ARFrame) -> Bool {
+        guard let map = frame.sceneDepth?.depthMap, CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32 else { return false }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return false }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), row = CVPixelBufferGetBytesPerRow(map)
+        var near = 0, all = 0
+        for y in stride(from: 0, to: h, by: 4) {
+            let line = (base + y * row).assumingMemoryBound(to: Float32.self)
+            for x in stride(from: 0, to: w, by: 4) where line[x] > 0.1 {
+                all += 1
+                if line[x] < selfNear { near += 1 }
+            }
+        }
+        return all > 0 && Double(near) / Double(all) >= selfShare
+    }
+
     /// The most useful thing to say now, and the name of the problem when it is a warning.
     private func text() -> (String, String?) {
+        if driftLevel == .bad {
+            return (String(format: "You moved %.0f cm, photos paused. Go back over the start: turn your body, don't walk.", moved * 100), "drift")
+        }
+        if onYou {
+            return ("That's you (closer than 80 cm), photos paused. Hold the phone out and turn your whole body, so you stay behind it.", "self")
+        }
         if driftLevel != .good {
             return (String(format: "You moved %.0f cm. Step back over the start and turn the phone round itself, not round you.", moved * 100), "drift")
         }

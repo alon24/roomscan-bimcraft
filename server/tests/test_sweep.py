@@ -111,3 +111,48 @@ def test_depth_pixels_land_on_the_walls_with_the_pixel_centre_convention():
         off = np.minimum(np.abs(P - boxroom.LO), np.abs(P - boxroom.HI)).min(axis=1)      # distance to the nearest wall plane
         worst = max(worst, float(off.max()))
     assert worst < 1e-4, worst
+
+
+def _room_with_desk_depth(desk_y: float = 0.85):
+    """Spherical depth from the camera spot of the box room, with a desk top (0.45 m below the phone, in front and to the sides,
+    like sitting at it) and a wardrobe front 0.4 m before the back wall: near things that hold more points than the floor and wall."""
+    w, h = sweep.SPHERE
+    dirs = sweep.dirs_grid(w, h).reshape(-1, 3)
+    dist, _, _ = boxroom.trace(boxroom.CAM, dirs)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (desk_y - boxroom.CAM[1]) / dirs[:, 1]
+        p = boxroom.CAM + dirs * t[:, None]
+        on = (t > 0) & (np.abs(p[:, 0]) < 1.4) & (p[:, 2] > -1.2) & (p[:, 2] < 0.3)
+        dist = np.where(on & (t < dist), t, dist)
+        t = (1.4 - boxroom.CAM[2]) / dirs[:, 2]
+        p = boxroom.CAM + dirs * t[:, None]
+        on = (t > 0) & (p[:, 0] > -1.0) & (p[:, 0] < 0.4) & (p[:, 1] < 2.2)
+        dist = np.where(on & (t < dist), t, dist)
+    return dist.reshape(h, w).astype(np.float32)
+
+
+def test_floor_and_walls_are_the_biggest_flat_surfaces_not_the_desk_or_wardrobe():
+    D = _room_with_desk_depth()
+    room, _ = sweep.measure(D, boxroom.CAM)
+    assert room["floor"]["wall_m"] == pytest.approx(1.3, abs=0.04), room["floor"]      # not the desk at 0.45
+    assert room["ceiling"]["wall_m"] == pytest.approx(1.3, abs=0.04)
+    assert room["walls"]["back"]["wall_m"] == pytest.approx(1.8, abs=0.04), room["walls"]["back"]    # behind the wardrobe at 1.4
+    assert room["height_m"] == pytest.approx(2.6, abs=0.05)
+
+
+def test_a_sweep_uses_the_spot_most_frames_were_taken_from():
+    rng = np.random.default_rng(1)
+    here = [{"file": f"a{i}.jpg", "transform": boxroom.pose(i, 0, boxroom.CAM + rng.uniform(-0.1, 0.1, 3)).T.tolist()} for i in range(20)]
+    there = [{"file": f"b{i}.jpg", "transform": boxroom.pose(i, 0, boxroom.CAM + [1.2, 0, 0]).T.tolist()} for i in range(8)]
+    assert sweep.main_spot(there[:4] + here + there[4:]) == here
+    assert sweep.main_spot(here) == here
+
+
+def test_frames_pointed_at_you_are_left_out(tmp_path):
+    (tmp_path / "photos").mkdir()
+    near = np.full((192, 256), 0.45, "<f4"); near[:40] = 2.5           # mostly your lap
+    far = np.full((192, 256), 2.0, "<f4"); far[150:] = 0.5              # the room, with your knee at the bottom
+    near.tofile(tmp_path / "photos" / "n.depth"); far.tofile(tmp_path / "photos" / "f.depth")
+    ph = {"depth_width": 256, "depth_height": 192}
+    assert sweep.looks_at_you(tmp_path, dict(ph, depth_file="n.depth"))
+    assert not sweep.looks_at_you(tmp_path, dict(ph, depth_file="f.depth"))

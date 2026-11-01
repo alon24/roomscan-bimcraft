@@ -25,7 +25,7 @@ def _lock(d: Path) -> threading.Lock:
     return _locks.setdefault(str(d), threading.Lock())
 
 
-METHOD = 2   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
+METHOD = 3   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
 
 
 def key_for(d: Path, width: int) -> str:
@@ -33,8 +33,9 @@ def key_for(d: Path, width: int) -> str:
     return f"m{METHOD}:{st.st_mtime_ns}:{st.st_size}:{width}"
 
 
-def usable_photos(d: Path) -> list[dict]:
-    return [p for p in frames.manifest(d) if (d / "photos" / p["file"]).exists() and p.get("transform") and p.get("intrinsics")]
+def usable_photos(d: Path, files: set | None = None) -> list[dict]:
+    return [p for p in frames.manifest(d) if (d / "photos" / p["file"]).exists() and p.get("transform") and p.get("intrinsics")
+            and (files is None or p["file"] in files)]
 
 
 def select_frames(d: Path, photos: list[dict], max_frames: int = 70) -> list[dict]:
@@ -195,8 +196,10 @@ def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | 
     return np.clip(out, 0, 255).astype(np.uint8).reshape(H, W, 3), float(seen.mean()), used
 
 
-def ensure(d: Path, width: int = 3072, centre: np.ndarray | None = None, depth: np.ndarray | None = None, force: bool = False) -> dict:
-    """Build (or reuse) panorama.jpg and panorama.json for this scan. Returns the json; a freshly built one also carries `_image`."""
+def ensure(d: Path, width: int = 3072, centre: np.ndarray | None = None, depth: np.ndarray | None = None, force: bool = False,
+           photos: list[dict] | None = None) -> dict:
+    """Build (or reuse) panorama.jpg and panorama.json for this scan. Returns the json; a freshly built one also carries `_image`.
+    Without `photos`, the frames taken at the spot where most of them were and not pointed at you (sweep.sweep_frames)."""
     with _lock(d):
         pj, pimg = d / "panorama.json", d / "panorama.jpg"
         if not (d / "photos.json").exists():
@@ -206,20 +209,22 @@ def ensure(d: Path, width: int = 3072, centre: np.ndarray | None = None, depth: 
             j = json.loads(pj.read_text())
             if j.get("key") == key:
                 return j
-        photos = usable_photos(d)
+        photos = photos if photos is not None else sweep.sweep_frames(d, usable_photos(d))
         if len(photos) < 2:
             raise ValueError("a panorama needs at least 2 photos with poses")
         if centre is None:
             centre = sweep.centre_of(photos)
         if depth is None:
-            dp = sweep.depth_photos(d)
+            files = {p["file"] for p in photos}
+            dp = [p for p in sweep.depth_photos(d) if p["file"] in files]
             if len(dp) >= 3:
                 depth, _ = sweep.fuse_depth_sphere(d, dp, centre)
         img, cover, used = render(d, photos, centre, depth, width)
         Image.fromarray(img).save(pimg, quality=90, optimize=True)
         spread = float(np.linalg.norm(sweep.cam_positions(photos) - centre, axis=1).max())
+        everything = len(usable_photos(d))
         j = {"key": key, "width": img.shape[1], "height": img.shape[0], "coverage": round(cover, 3),
-             "centre": [round(float(x), 3) for x in centre], "frames_used": used, "frames": len(photos),
+             "centre": [round(float(x), 3) for x in centre], "frames_used": used, "frames": len(photos), "frames_elsewhere": everything - len(photos),
              "camera_spread_m": round(spread, 3), "from_one_spot": spread <= sweep.SWEEP_SPREAD_M}
         pj.write_text(json.dumps(j))
         return {**j, "_image": img}

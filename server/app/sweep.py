@@ -19,6 +19,9 @@ from .photos import _mat
 
 RANGE = (0.15, 6.0)           # metres of LiDAR depth we trust
 SWEEP_SPREAD_M = 0.35         # all cameras within this of their middle: a sweep from one spot
+SPOT_M = 0.5                  # a sweep is built from the cameras within this of the spot most of them were at; the rest were taken elsewhere
+NEAR_M = 0.3                  # depth nearer than this to the phone in a sweep is your hand, not the room
+SELF_SHARE = 0.4              # a sweep frame with this share of its depth nearer than 0.8 m looks at you (face, lap, legs), not the room
 SPHERE = (720, 360)           # spherical depth image: 0.5 degree cells (width, height)
 
 
@@ -35,6 +38,38 @@ def cam_positions(photos: list[dict]) -> np.ndarray:
 
 def centre_of(photos: list[dict]) -> np.ndarray:
     return np.median(cam_positions(photos), axis=0)
+
+
+def main_spot(photos: list[dict]) -> list[dict]:
+    """The frames taken at the spot where most of them were. A sweep where you got up and carried on 1.2 m away (seen) mixes two
+    viewpoints: the far frames' depth and colour land in the wrong directions (doubled walls) and see you from the front.
+    All frames if no spot has at least a quarter of them."""
+    if len(photos) < 3:
+        return photos
+    pos = cam_positions(photos)
+    near = np.linalg.norm(pos[:, None] - pos[None], axis=2) <= SPOT_M
+    c = np.median(pos[near[int(np.argmax(near.sum(1)))]], axis=0)
+    keep = np.linalg.norm(pos - c, axis=1) <= SPOT_M
+    if keep.sum() < max(5, len(photos) / 4):
+        return photos
+    return [p for p, k in zip(photos, keep) if k]
+
+
+def looks_at_you(d: Path, photo: dict) -> bool:
+    """A frame mostly filled with something within 0.8 m: the phone pointed back at you or down at your lap (seen: your face and legs
+    painted over the walls). Such frames are left out of a sweep's depth and colour; the room behind is seen by the others."""
+    if not photo.get("depth_file"):
+        return False
+    dm = meshscan._depth_map(d, photo)
+    v = dm[dm > 0.1] if dm is not None else []
+    return len(v) > 0 and float((v < 0.8).mean()) >= SELF_SHARE
+
+
+def sweep_frames(d: Path, photos: list[dict]) -> list[dict]:
+    """The frames a sweep is built from: those taken at the main spot, without the ones that look at you (if any are left)."""
+    spot = main_spot(photos)
+    room = [p for p in spot if not looks_at_you(d, p)]
+    return room if len(room) >= 5 else spot
 
 
 def is_sweep(d: Path, meta: dict) -> bool:
@@ -80,9 +115,10 @@ def clean_depth(dm: np.ndarray) -> np.ndarray:
 
 
 def fuse_depth_sphere(d: Path, photos: list[dict], centre: np.ndarray, size: tuple[int, int] = SPHERE,
-                      max_frames: int = 240) -> tuple[np.ndarray, int]:
+                      max_frames: int = 240, near: float = NEAR_M) -> tuple[np.ndarray, int]:
     """Spherical depth image about `centre`: per cell, the median distance (m) to the surface over every frame that saw it, NaN where
-    no frame did. Isolated spikes are dropped and one-cell gaps closed. Also returns how many frames were used."""
+    no frame did. Depth nearer than `near` to the phone is left out (the hand holding it). Isolated spikes are dropped and one-cell
+    gaps closed. Also returns how many frames were used."""
     w, h = size
     step = max(1, math.ceil(len(photos) / max_frames))
     bins, rng, used = [], [], 0
@@ -91,7 +127,7 @@ def fuse_depth_sphere(d: Path, photos: list[dict], centre: np.ndarray, size: tup
         if dm is None:
             continue
         dm = clean_depth(dm)
-        ok = dm > 0
+        ok = dm > near
         if not ok.any():
             continue
         p = frames.world_points(ph, dm)[ok] - centre
@@ -153,9 +189,30 @@ def _mode(values: np.ndarray, width: float = 0.05) -> float | None:
     return float(np.median(v[i:k[i]]))
 
 
-def _manhattan_angle(P: np.ndarray, dirs: np.ndarray, centre: np.ndarray) -> float:
-    """Angle (radians) of the room's walls about the vertical: from the directions the wall surfaces face, folded into quarter turns."""
-    h, w, _ = P.shape
+def _area_mode(off: np.ndarray, uv: np.ndarray, step: float = 0.05, tol: float = 0.03, cell: float = 0.2) -> float | None:
+    """The distance of the biggest flat surface: for every candidate distance along the normal (`off`), the area (in 20 cm squares of
+    the in-plane coordinates `uv`) that surface points within 3 cm of it cover. Of the ones within 15% of the biggest, the farthest.
+    Counting area, not points, matters: a lap, a desk top or a chair near the phone holds more points than the floor beyond them,
+    but the floor spreads out all round. Seen on a real sweep: point counts gave a 1.6 m room, area gives 2.45 m."""
+    if len(off) < 150:
+        return None
+    sq = np.floor(uv / cell).astype(np.int64)
+    key = (sq[:, 0] + 100000) * 200003 + sq[:, 1]
+    areas = {}
+    for c in np.arange(math.floor(off.min() / step) * step, off.max() + step, step):
+        k = np.abs(off - c) < tol
+        if k.sum() >= 30:
+            _, cnt = np.unique(key[k], return_counts=True)
+            areas[c] = int((cnt >= 3).sum())
+    if not areas or max(areas.values()) == 0:
+        return None
+    best = max(areas.values())
+    far = max(c for c, a in areas.items() if a >= 0.85 * best)
+    return float(np.median(off[np.abs(off - far) < tol]))
+
+
+def _normals(P: np.ndarray, dirs: np.ndarray, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Surface normal (h, w, 3) of every cell of the spherical depth image, turned to face the middle, and where it is known."""
     rel = P - centre
     dU = np.roll(rel, -1, axis=1) - np.roll(rel, 1, axis=1)
     dV = np.vstack([rel[1:2] - rel[:1], rel[2:] - rel[:-2], rel[-1:] - rel[-2:-1]])
@@ -164,6 +221,13 @@ def _manhattan_angle(P: np.ndarray, dirs: np.ndarray, centre: np.ndarray) -> flo
     ok = np.isfinite(ln) & (ln > 1e-9)
     n = np.where(ok[..., None], n / np.where(ok, ln, 1)[..., None], 0)
     n = np.where((np.einsum("hwc,hwc->hw", n, dirs) > 0)[..., None], -n, n)       # facing the middle
+    return n, ok
+
+
+def _manhattan_angle(P: np.ndarray, dirs: np.ndarray, centre: np.ndarray) -> float:
+    """Angle (radians) of the room's walls about the vertical: from the directions the wall surfaces face, folded into quarter turns."""
+    rel = P - centre
+    n, ok = _normals(P, dirs, centre)
     el = np.degrees(np.arcsin(np.clip(dirs[..., 1], -1, 1)))
     sel = ok & np.isfinite(rel[..., 0]) & (np.abs(el) < 40) & (np.abs(n[..., 1]) < 0.35)
     if sel.sum() < 100:
@@ -181,6 +245,7 @@ def measure(D: np.ndarray, centre: np.ndarray, heading_az: float = 0.0, snap: bo
     rel = np.where(valid[..., None], P - centre, 0)
     el = np.degrees(np.arcsin(np.clip(dirs[..., 1], -1, 1)))
     theta = _manhattan_angle(P, dirs, centre)
+    nrm, nok = _normals(P, dirs, centre)
     axes = {k: np.array([math.cos(theta + a), 0.0, math.sin(theta + a)]) for k, a in (("e1", 0), ("e2", math.pi / 2), ("-e1", math.pi), ("-e2", 3 * math.pi / 2))}
     # name the walls from the heading of the first frame: front = the one it faced
     head = np.array([math.sin(heading_az), 0.0, -math.cos(heading_az)])
@@ -201,7 +266,12 @@ def measure(D: np.ndarray, centre: np.ndarray, heading_az: float = 0.0, snap: bo
         info = {"wall_m": None, "nearest_m": None, "axis": [round(float(x), 4) for x in axis]}
         if len(s):
             info["nearest_m"] = round(float(np.percentile(s, 4)), 3)
-        wall = _mode(s)
+        facing = valid & nok & (np.abs(el) < 60) & ((nrm @ -axis.astype(np.float32)) > 0.8)    # surfaces that face back at the middle, as a wall does
+        side = np.array([-axis[2], 0.0, axis[0]])
+        off = rel[facing] @ axis
+        keep = off >= (info["nearest_m"] or 0) - 0.05       # a wall is behind nearly everything seen that way, never in front of it
+        wall = _area_mode(off[keep], np.c_[rel[facing] @ side, rel[facing][:, 1]][keep]) if keep.sum() >= 150 else None
+        wall = wall if wall is not None else _mode(s)
         if wall is not None:
             info["wall_m"] = round(wall, 3)
             planes.append((axis, wall))
@@ -209,7 +279,9 @@ def measure(D: np.ndarray, centre: np.ndarray, heading_az: float = 0.0, snap: bo
     for key, sign, mask in (("floor", -1.0, valid & (el < -35)), ("ceiling", 1.0, valid & (el > 35))):
         s = sign * rel[mask][:, 1]
         info = {"wall_m": None, "nearest_m": round(float(np.percentile(s, 4)), 3) if len(s) else None}
-        m = _mode(s)
+        flat = mask & nok & (-sign * nrm[..., 1] > 0.85)                    # level surfaces facing the middle: floor, desk, bed, ceiling
+        m = _area_mode(sign * rel[flat][:, 1], rel[flat][:, [0, 2]]) if flat.sum() >= 150 else None
+        m = m if m is not None else _mode(s)
         if m is not None:
             info["wall_m"] = round(m, 3)
             planes.append((np.array([0.0, sign, 0.0]), m))
@@ -287,7 +359,8 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     """Sweep-from-one-spot room: depth panorama -> measurements, flat clean surface, panorama colours. Writes colored.ply, mesh.bin,
     points.bin, report.json, room.json and panorama.jpg/json. Returns (ok, log)."""
     from . import panorama
-    photos = depth_photos(d)
+    everything = depth_photos(d)
+    photos = sweep_frames(d, everything)
     if len(photos) < 5:
         return False, "a sweep needs at least 5 frames with LiDAR depth"
     centre = centre_of(photos)
@@ -297,7 +370,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         return False, "the depth frames covered almost none of the sphere"
     heading = _heading(photos[0])
     room, D2 = measure(D, centre, heading)
-    pano = panorama.ensure(d, width=1536, centre=centre, depth=D2, force=True)
+    pano = panorama.ensure(d, width=1536, centre=centre, depth=D2, force=True, photos=panorama.usable_photos(d, {p["file"] for p in photos}))
     img = pano["_image"]
     ph, pw = img.shape[:2]
     h, w = D2.shape
@@ -327,7 +400,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         for k in ("width_m", "length_m", "height_m"):
             if k in room:
                 room[k] = round(room[k] * scale, 3)
-    room.update(frames_used=used, panorama_coverage=pano["coverage"], depth_coverage=round(cover, 3))
+    room.update(frames_used=used, frames_elsewhere=len(everything) - len(photos), panorama_coverage=pano["coverage"], depth_coverage=round(cover, 3))
     (d / "room.json").write_text(json.dumps(room, indent=1))
     rep = {"vertices": int(len(mesh.vertices)), "faces": int(len(mesh.faces)), "points": int(ok.sum()),
            "size_m": [round(float(x), 2) for x in mesh.extents], "coloured": pano["coverage"], "photos": len(photos)}
@@ -336,8 +409,10 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
                             depth_range=f"{RANGE[0]} to {RANGE[1]} m", surface="median depth per direction, flat walls snapped, coloured from the 360 panorama",
                             photos=len(photos), scale=scale)
     size = " x ".join(f"{room[k]:g}" for k in ("width_m", "length_m", "height_m") if k in room)
+    moved = (f"; {len(everything) - len(photos)} frames left out (taken more than {SPOT_M:g} m from the main spot, or pointed at you)"
+             if len(photos) < len(everything) else "")
     return True, (f"sweep from one spot: {used} frames fused into a depth panorama ({round(cover * 100)}% of directions), {len(mesh.faces)} triangles, "
-                  f"{round(pano['coverage'] * 100)}% coloured from the panorama" + (f", room about {size} m" if size else ""))
+                  f"{round(pano['coverage'] * 100)}% coloured from the panorama" + (f", room about {size} m" if size else "") + moved)
 
 
 def _heading(photo: dict) -> float:

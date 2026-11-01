@@ -171,7 +171,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         }
         // "Keep every frame": a photo, the LiDAR depth and the pose twice a second, so each frame can be reviewed on the server.
         let every = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true
-        if !dark && (every || !ring.capturing) { recorder?.consider(frame, force: every) }
+        if !dark && (every || !ring.capturing) && !(sweepMode && !sweep.keepFrames) { recorder?.consider(frame, force: every) }
         lock.lock()
         for a in frame.anchors { if let m = a as? ARMeshAnchor { meshAnchors[m.identifier] = m } }
         let all = Array(meshAnchors.values)

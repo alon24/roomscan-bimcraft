@@ -1179,35 +1179,37 @@ function drawColoured(buf, r) {
   return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));  // ARKit world is already Y-up
 }
 
-// The sweep mesh coloured by the 360 panorama: each vertex's direction from the panorama's centre picks its pixel
-// (equirectangular, azimuth 0 = -Z, +90 deg = +X, as panorama.py draws it). Triangles across the back seam get copies of
-// their vertices one turn further on (u + 1, texture repeats), so the seam is not smeared across the whole picture.
+// The sweep mesh coloured by the 360 panorama: every screen pixel looks up the panorama by its direction from the panorama's
+// centre (equirectangular, azimuth 0 = -Z, +90 deg = +X, as panorama.py draws it). Done per pixel, not per vertex, so from where
+// you stood the picture is exactly the photo, also across the cuts and stretched triangles of the depth mesh, and there is no seam.
+// Directions no photo saw (panorama.py's neutral grey) are shaded from the surface's slope, so their shape still reads.
 function drawPanoTextured(buf, r, tex, centre) {
-  const n = r.vertices, colourBytes = Math.ceil(n * 3 / 4) * 4;
-  const src = new Float32Array(buf, 0, n * 3), idx = new Uint32Array(buf, n * 12 + colourBytes, r.faces * 3);
-  const uv = new Float32Array(n * 2), [cx, cy, cz] = centre;
-  for (let i = 0; i < n; i++) {
-    const x = src[3 * i] - cx, y = src[3 * i + 1] - cy, z = src[3 * i + 2] - cz, d = Math.hypot(x, y, z) || 1;
-    uv[2 * i] = Math.atan2(x, -z) / (2 * Math.PI) + 0.5;
-    uv[2 * i + 1] = 0.5 + Math.asin(Math.max(-1, Math.min(1, y / d))) / Math.PI;
-  }
-  const extraPos = [], extraUv = [], index = new Uint32Array(idx);
-  for (let f = 0; f < index.length; f += 3) {
-    const us = [uv[2 * index[f]], uv[2 * index[f + 1]], uv[2 * index[f + 2]]];
-    if (Math.max(...us) - Math.min(...us) < 0.5) continue;
-    for (let k = 0; k < 3; k++) if (us[k] < 0.5) {
-      const v = index[f + k];
-      extraPos.push(src[3 * v], src[3 * v + 1], src[3 * v + 2]); extraUv.push(uv[2 * v] + 1, uv[2 * v + 1]);
-      index[f + k] = n + extraPos.length / 3 - 1;
-    }
-  }
-  const pos = new Float32Array(src.length + extraPos.length); pos.set(src); pos.set(extraPos, src.length);
-  const uvAll = new Float32Array(uv.length + extraUv.length); uvAll.set(uv); uvAll.set(extraUv, uv.length);
   const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uvAll, 2));
-  g.setIndex(new THREE.BufferAttribute(index, 1));
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(buf, 0, r.vertices * 3), 3));
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, r.vertices * 12 + Math.ceil(r.vertices * 3 / 4) * 4, r.faces * 3), 1));
   tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = THREE.RepeatWrapping; tex.anisotropy = 8;
-  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+  tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;   // mipmaps would blur a band along the seam, where u jumps from 1 to 0
+  return new THREE.Mesh(g, new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    uniforms: { uPano: { value: tex }, uCentre: { value: new THREE.Vector3(...centre) } },
+    vertexShader: `
+      varying vec3 vWorld;
+      void main() { vWorld = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform sampler2D uPano; uniform vec3 uCentre; varying vec3 vWorld;
+      void main() {
+        vec3 d = normalize(vWorld - uCentre);
+        vec2 uv = vec2(atan(d.x, -d.z) / 6.2831853 + 0.5, 0.5 + asin(clamp(d.y, -1.0, 1.0)) / 3.1415927);
+        vec3 c = texture2D(uPano, uv).rgb;                         // linear: the sRGB texture is decoded when sampled
+        vec3 n = cross(dFdx(vWorld), dFdy(vWorld));
+        if (all(lessThan(abs(c - vec3(0.2158)), vec3(0.004))) && dot(n, n) > 1e-20) {   // panorama grey 128 (sRGB): no photo saw it
+          n = normalize(n);
+          c = vec3(pow(0.42 + 0.22 * abs(n.y) + 0.12 * abs(n.x), 2.2));
+        }
+        gl_FragColor = vec4(c, 1.0);
+        #include <colorspace_fragment>
+      }`,
+  }));
 }
 
 // Every triangle gets the photo that sees it best; the fragment shader projects that photo onto the surface pixel by pixel,
