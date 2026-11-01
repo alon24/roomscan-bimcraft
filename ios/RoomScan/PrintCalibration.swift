@@ -225,10 +225,11 @@ struct PrintCalibrationView: View {
         Form {
             Section("1. The print") {
                 Text("""
-                Print lidar-target-v1 (white plate, black markers and text: \(ServerAddress.url)/prints/lidar-target-v1.3mf). \
-                Check it: the four black squares print crisp, the plate lies flat (a sheet of paper must not slide under it), and nothing is glossy.
+                Print lidar-target-v2 (4 colours, parts already on filaments 1-4: \(ServerAddress.url)/prints/lidar-target-v2-4colour.3mf), matte, ironing off. \
+                Check it: the six black squares print crisp, the plate lies flat (a sheet of paper must not slide under it), and nothing is glossy. \
+                Calipers over the ruler, outer edge to outer edge: 101.0 mm. If not, type 200 × your reading ÷ 101 below.
                 """).font(.callout)
-                TextField("Ruler across the plate, mm (200.0), optional", text: $rulerText).keyboardType(.decimalPad)
+                TextField("Plate size from the ruler, mm (200.0), optional", text: $rulerText).keyboardType(.decimalPad)
             }
             Section("2. Scan it") {
                 ZStack {

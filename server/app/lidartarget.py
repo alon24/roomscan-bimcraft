@@ -1,7 +1,9 @@
 """LiDAR calibration with a printed target (docs/lidar-target.md).
 
 The target is a 200 x 200 mm white plate with four black ArUco markers (DICT_4X4_50, ids 40-43, never used by the ring's 0-17),
-four square pads 10/20/30/40 mm high and four wedges sloping 15/30/45/60 degrees. Lay it flat on a table and photograph it from
+four square pads 10/20/30/40 mm high and four wedges sloping 15/30/45/60 degrees, plus markers 44 and 45 on the tops of the 20 and
+40 mm pads (corners at three heights: a much better pose than from one plane), a blue and a red patch on the other two pads (how
+the LiDAR reads coloured surfaces) and a 100 mm ruler. This is print v2; v1 was never printed and is not supported. Lay it flat on a table and photograph it from
 the stations the app lists (distance x tilt). For every frame:
 
 1. the markers give the camera's exact pose relative to the print (metric, because the print's size is known: the camera
@@ -24,14 +26,18 @@ from scipy import ndimage as ndi
 from . import frames, meshscan
 from .photos import _mat
 
-VERSION = 1
+VERSION = 2
 SIZE = 200.0                  # plate width and depth, mm
 PLATE = 5.0                   # plate thickness, mm
 INLAY = 0.4                   # black marker inlays stand this much proud of the plate (two 0.2 mm layers)
-MARKER = 36.0                 # marker side, black border included (6 cells of 6 mm)
-MARKERS = {40: (-76.0, 76.0), 41: (76.0, 76.0), 42: (76.0, -76.0), 43: (-76.0, -76.0)}    # centres, mm
+MARKER = 36.0                 # marker side of the plate's markers, black border included (6 cells of 6 mm)
 PADS = [((-23.0, 23.0), 10.0), ((23.0, 23.0), 20.0), ((23.0, -23.0), 30.0), ((-23.0, -23.0), 40.0)]   # centre, height above the plate
 PAD = 40.0
+# marker id: centre x, y, the surface it lies on (z) and its side, mm
+MARKERS = {40: (-76.0, 76.0, PLATE, MARKER), 41: (76.0, 76.0, PLATE, MARKER), 42: (76.0, -76.0, PLATE, MARKER), 43: (-76.0, -76.0, PLATE, MARKER),
+           44: (23.0, 23.0, PLATE + 20, 30.0), 45: (-23.0, -23.0, PLATE + 40, 30.0)}
+PATCHES = [((-23.0, 23.0), PLATE + 10, "blue"), ((23.0, -23.0), PLATE + 30, "red")]     # 36 mm squares, 0.4 mm proud
+PATCH = 36.0
 WEDGES = [("+y", 15.0), ("-y", 30.0), ("+x", 45.0), ("-x", 60.0)]   # which edge, slope; each 30 mm deep, 50 mm wide, high side inwards
 WEDGE_IN, WEDGE_OUT, WEDGE_HALF = 61.0, 91.0, 25.0
 
@@ -58,7 +64,7 @@ def info() -> dict:
     return {"version": VERSION, "size_mm": SIZE, "marker_mm": MARKER, "marker_ids": sorted(MARKERS), "dictionary": "DICT_4X4_50",
             "pads_mm": [h for _, h in PADS], "wedges_deg": [a for _, a in WEDGES], "height_mm": round(PLATE + _wedge_height(60), 2),
             "stations": stations(), "distance_tolerance": DIST_TOL, "tilt_tolerance_deg": TILT_TOL,
-            "print_file": "/prints/lidar-target-v1.3mf"}
+            "colours": ["white", "black", "blue", "red"], "print_file": "/prints/lidar-target-v2-4colour.3mf"}
 
 
 def _wedge_height(angle: float) -> float:
@@ -73,12 +79,14 @@ def _box(x0, x1, y0, y1, z0, z1) -> list[tuple[np.ndarray, float]]:
 
 
 def solids(scale: float = 1.0) -> list[list[tuple[np.ndarray, float]]]:
-    """The target as convex pieces, grown by `scale` (the printed size over the nominal one)."""
+    """The target as convex pieces, grown by `scale` (the printed size over the nominal one). `colours()` lists their colours."""
     out = [_box(-SIZE / 2, SIZE / 2, -SIZE / 2, SIZE / 2, 0, PLATE)]
     for (cx, cy), h in PADS:
         out.append(_box(cx - PAD / 2, cx + PAD / 2, cy - PAD / 2, cy + PAD / 2, PLATE, PLATE + h))
-    for cx, cy in MARKERS.values():
-        out.append(_box(cx - MARKER / 2, cx + MARKER / 2, cy - MARKER / 2, cy + MARKER / 2, PLATE, PLATE + INLAY))
+    for cx, cy, z, side in MARKERS.values():
+        out.append(_box(cx - side / 2, cx + side / 2, cy - side / 2, cy + side / 2, z, z + INLAY))
+    for (cx, cy), z, _ in PATCHES:
+        out.append(_box(cx - PATCH / 2, cx + PATCH / 2, cy - PATCH / 2, cy + PATCH / 2, z, z + INLAY))
     for edge, ang in WEDGES:
         t = math.tan(math.radians(ang))
         axis, sign = (1, 1.0) if edge == "+y" else (1, -1.0) if edge == "-y" else (0, 1.0) if edge == "+x" else (0, -1.0)
@@ -89,6 +97,11 @@ def solids(scale: float = 1.0) -> list[list[tuple[np.ndarray, float]]]:
         out.append([(e, WEDGE_OUT), (-e, -WEDGE_IN), (s, WEDGE_HALF), (-s, WEDGE_HALF), (np.array([0, 0, -1.0]), -PLATE),
                     (slope / np.linalg.norm(slope), (PLATE + WEDGE_OUT * t) / np.linalg.norm(slope))])
     return [[(n, d * scale) for n, d in piece] for piece in out]
+
+
+def colours() -> list[str]:
+    """The colour of each piece of `solids`, in the same order (a marker's top is mostly black: its white cells are left out of it)."""
+    return ["white"] * (1 + len(PADS)) + ["black"] * len(MARKERS) + [c for _, _, c in PATCHES] + ["white"] * len(WEDGES)
 
 
 def cast(origin: np.ndarray, dirs: np.ndarray, scale: float = 1.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -120,9 +133,11 @@ def cast(origin: np.ndarray, dirs: np.ndarray, scale: float = 1.0) -> tuple[np.n
 # ---- the marker corners, as OpenCV orders them (top-left, top-right, bottom-right, bottom-left of the marker image) ----
 
 def marker_corners(scale: float = 1.0) -> dict[int, np.ndarray]:
-    h, z = MARKER / 2, PLATE + INLAY
-    return {i: np.array([[cx - h, cy + h, z], [cx + h, cy + h, z], [cx + h, cy - h, z], [cx - h, cy - h, z]]) * scale
-            for i, (cx, cy) in MARKERS.items()}
+    out = {}
+    for i, (cx, cy, z, side) in MARKERS.items():
+        h, top = side / 2, z + INLAY
+        out[i] = np.array([[cx - h, cy + h, top], [cx + h, cy + h, top], [cx + h, cy - h, top], [cx - h, cy - h, top]]) * scale
+    return out
 
 
 def _detector():
@@ -165,8 +180,8 @@ def pose_from_markers(gray: np.ndarray, ph: dict, scale: float = 1.0):
 # ---- one frame ----
 
 def frame_samples(d: Path, ph: dict, scale: float = 1.0) -> dict | None:
-    """True and measured depth (m) and incidence angle (deg) for the depth pixels that see the target away from its edges,
-    plus the camera's distance and tilt as the markers give them. None when the markers are not readable."""
+    """True and measured depth (m), incidence angle (deg) and the surface's colour for the depth pixels that see the target away from
+    its edges, plus the camera's distance and tilt as the markers give them. None when the markers are not readable."""
     img = cv2.imread(str(d / "photos" / ph["file"]), cv2.IMREAD_GRAYSCALE)
     dm = meshscan._depth_map(d, ph) if ph.get("depth_file") else None
     if img is None or dm is None:
@@ -184,6 +199,7 @@ def frame_samples(d: Path, ph: dict, scale: float = 1.0) -> dict | None:
     origin = -R.T @ t                                     # camera centre in the plate's frame
     rays = rays_cam @ R                                   # R^T applied to each row
     tz, normal, face = cast(origin, rays, scale)
+    colour = np.array(colours())[np.maximum(face, 0) // 8]
     face = face.reshape(dh, dw)
     same = (ndi.maximum_filter(face, 5) == face) & (ndi.minimum_filter(face, 5) == face) & (face >= 0)   # away from every edge
     meas = dm.astype(np.float64)
@@ -195,7 +211,8 @@ def frame_samples(d: Path, ph: dict, scale: float = 1.0) -> dict | None:
     centre_dir = (R.T @ np.array([0.0, 0.0, 1.0]))        # the camera's forward axis in the plate's frame
     tilt = math.degrees(math.acos(max(-1.0, min(1.0, -centre_dir[2]))))
     dist = float(np.linalg.norm(origin - np.array([0, 0, PLATE * scale]))) / 1000
-    return {"file": ph["file"], "true": tz[ok] / 1000, "meas": meas.ravel()[ok], "incidence": inc, "markers": seen, "marker_error_px": err,
+    return {"file": ph["file"], "true": tz[ok] / 1000, "meas": meas.ravel()[ok], "incidence": inc, "colour": colour[ok],
+            "markers": seen, "marker_error_px": err,
             "distance_m": dist, "tilt_deg": tilt, "camera_mm": origin}
 
 
@@ -243,7 +260,7 @@ def analyse(d: Path, print_scale: float = 1.0, max_points: int = 4000) -> dict:
             continue
         if len(s["true"]) > max_points:                     # every frame counts about the same, however much of it the target fills
             pick = rng.choice(len(s["true"]), max_points, replace=False)
-            for k in ("true", "meas", "incidence"):
+            for k in ("true", "meas", "incidence", "colour"):
                 s[k] = s[k][pick]
         s["station"] = station_of(s["distance_m"], s["tilt_deg"])
         per.append(s)
@@ -257,8 +274,21 @@ def analyse(d: Path, print_scale: float = 1.0, max_points: int = 4000) -> dict:
     true = np.concatenate([s["true"] for s in per])
     meas = np.concatenate([s["meas"] for s in per])
     inc = np.concatenate([s["incidence"] for s in per])
-    a, b, keep = robust_fit(meas, true)
+    col = np.concatenate([s["colour"] for s in per])
+    # fitted on the white surfaces (walls are mostly light); each colour's own error after that correction is listed below
+    white = col == "white"
+    if white.sum() < 200:
+        white = np.ones(len(col), bool)
+    a, b, kw = robust_fit(meas[white], true[white])
+    keep = np.zeros(len(col), bool)
+    keep[np.nonzero(white)[0][kw]] = True
     before, after = meas - true, a * meas + b - true
+    res["by_colour"] = []
+    for c in ("white", "black", "blue", "red"):
+        m = (col == c) & (np.abs(after) < 0.05)
+        if m.sum() >= 30:
+            res["by_colour"].append({"colour": c, "n": int(m.sum()), "bias_mm": round(float(after[m].mean()) * 1000, 1),
+                                     "rms_mm": round(float(np.sqrt((after[m] ** 2).mean())) * 1000, 1)})
     res["fit"] = {"a": round(a, 5), "b": round(b, 5), "points": int(len(true)), "kept": int(keep.sum()),
                   "rms_before_mm": round(float(np.sqrt((before[keep] ** 2).mean())) * 1000, 1),
                   "rms_after_mm": round(float(np.sqrt((after[keep] ** 2).mean())) * 1000, 1),

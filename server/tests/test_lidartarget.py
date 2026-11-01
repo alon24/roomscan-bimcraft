@@ -13,7 +13,10 @@ DW, DH = 256, 192
 MARKERS = json.loads('{"40": [[1,1,1,1,1,1],[1,1,1,1,0,1],[1,1,0,0,0,1],[1,1,1,1,0,1],[1,0,1,1,1,1],[1,1,1,1,1,1]],'
                      '"41": [[1,1,1,1,1,1],[1,1,1,0,1,1],[1,0,1,0,1,1],[1,1,1,0,1,1],[1,0,1,1,1,1],[1,1,1,1,1,1]],'
                      '"42": [[1,1,1,1,1,1],[1,1,1,0,0,1],[1,1,1,0,1,1],[1,0,1,1,1,1],[1,0,0,1,1,1],[1,1,1,1,1,1]],'
-                     '"43": [[1,1,1,1,1,1],[1,1,1,0,0,1],[1,0,1,1,1,1],[1,0,1,0,0,1],[1,1,1,0,1,1],[1,1,1,1,1,1]]}')
+                     '"43": [[1,1,1,1,1,1],[1,1,1,0,0,1],[1,0,1,1,1,1],[1,0,1,0,0,1],[1,1,1,0,1,1],[1,1,1,1,1,1]],'
+                     '"44": [[1,1,1,1,1,1],[1,1,1,0,1,1],[1,1,0,1,1,1],[1,0,0,0,1,1],[1,0,1,1,1,1],[1,1,1,1,1,1]],'
+                     '"45": [[1,1,1,1,1,1],[1,1,1,0,1,1],[1,0,0,0,1,1],[1,0,0,0,1,1],[1,0,1,0,0,1],[1,1,1,1,1,1]]}')
+BLACK_EXTRA = 0.004       # the fake LiDAR reads black surfaces 4 mm long
 
 
 def test_marker_patterns_match_opencv():
@@ -22,21 +25,11 @@ def test_marker_patterns_match_opencv():
         assert ((cv2.aruco.generateImageMarker(d, int(i), 6) < 128).astype(int) == np.array(g)).all()
 
 
-def _top_texture(px_per_mm: float = 4.0) -> np.ndarray:
-    """The plate's top as seen from above: white with the black markers, x right, +y up."""
-    n = int(lt.SIZE * px_per_mm)
-    img = np.full((n, n), 235, np.uint8)
-    cell = lt.MARKER / 6
-    for i, (cx, cy) in lt.MARKERS.items():
-        g = MARKERS[str(i)]
-        for r in range(6):
-            for c in range(6):
-                if g[r][c]:
-                    x0 = cx - lt.MARKER / 2 + c * cell
-                    y1 = cy + lt.MARKER / 2 - r * cell
-                    u0, v0 = int(round((x0 + lt.SIZE / 2) * px_per_mm)), int(round((lt.SIZE / 2 - y1) * px_per_mm))
-                    img[v0:v0 + int(round(cell * px_per_mm)), u0:u0 + int(round(cell * px_per_mm))] = 20
-    return img
+def _marker_image(i: int, side: float, ppm: float) -> np.ndarray:
+    """Marker `i` with a one-cell white margin round it, as seen from above (x right, +y up), `ppm` pixels per mm."""
+    g = np.pad(np.array(MARKERS[str(i)]), 1)                         # 8 x 8 cells, the outer ring white
+    cell = int(round(side / 6 * ppm))
+    return np.kron(np.where(g == 1, 20, 235), np.ones((cell, cell))).astype(np.uint8)
 
 
 def _look_at(cam: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -49,7 +42,7 @@ def _look_at(cam: np.ndarray, target: np.ndarray) -> np.ndarray:
     return np.stack([x, y, z])
 
 
-def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true, tex):
+def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true):
     """Write photo n, its depth and its manifest entry: the camera `dist_m` from the plate centre, tilted `tilt_deg` from straight
     down. The LiDAR reads `measured` such that true = a_true * measured + b_true."""
     target = np.array([0, 0, lt.PLATE])
@@ -58,22 +51,33 @@ def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true, tex):
     R = _look_at(cam, target)
     tvec = -R @ cam
     K = np.array([[FX, 0, W / 2 - 0.5], [0, FX, H / 2 - 0.5], [0, 0, 1]])      # OpenCV pixel centres; ARKit cx = W/2
-    # photo: the plate top through the homography of the plane z = plate + inlay
-    z = lt.PLATE + lt.INLAY
-    ppm = 4.0
-    S = np.array([[1 / ppm, 0, -lt.SIZE / 2], [0, -1 / ppm, lt.SIZE / 2], [0, 0, 1]])     # texture px -> plate mm
+    # photo: a white plate, then each marker through the homography of its own plane (pad tops for 44 and 45)
     P = K @ np.c_[R, tvec]
-    Hm = P[:, [0, 1, 3]] + np.outer(P[:, 2], [0, 0, z])
-    Hm = Hm @ S
-    img = cv2.warpPerspective(tex, Hm, (W, H), flags=cv2.INTER_AREA, borderValue=120)
-    cv2.imwrite(str(d / "photos" / f"p{n:03d}.jpg"), img)
+
+    def warp(img, x0, y_top, size_mm, z):
+        ppm = img.shape[1] / size_mm
+        S = np.array([[1 / ppm, 0, x0], [0, -1 / ppm, y_top], [0, 0, 1]])        # texture px -> plate mm
+        Hm = (P[:, [0, 1, 3]] + np.outer(P[:, 2], [0, 0, z])) @ S
+        return (cv2.warpPerspective(img, Hm, (W, H), flags=cv2.INTER_AREA, borderValue=0),
+                cv2.warpPerspective(np.full(img.shape, 255, np.uint8), Hm, (W, H), flags=cv2.INTER_NEAREST, borderValue=0))
+
+    photo = np.full((H, W), 120, np.uint8)
+    plate, m = warp(np.full((400, 400), 235, np.uint8), -lt.SIZE / 2, lt.SIZE / 2, lt.SIZE, lt.PLATE)
+    photo[m > 0] = plate[m > 0]
+    for i, (mx, my, mz, side) in lt.MARKERS.items():
+        img = _marker_image(i, side, 4.0)
+        span = side * 8 / 6
+        w_, m = warp(img, mx - span / 2, my + span / 2, span, mz + lt.INLAY)
+        photo[m > 0] = w_[m > 0]
+    cv2.imwrite(str(d / "photos" / f"p{n:03d}.jpg"), photo)
     # depth: cast every depth pixel's ray against the shape
     fx, cx = FX * DW / W, (W / 2) * DW / W
     u, v = np.meshgrid(np.arange(DW) + 0.5, np.arange(DH) + 0.5)
     rays = np.stack([(u - cx) / fx, (v - cx * DH / DW) / fx, np.ones_like(u)], -1).reshape(-1, 3) @ R
-    tz, _, _ = lt.cast(cam, rays)
+    tz, _, face = lt.cast(cam, rays)
     true = np.where(np.isfinite(tz), tz / 1000, 2.0)                # off the print: a floor 2 m away
-    meas = ((true - b_true) / a_true).astype("<f4").reshape(DH, DW)
+    black = np.array(lt.colours())[np.maximum(face, 0) // 8] == "black"
+    meas = ((true - b_true) / a_true + np.where(black & (face >= 0), BLACK_EXTRA, 0)).astype("<f4").reshape(DH, DW)
     meas.tofile(d / "photos" / f"p{n:03d}.depth")
     M = np.eye(4)                                                   # ARKit pose: camera-to-world, camera looks down -Z, +Y up
     M[:3, :3] = R.T @ np.diag([1, -1, -1])
@@ -86,10 +90,9 @@ def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true, tex):
 def run(tmp_path_factory):
     d = tmp_path_factory.mktemp("lidarcal")
     (d / "photos").mkdir()
-    tex = _top_texture()
     photos = []
     for n, (dist, tilt, az) in enumerate([(0.3, 0, 0), (0.5, 0, 90), (0.5, 30, 0), (0.8, 30, 180), (0.5, 55, 45), (0.8, 0, 0)], 1):
-        photos.append(_frame(d, n, dist, tilt, az, 1.02, -0.008, tex))
+        photos.append(_frame(d, n, dist, tilt, az, 1.02, -0.008))
     (d / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
     return d, lt.analyse(d)
 
@@ -122,7 +125,7 @@ def test_rays_hit_the_shape_where_it_is():
     down = np.array([[0, 0, -1.0]])
     for (x, y), h in lt.PADS:
         t, n, _ = lt.cast(np.array([x, y, 500.0]), down)
-        assert t[0] == pytest.approx(500 - lt.PLATE - h) and n[0] == pytest.approx([0, 0, 1])
+        assert t[0] == pytest.approx(500 - lt.PLATE - h - lt.INLAY) and n[0] == pytest.approx([0, 0, 1])   # every pad wears a marker or a colour patch
     t, n, _ = lt.cast(np.array([0, 76.0, 500.0]), down)             # middle of the 15 degree wedge (+y edge)
     assert t[0] == pytest.approx(500 - lt.PLATE - (lt.WEDGE_OUT - 76) * math.tan(math.radians(15)))
     assert math.degrees(math.acos(n[0][2])) == pytest.approx(15)
@@ -136,4 +139,14 @@ def test_info_lists_the_stations_for_the_app():
     j = lt.info()
     ids = [s["id"] for s in j["stations"]]
     assert "d30t0" in ids and "d120t55" not in ids and len(ids) == 11
-    assert j["marker_ids"] == [40, 41, 42, 43]
+    assert j["marker_ids"] == [40, 41, 42, 43, 44, 45]
+
+
+def test_markers_on_the_pads_are_used_and_each_colour_is_reported(run):
+    _, res = run
+    assert any(44 in f["markers"] or 45 in f["markers"] for f in res["frames_detail"])
+    col = {c["colour"]: c for c in res["by_colour"]}
+    assert col["white"]["bias_mm"] == pytest.approx(0, abs=0.5)
+    assert col["black"]["bias_mm"] == pytest.approx(BLACK_EXTRA * 1000 * 1.02, abs=1.0)      # reads long by 4 mm, only black
+    assert "blue" in col and "red" in col and abs(col["blue"]["bias_mm"]) < 0.5
+

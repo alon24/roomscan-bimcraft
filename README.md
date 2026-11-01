@@ -83,11 +83,12 @@ Tap the small underlined line under the reading ("uncalibrated · tap to calibra
    it is **not applied** unless you switch on "Apply even if it looks wrong".
 
 #### Calibrate it with the printed target (guided, a few minutes)
-<img src="prints/lidar-target/target_iso.png" align="right" width="260">
+<img src="prints/lidar-target/target_iso_v2.png" align="right" width="260">
 
-Print **lidar-target-v1** (white plate, black markers and text, 2 colours on the Snapmaker U1; files in `prints/lidar-target/`,
-also at `http://<server>/prints/lidar-target-v1.3mf`). It has four markers the camera reads, pads 10/20/30/40 mm high and wedges at
-15/30/45/60°. Full spec, print settings and how it is calculated: [docs/lidar-target.md](docs/lidar-target.md).
+Print **lidar-target-v2** (4 colours on the Snapmaker U1: white, black, blue, red, parts already on filaments 1-4;
+`prints/lidar-target/lidar-target-v2-4colour.3mf`, also at `http://<server>/prints/lidar-target-v2-4colour.3mf`; matte, ironing off).
+It has six markers the camera reads (two of them on raised pads, so at three heights), pads 10/20/30/40 mm high, wedges at
+15/30/45/60°, a blue and a red patch for the colour test and a 100 mm ruler to check the print. Full spec, print settings and how it is calculated: [docs/lidar-target.md](docs/lidar-target.md).
 1. Lay it flat on a table. **Measure** > **Calibrate** > **With the print (guided)**. Optionally type what a ruler says across it.
 2. Point the crosshair at its middle and tap **This is the middle**: a teal ring sits on it and the app now knows your distance
    and tilt to the print all the time.
@@ -375,6 +376,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.50.0 | **LiDAR print v2** (`prints/lidar-target/lidar-target-v2-4colour.3mf`): 4 colours on the U1, parts already on filaments 1-4 (white, black, blue, red); two more markers on the raised pads, so the camera's position comes from corners at three heights (much steadier at 80-120 cm); blue and red patches, and the result now lists the LiDAR error per colour (the correction is fitted on white); a 100 mm ruler to check the print with calipers. App: print instructions updated. v1 was never printed and is gone. |
 | 0.49.1 (server, web) | 360° photo view: scroll / pinch now zooms like a lens from where you stood instead of moving off the spot (which smeared the photo over the depth mesh); right-drag turns instead of panning there. A wall the sweep never looked at shows "not seen" instead of a made-up distance from stray points. |
 | 0.49.0 | **LiDAR calibration print**: a 2-colour printable target (markers, height pads, angled wedges, "THIS SIDE UP" text; `prints/lidar-target/`, spec in `docs/lidar-target.md`) and a guided screen in the app (Measure > Calibrate > With the print): tap the middle once, the app tracks your distance and tilt, says what to do next, takes the photos itself at 11 stations and ticks them off; the server fits the depth correction from the markers and reports the error by distance and angle. |
 | 0.48.0 | **Cleaner sweeps**: the 360° photo view looks up the panorama per screen pixel, so from where you stood it is exactly the photo (no stretched streaks or staircase edges); parts no photo saw are shaded grey surfaces. The server builds a sweep from the spot where most frames were taken, leaves out frames pointed at you (face, lap, legs), and finds floor, ceiling and walls as the biggest flat surfaces (a desk or your lap no longer reads as the floor). App: photos pause while you are too far from the start or the phone looks at you, and the first tip says to stand and turn your whole body. **Re-convert** old sweeps to get the new numbers. |
