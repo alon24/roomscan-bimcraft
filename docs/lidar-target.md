@@ -5,16 +5,16 @@ against a print whose size is known. The camera reads six printed markers (at th
 relative to the print, so every LiDAR pixel that lands on the print has a known true depth. Thousands of those, from 11
 positions, give the correction.
 
-<img src="../prints/lidar-target/target_iso_v2.png" width="420"> <img src="../prints/lidar-target/target_top_v2.png" width="300">
+<img src="../prints/lidar-target/images/target_iso_v2.png" width="420"> <img src="../prints/lidar-target/images/target_top_v2.png" width="300">
 
-Files (in `prints/lidar-target/`, the 3MF is also served by the server at `/prints/`):
+Files (in `prints/lidar-target/`, see [prints/README.md](../prints/README.md); the 3MF is also served by the server at `/prints/`):
 
 | File | What |
 |---|---|
-| `lidar-target-v2-4colour.3mf` | **Use this one.** One object, four parts, coloured and already on filaments 1-4: `white` 1, `black` 2, `blue` 3, `red` 4 |
-| `lidar-target-v2-white.stl`, `-black.stl`, `-blue.stl`, `-red.stl` | The same four parts as meshes |
-| `lidar-target-v2.step` | For CAD |
-| `lidar-target-v2.solidcraft` | The SolidCraft design |
+| `3mf/lidar-target-v2-4colour.3mf` | **Use this one.** One object, four parts, coloured and already on filaments 1-4: `white` 1, `black` 2, `blue` 3, `red` 4 |
+| `stl/lidar-target-v2-white.stl`, `-black.stl`, `-blue.stl`, `-red.stl` | The same four parts as meshes |
+| `cad/lidar-target-v2.step` | For CAD |
+| `cad/lidar-target-v2.solidcraft` | The SolidCraft design |
 
 (v1, with four markers and two colours, was never printed and is not supported.)
 

@@ -4,18 +4,18 @@ A two-part box for carrying the [LiDAR calibration print](lidar-target.md) witho
 markers. The **tray** holds the plate. The **lid** is the print's negative: a socket for every pad and wedge, 0.5 mm bigger
 all round, so the print sits still inside. Four **snap tabs** on the lid click into notches in the tray to close it.
 
-<img src="../prints/lidar-case/case_closed.jpg" width="420"> <img src="../prints/lidar-case/case_open.jpg" width="420">
+<img src="../prints/lidar-case/images/case_closed.jpg" width="420"> <img src="../prints/lidar-case/images/case_open.jpg" width="420">
 
-Files (in `prints/lidar-case/`; the 3MFs are also served at `http://<server>/prints/`):
+Files (in `prints/lidar-case/`, see [prints/README.md](../prints/README.md); the 3MFs are also served at `http://<server>/prints/`):
 
 | File | What |
 |---|---|
-| `lidar-case-tray.3mf` | **Print this.** The tray, white PLA (filament 1), floor down |
-| `lidar-case-lid-2colour.3mf` | **And this.** The lid, already upside down for printing: white (filament 1), with the label inlaid in black (filament 2) |
-| `lidar-case-tray.stl`, `lidar-case-lid-white.stl`, `lidar-case-lid-black.stl` | The same parts as meshes, standing as they do in use (the lid the right way up) |
-| `lidar-case.step` | For CAD |
-| `lidar-case.solidcraft` | The SolidCraft design (every feature named) |
-| `case_*.jpg` | Pictures: closed, open, cut in half, the snap tab close up |
+| `3mf/lidar-case-tray.3mf` | **Print this.** The tray, white PLA (filament 1), floor down |
+| `3mf/lidar-case-lid-2colour.3mf` | **And this.** The lid, already upside down for printing: white (filament 1), with the label inlaid in black (filament 2) |
+| `stl/lidar-case-tray.stl`, `lidar-case-lid-white.stl`, `lidar-case-lid-black.stl` | The same parts as meshes, standing as they do in use (the lid the right way up) |
+| `cad/lidar-case.step` | For CAD |
+| `cad/lidar-case.solidcraft` | The SolidCraft design (every feature named) |
+| `images/case_*.jpg` | Pictures: closed, open, cut in half, the snap tab close up |
 
 ## 1. Printing (Snapmaker U1)
 
@@ -30,7 +30,7 @@ Files (in `prints/lidar-case/`; the 3MFs are also served at `http://<server>/pri
 
 ## 2. Using it
 
-<img src="../prints/lidar-case/case_latch.jpg" align="right" width="300">
+<img src="../prints/lidar-case/images/case_latch.jpg" align="right" width="300">
 
 - **Pack:** lay the print in the tray (any way round fits the tray). The lid fits only one way round the print: hold it so
   its label reads the same way as the text on the print, and press it straight down. Each tab rides over the tray's edge and
@@ -43,7 +43,7 @@ Files (in `prints/lidar-case/`; the 3MFs are also served at `http://<server>/pri
 
 The cut-in-half picture (case shown blue so you can tell it from the print) shows every pad and wedge in its own socket:
 
-<img src="../prints/lidar-case/case_section.jpg" width="640">
+<img src="../prints/lidar-case/images/case_section.jpg" width="640">
 
 ## 3. Geometry (for changing it)
 
@@ -90,7 +90,7 @@ All boxes are `solid.box {length (x), width (y), height, center, operation, targ
 5. **Check**: the lid must report 1 shell. Load the print's four STLs with the case and intersect them: 0 mm³ of overlap.
    Lift the print 0.6 mm and it should start touching the lid (the 0.5 clearance).
 6. Export one STL per colour and build the 3MFs: one object, one volume per colour on its filament, the lid rotated 180°
-   about X so its top lies on the bed (`prints/lidar-case/` was built that way, the same format as the target's 3MF).
+   about X so its top lies on the bed (`prints/lidar-case/3mf/` was built that way, the same format as the target's 3MF).
 
 ## 5. What was checked
 

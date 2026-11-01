@@ -4,3 +4,7 @@ __pycache__/
 data/
 .env
 .pytest-crash.log
+
+# SolidCraft working files in prints/
+prints/**/*.bak
+prints/**/.~*.lock
