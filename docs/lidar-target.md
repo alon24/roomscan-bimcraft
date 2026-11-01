@@ -10,6 +10,7 @@ Files (in `prints/lidar-target/`, the 3MF and STLs are also served by the server
 
 | File | What |
 |---|---|
+| `lidar-target-v1-2colour.3mf` | **Use this one.** One object, two parts: `white` on filament 1, `black` on filament 2, coloured. Open it in Snapmaker Orca and pick your white and black PLA for slots 1 and 2 |
 | `lidar-target-v1.3mf` | Both colours, one object per body (70: the plate, 4 markers, 65 letters). The two STLs are easier in the slicer |
 | `lidar-target-v1-white.stl` | The plate, pads and wedges (white) |
 | `lidar-target-v1-black.stl` | The 4 markers and the text (black) |
@@ -18,8 +19,9 @@ Files (in `prints/lidar-target/`, the 3MF and STLs are also served by the server
 
 ## 1. Printing it (Snapmaker U1, 2 colours)
 
-1. Open Snapmaker Orca, U1 profile. **File > Import** both STLs at once. When asked "load as a single object with
-   multiple parts", answer **Yes** (that keeps the black exactly on top of the white).
+1. Open Snapmaker Orca, U1 profile, and open **lidar-target-v1-2colour.3mf**: one object with two parts, the white part
+   already on filament 1 and the black part (markers and text) on filament 2. (Or import both STLs at once and answer **Yes**
+   to "load as a single object with multiple parts", then assign the filaments yourself.)
 2. Filament 1 = **matte white PLA** (white reads best for LiDAR and gives the camera contrast), filament 2 = **matte black PLA**.
    Assign the `black` part to filament 2. Glossy filament is the one thing to avoid: reflections throw the LiDAR and the markers.
 3. Settings: 0.4 mm nozzle, **0.2 mm layers** (the black is exactly the last 2 layers), 3 walls, 15% infill, no supports
