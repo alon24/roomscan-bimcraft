@@ -268,10 +268,12 @@ def measure(D: np.ndarray, centre: np.ndarray, heading_az: float = 0.0, snap: bo
             info["nearest_m"] = round(float(np.percentile(s, 4)), 3)
         facing = valid & nok & (np.abs(el) < 60) & ((nrm @ -axis.astype(np.float32)) > 0.8)    # surfaces that face back at the middle, as a wall does
         side = np.array([-axis[2], 0.0, axis[0]])
-        off = rel[facing] @ axis
-        keep = off >= (info["nearest_m"] or 0) - 0.05       # a wall is behind nearly everything seen that way, never in front of it
-        wall = _area_mode(off[keep], np.c_[rel[facing] @ side, rel[facing][:, 1]][keep]) if keep.sum() >= 150 else None
-        wall = wall if wall is not None else _mode(s)
+        wall = None
+        if len(s) >= 150:            # that way was seen at all; else stray points at the edge of the sweep made up a wall (0.21 m, seen)
+            off = rel[facing] @ axis
+            keep = off >= info["nearest_m"] - 0.05      # a wall is behind nearly everything seen that way, never in front of it
+            wall = _area_mode(off[keep], np.c_[rel[facing] @ side, rel[facing][:, 1]][keep]) if keep.sum() >= 150 else None
+            wall = wall if wall is not None else _mode(s)
         if wall is not None:
             info["wall_m"] = round(wall, 3)
             planes.append((axis, wall))

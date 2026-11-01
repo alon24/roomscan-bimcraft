@@ -1954,6 +1954,7 @@ function show3d(group, keepView = false) {
   viewRO = new ResizeObserver(() => { const w = el.clientWidth, h = el.clientHeight; if (!w || !h) return; renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); });
   viewRO.observe(el);
   let dist = 5, r = 5;
+  let standing = false;   // looking round from one spot (inside): zoom narrows the view instead of moving off the spot
   const c = new THREE.Vector3();
   const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.7, 0.8, 0, "YXZ"));
   const q0 = q.clone();
@@ -1965,14 +1966,14 @@ function show3d(group, keepView = false) {
     const box = new THREE.Box3(); for (const o of V.group.children) if (!o.userData.nofit) box.expandByObject(o); if (box.isEmpty()) box.setFromObject(V.group);
     if (box.isEmpty()) return false;
     box.getCenter(c); r = box.getSize(new THREE.Vector3()).length() || 5; dist = r * 1.1;
-    q.copy(q0); cam.fov = 50;
+    q.copy(q0); cam.fov = 50; standing = false;
     cam.near = r / 1000; cam.far = r * 20; cam.updateProjectionMatrix();
     place();
     return true;
   };
   // Stand at a point and look round from it (a room swept from one spot is meant to be seen from the middle), heading = azimuth in degrees
   const inside = (p, headingDeg) => {
-    c.set(p[0], p[1], p[2]); dist = 0.02; q.setFromEuler(new THREE.Euler(0, -headingDeg * Math.PI / 180, 0, "YXZ"));
+    c.set(p[0], p[1], p[2]); dist = 0.02; standing = true; q.setFromEuler(new THREE.Euler(0, -headingDeg * Math.PI / 180, 0, "YXZ"));
     cam.fov = 75; cam.near = 0.02; cam.far = 200; cam.updateProjectionMatrix(); place();
   };
   V = { renderer, scene: sc, cam, group, fit: null, inside };
@@ -1988,9 +1989,16 @@ function show3d(group, keepView = false) {
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q), up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
     c.addScaledVector(right, -dx * k).addScaledVector(up, dy * k); place();
   };
+  // From the spot a 360 photo was taken, the picture is only right at that spot: moving off it (zoom or pan) shows the photo
+  // stretched over the rough depth mesh. So there zoom changes the lens (field of view) and dragging only turns the head.
+  const zoom = k => {
+    if (standing) { cam.fov = Math.max(15, Math.min(100, cam.fov * k)); cam.updateProjectionMatrix(); }
+    else { dist = Math.max(r * 0.05, Math.min(r * 8, dist * k)); place(); }
+  };
   const rotate = (dx, dy) => {
-    q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -dx * 0.008));
-    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -dy * 0.008));
+    const k = standing ? 0.008 * cam.fov / 75 : 0.008;      // zoomed in, the same drag turns less
+    q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -dx * k));
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -dy * k));
     q.normalize(); place();
   };
   cv.onpointerdown = e => {
@@ -2005,12 +2013,12 @@ function show3d(group, keepView = false) {
     if (!prev) return;
     ptrs.set(e.pointerId, [e.clientX, e.clientY]);
     if (ptrs.size === 1) {
-      (panning ? pan : rotate)(e.clientX - prev[0], e.clientY - prev[1]);
+      (panning && !standing ? pan : rotate)(e.clientX - prev[0], e.clientY - prev[1]);
     } else if (ptrs.size === 2) {
       const [a, b] = [...ptrs.values()];
       const d = Math.hypot(a[0] - b[0], a[1] - b[1]), mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      if (lastPinch > 0) { dist = Math.max(r * 0.05, Math.min(r * 8, dist * lastPinch / d)); }
-      pan(mid[0] - lastMid[0], mid[1] - lastMid[1]);
+      if (lastPinch > 0) zoom(lastPinch / d);
+      if (!standing) pan(mid[0] - lastMid[0], mid[1] - lastMid[1]);
       lastPinch = d; lastMid = mid;
     }
   };
@@ -2030,7 +2038,7 @@ function show3d(group, keepView = false) {
   };
   cv.oncontextmenu = e => e.preventDefault();
   cv.ondblclick = () => V.fit && V.fit() || fit();
-  cv.onwheel = e => { e.preventDefault(); dist = Math.max(r * 0.05, Math.min(r * 8, dist * (1 + Math.sign(e.deltaY) * 0.1))); place(); };
+  cv.onwheel = e => { e.preventDefault(); zoom(1 + Math.sign(e.deltaY) * 0.1); };
   const loop = () => { renderer.render(sc, cam); raf = requestAnimationFrame(loop); };
   loop();
 }
