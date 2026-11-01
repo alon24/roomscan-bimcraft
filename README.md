@@ -82,6 +82,22 @@ Tap the small underlined line under the reading ("uncalibrated · tap to calibra
 4. If the fitted scale is more than 10% from 1, or the fitted offset more than 5 cm, it is almost always a mistyped tape value:
    it is **not applied** unless you switch on "Apply even if it looks wrong".
 
+#### Calibrate it with the printed target (guided, a few minutes)
+<img src="prints/lidar-target/target_iso.png" align="right" width="260">
+
+Print **lidar-target-v1** (white plate, black markers and text, 2 colours on the Snapmaker U1; files in `prints/lidar-target/`,
+also at `http://<server>/prints/lidar-target-v1.3mf`). It has four markers the camera reads, pads 10/20/30/40 mm high and wedges at
+15/30/45/60°. Full spec, print settings and how it is calculated: [docs/lidar-target.md](docs/lidar-target.md).
+1. Lay it flat on a table. **Measure** > **Calibrate** > **With the print (guided)**. Optionally type what a ruler says across it.
+2. Point the crosshair at its middle and tap **This is the middle**: a teal ring sits on it and the app now knows your distance
+   and tilt to the print all the time.
+3. Follow the top line ("Move back 20 cm", "Move out to the side and lower the phone", "Hold still…"). A grid shows the 11
+   stations (30 / 50 / 80 / 120 cm × straight down / 30° / 55°); at each one, hold still and it takes 3 photos by itself and ticks
+   it off. Any order.
+4. **Send and calculate**: the server reads the markers, knows the true depth of every LiDAR pixel on the print and returns the
+   error before / after, what is left by distance and by angle, and whether ARKit's scale agrees with the print. **Use this
+   correction for measuring** applies it (your tape checks, if any, still win).
+
 **Hold** now averages about a second and shows the spread ("2.317 m ± 0.4 cm"). Saved readings keep the raw sensor value
 too, so a later recalibration can recompute them. Low-confidence depth pixels are ignored, and glass, mirrors and shiny
 black surfaces show "Can't read this surface".
@@ -359,6 +375,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.49.0 | **LiDAR calibration print**: a 2-colour printable target (markers, height pads, angled wedges, "THIS SIDE UP" text; `prints/lidar-target/`, spec in `docs/lidar-target.md`) and a guided screen in the app (Measure > Calibrate > With the print): tap the middle once, the app tracks your distance and tilt, says what to do next, takes the photos itself at 11 stations and ticks them off; the server fits the depth correction from the markers and reports the error by distance and angle. |
 | 0.48.0 | **Cleaner sweeps**: the 360° photo view looks up the panorama per screen pixel, so from where you stood it is exactly the photo (no stretched streaks or staircase edges); parts no photo saw are shaded grey surfaces. The server builds a sweep from the spot where most frames were taken, leaves out frames pointed at you (face, lap, legs), and finds floor, ceiling and walls as the biggest flat surfaces (a desk or your lap no longer reads as the floor). App: photos pause while you are too far from the start or the phone looks at you, and the first tip says to stand and turn your whole body. **Re-convert** old sweeps to get the new numbers. |
 | 0.47.0 | **Sharper 360° pictures**: where photos overlap, the sharpest photo taken nearest the middle now wins instead of being averaged with blurry or off-centre ones (doubled edges mostly gone; old panoramas are redrawn when next opened, **Re-convert** also refreshes the room colours). **Sweep coaching** in the app: live chips for how far the phone moved (green under 10 cm), how much it went up or down, and turn speed (aim for about 10°/s), a buzz when one goes wrong, and arrows in the dial for pointing straight up and straight down. |
 | 0.46.1 (server, web) | Switching between 3D views keeps the camera where it is (going back to the first view no longer jumps outside the room). |

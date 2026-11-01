@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
-from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage
+from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage, lidartarget
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
@@ -1146,6 +1146,43 @@ def ring_measured(marker_mm: float = Form(...), across_mm: float = Form(...)):
 def ring_reset():
     ring_scan_mod.calibration_file(DATA).unlink(missing_ok=True)
     return {"ok": True}
+
+
+# ---- LiDAR calibration with the printed target (docs/lidar-target.md) ----
+def _lidarcal() -> Path:
+    return DATA.parent / "lidarcal"
+
+
+@app.get("/api/lidar-target")
+def lidar_target():
+    """The printed target and the stations to photograph it from (the app guides you through them)."""
+    return lidartarget.info()
+
+
+@app.post("/api/lidar-cal")
+async def lidar_cal(print_scale: float = Form(1.0, gt=0.8, lt=1.2), photos: list[UploadFile] = File(default=[]),
+                    photos_meta: UploadFile | None = File(None)):
+    """Photos with LiDAR depth of the printed target. Kept in data/lidarcal/<time>/ (so a better analysis can be re-run on them)
+    and analysed: the correction `true = a * measured + b` and the leftover error by distance and angle."""
+    if photos_meta is None or not photos:
+        raise HTTPException(422, "send photos and photos_meta")
+    d = _lidarcal() / time.strftime("%Y%m%d-%H%M%S")
+    (d / "photos").mkdir(parents=True, exist_ok=True)
+    for ph in photos:
+        fname = Path(ph.filename or "").name
+        if PHOTO_NAME.match(fname):
+            (d / "photos" / fname).write_bytes(await ph.read())
+    (d / "photos.json").write_bytes(await photos_meta.read())
+    result = await anyio.to_thread.run_sync(lidartarget.analyse, d, print_scale)
+    return {**result, "id": d.name}
+
+
+@app.get("/api/lidar-cal/latest")
+def lidar_cal_latest():
+    runs = sorted(p for p in _lidarcal().glob("*/result.json")) if _lidarcal().exists() else []
+    if not runs:
+        raise HTTPException(404, "no calibration with the print yet")
+    return {**json.loads(runs[-1].read_text()), "id": runs[-1].parent.name}
 
 
 # ---- problem reports from the app, so they can be read here instead of described from a phone screen ----

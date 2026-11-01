@@ -35,6 +35,7 @@ struct SettingsView: View {
             }
             Section(footer: Text("After printing the marker ring: measure it with calipers, take a few photos and let the server check it.")) {
                 NavigationLink("Calibrate the printed ring") { RingCalibrationView() }
+                NavigationLink("Calibrate LiDAR with the print") { PrintCalibrationView() }
             }
             Section(footer: Text("Mesh scans keep a photo, the LiDAR depth and the position of every half second (up to 400 frames), so each frame can be checked and corrected on the web page. Uses more storage and upload time.")) {
                 Toggle("Keep every frame", isOn: $allFrames)

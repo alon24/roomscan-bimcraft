@@ -102,6 +102,35 @@ enum Uploader {
         _ = try? await URLSession.shared.upload(for: req, from: json)
     }
 
+    /// Photos with depth of the printed LiDAR target; the server reads the markers and fits the depth correction (docs/lidar-target.md).
+    static func lidarCal(server: String, printScale: Double, photos: [URL], meta: URL) async throws -> [String: Any] {
+        guard let url = URL(string: server)?.appendingPathComponent("api/lidar-cal") else { throw URLError(.badURL) }
+        let boundary = UUID().uuidString
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("lidarcal-\(boundary).body")
+        FileManager.default.createFile(atPath: tmp.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let out = try FileHandle(forWritingTo: tmp)
+        func put(_ text: String) throws { try out.write(contentsOf: Data(text.utf8)) }
+        func file(_ key: String, _ fileURL: URL, _ type: String) throws {
+            try put("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"; filename=\"\(fileURL.lastPathComponent)\"\r\nContent-Type: \(type)\r\n\r\n")
+            try out.write(contentsOf: try Data(contentsOf: fileURL))
+            try put("\r\n")
+        }
+        try put("--\(boundary)\r\nContent-Disposition: form-data; name=\"print_scale\"\r\n\r\n\(printScale)\r\n")
+        for p in photos { try file("photos", p, p.pathExtension == "depth" ? "application/octet-stream" : "image/jpeg") }
+        try file("photos_meta", meta, "application/json")
+        try put("--\(boundary)--\r\n")
+        try out.close()
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 300
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, resp) = try await URLSession.shared.upload(for: req, fromFile: tmp)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.badServerResponse) }
+        return obj
+    }
+
     /// Photos of the printed ring plus the caliper readings; the server says whether they agree and saves them if so.
     static func calibrateRing(server: String, markerMM: Double, centreDistanceMM: Double?, photos: [URL], meta: URL) async throws -> [String: Any] {
         guard let url = URL(string: server)?.appendingPathComponent("api/ring/calibrate") else { throw URLError(.badURL) }

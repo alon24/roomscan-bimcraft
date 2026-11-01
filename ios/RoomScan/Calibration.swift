@@ -11,6 +11,16 @@ struct CalPoint: Codable, Identifiable {
     var truth: Double
 }
 
+/// A correction from the printed target (PrintCalibration.swift): `truth = a * raw + b`, fitted by the server from thousands of
+/// depth pixels at known distances and angles.
+struct PrintFit: Codable, Equatable {
+    var a: Double
+    var b: Double
+    var rmsBefore: Double
+    var rmsAfter: Double
+    var date: Date
+}
+
 /// The user's own calibration. `truth = a * raw + b` is fitted from their tape checks; nothing is hidden: points can be
 /// deleted, the correction switched off, and a fit that looks wrong is not applied unless they say so.
 final class CalibrationStore: ObservableObject {
@@ -24,12 +34,15 @@ final class CalibrationStore: ObservableObject {
     @Published var points: [CalPoint] { didSet { save() } }
     @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: "calEnabled") } }
     @Published var allowOdd: Bool { didSet { UserDefaults.standard.set(allowOdd, forKey: "calAllowOdd") } }
+    /// From the printed target. Used for camera-to-wall readings unless there are tape checks of that kind (the user's own tape wins).
+    @Published var printFit: PrintFit? { didSet { UserDefaults.standard.set(try? JSONEncoder().encode(printFit), forKey: "calPrintFit") } }
 
     init() {
         let d = UserDefaults.standard
         points = d.data(forKey: "calPoints").flatMap { try? JSONDecoder().decode([CalPoint].self, from: $0) } ?? []
         enabled = d.object(forKey: "calEnabled") as? Bool ?? true
         allowOdd = d.bool(forKey: "calAllowOdd")
+        printFit = d.data(forKey: "calPrintFit").flatMap { try? JSONDecoder().decode(PrintFit.self, from: $0) }
     }
 
     private func save() {
@@ -61,14 +74,16 @@ final class CalibrationStore: ObservableObject {
 
     /// Camera-to-wall distance, corrected.
     func wall(_ raw: Double) -> Double {
-        guard let f = usable(fit(.wall)) else { return raw }
-        return f.a * raw + f.b
+        if let f = usable(fit(.wall)) { return f.a * raw + f.b }
+        if enabled, let p = printFit { return p.a * raw + p.b }
+        return raw
     }
 
     /// Pin-to-pin length, corrected. Uses the pin fit, else the wall fit's scale (the same depth sensor made both).
     func leg(_ raw: Double) -> Double {
         if let f = usable(fit(.span)) { return f.a * raw }
         if let f = usable(fit(.wall)) { return f.a * raw }
+        if enabled, let p = printFit { return p.a * raw }
         return raw
     }
 
@@ -76,7 +91,10 @@ final class CalibrationStore: ObservableObject {
     var summary: String {
         guard enabled else { return "correction off · tap to calibrate" }
         let f = fit(.wall) ?? fit(.span)
-        guard let f else { return "uncalibrated · tap to calibrate" }
+        guard let f else {
+            if let p = printFit { return String(format: "calibrated with the print · typical error ±%.1f cm · tap", max(p.rmsAfter, 0.001) * 100) }
+            return "uncalibrated · tap to calibrate"
+        }
         if f.suspicious && !allowOdd { return "correction looks wrong, not applied · tap" }
         return f.n >= 2 ? String(format: "calibrated · typical error ±%.1f cm · tap", max(f.rmsAfter, 0.001) * 100) : "calibrated on 1 point · tap"
     }
@@ -103,6 +121,14 @@ struct CalibrationView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section(footer: Text("The printed target gives a correction from thousands of LiDAR readings at known distances and angles, in a few minutes. Tape checks below still win if you add them.")) {
+                    NavigationLink("With the print (guided)") { PrintCalibrationView() }
+                    if let p = cal.printFit {
+                        Text("In use since \(p.date.formatted(date: .abbreviated, time: .omitted)): " +
+                             String(format: "error ±%.1f mm → ±%.1f mm (scale %.4f, offset %+.1f mm)", p.rmsBefore * 1000, p.rmsAfter * 1000, p.a, p.b * 1000)).font(.caption)
+                        Button("Stop using the print's correction", role: .destructive) { cal.printFit = nil }.font(.caption)
+                    }
+                }
                 Section {
                     Picker("Check", selection: $kind) {
                         Text("Camera to wall").tag(CalKind.wall)
@@ -170,6 +196,7 @@ struct CalibrationView: View {
             }
             .navigationTitle("Calibrate")
             .toolbar { Button("Done") { dismiss() } }
+            .onAppear { if !CameraOwner.owns(model) { model.start() } }     // back from the print's screen, which took the camera
         }
     }
 }
