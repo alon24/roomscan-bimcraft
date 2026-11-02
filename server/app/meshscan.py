@@ -16,13 +16,32 @@ from .photos import _mat, project
 GREY = np.array([150, 150, 150], dtype=np.uint8)
 
 
+# The stored depth map is turned 90 degrees from the photo, at the photo's scale, centred on it: found from real frames, where the
+# floor and the print have a known shape (error on tilted frames 157 mm as stored, 7 mm turned; frame-to-frame disagreement in sweeps
+# 189-260 mm as stored, 31-55 mm turned). Straight at a flat surface the two look the same, which is why it stayed hidden.
+DEPTH_TURNED = True
+
+
+def align_depth(a: np.ndarray) -> np.ndarray:
+    """The depth map on the photo's grid, same size. A photo column x is stored row x - m, a photo row y stored column w - m - 1 - y,
+    with m = (w - h) / 2. Where the photo has no stored depth (m columns each side) the result is 0, which every reader skips."""
+    h, w = a.shape
+    if not DEPTH_TURNED or w <= h:
+        return a
+    m = (w - h) // 2
+    out = np.zeros_like(a)
+    y, x = np.mgrid[0:h, m:w - m]
+    out[y, x] = a[x - m, w - m - 1 - y]
+    return out
+
+
 def _depth_map(d: Path, photo: dict) -> np.ndarray | None:
     name, w, h = photo.get("depth_file"), photo.get("depth_width"), photo.get("depth_height")
     p = d / "photos" / name if name else None
     if not (p and w and h and p.exists()):
         return None
     a = np.fromfile(p, dtype="<f4")
-    return a.reshape(h, w) if a.size == w * h else None
+    return align_depth(a.reshape(h, w)) if a.size == w * h else None
 
 
 def _photos_with_files(d: Path) -> list[dict]:

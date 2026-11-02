@@ -94,15 +94,12 @@ To carry it, print the **carry case** (`prints/lidar-case/3mf/`: `lidar-case-tra
 tab out to open. Details: [docs/lidar-case.md](docs/lidar-case.md).
 
 <img src="prints/lidar-case/images/case_open.jpg" width="420">
-1. Lay it flat on a hard floor (the far stations are 120 cm away, easy standing up). **Measure** > **Calibrate** > **With the print (guided)**. Optionally type what your calipers read over the printed ruler (about 101 mm); the app works out the scale.
-2. Point the crosshair at its middle and tap **This is the middle**: a teal ring sits on it and the app now knows your distance
-   and tilt to the print all the time.
-3. Follow the top line ("Move back 20 cm", "Move out to the side and lower the phone", "Hold still…"). A grid shows the 11
-   stations (30 / 50 / 80 / 120 cm × straight down / 30° / 55°); at each one, hold still and it takes 3 photos by itself and ticks
-   it off. Any order.
-4. **Send and calculate**: the server reads the markers, knows the true depth of every LiDAR pixel on the print and returns the
-   error before / after, what is left by distance and by angle, and whether ARKit's scale agrees with the print. **Use this
-   correction for measuring** applies it (your tape checks, if any, still win).
+1. Lay it on a bare, hard floor. **Measure** > **Calibrate** > **With the print (guided)**. Optionally type what your calipers read over the printed ruler (about 101 mm). Hold the phone flat over the middle, about 40 cm up, and tap **Start**.
+2. **Stand up** slowly with the phone flat over the print.
+3. **Step back**: walk slowly backwards, keeping the print in the middle of the screen.
+4. **Another side**: walk round a quarter turn and step back again.
+
+There are no angles to hit: a voice says what to do, the screen stays on, the app takes the photos itself and fills a bar. It takes about a minute. The answer is one sentence ("Your LiDAR reads 5 mm long looking straight at a surface and 2 mm long at 60°"), and a good result is used for measuring straight away, including a correction for the angle you measure at. If something is wrong it says what to do and offers **Try again**.
 
 **Hold** now averages about a second and shows the spread ("2.317 m ± 0.4 cm"). Saved readings keep the raw sensor value
 too, so a later recalibration can recompute them. Low-confidence depth pixels are ignored, and glass, mirrors and shiny
@@ -381,6 +378,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.51.0 | **LiDAR depth lined up with the photo.** The stored depth map turns out to be turned 90° from the photo, in every scan: straight at a flat surface it doesn't show, at an angle it wrecks the geometry. Sweeps and every other depth-based result now use it the right way round (frames that disagreed by 19-26 cm now disagree by 3-5 cm); press **Re-convert** on older scans to rebuild them. **New print calibration**: stand up, step back, another side, about a minute, no angles to hit, voice guidance, one plain answer and a **Try again**. It fits on the plate and the floor round it and now corrects for the angle too. |
 | 0.50.4 | Calibrate with the print: the screen stays on the whole time, and the instructions say to lay the print on the floor. |
 | 0.50.3 | Calibrate with the print: type the caliper reading straight into **Ruler reading** (no sum to do), the app shows the print's scale and warns if the number looks wrong; an **OK** button (or scrolling) closes the keyboard. |
 | 0.50.2 | **The print 3MFs now really carry their colours.** The old files opened in Snapmaker Orca as one merged part on filament 1 (an all-white print, markers unreadable) and off the bed centre. Rewritten in Orca's own format: one object, a part per colour on its filament, U1 settings inside, centred. Both SolidCraft designs rebuilt from parameters and master sketches: print 65 → 18 timeline items and 7 → 4 bodies, case 56 → 31 items and 32 → 3 bodies. Same shape, checked. |

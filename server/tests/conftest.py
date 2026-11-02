@@ -13,6 +13,15 @@ from pathlib import Path
 
 import pytest
 
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _synthetic_depth_is_on_the_photo_grid():
+    """The synthetic scans write depth already lined up with the photo. Real files are turned: see test_depth_alignment."""
+    from app import meshscan
+    meshscan.DEPTH_TURNED = False
+
+
 CRASH_LOG = Path(__file__).resolve().parent.parent / ".pytest-crash.log"     # server/.pytest-crash.log (git-ignored)
 _previous = ""
 _file = None

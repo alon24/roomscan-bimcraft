@@ -25,7 +25,7 @@ def _lock(d: Path) -> threading.Lock:
     return _locks.setdefault(str(d), threading.Lock())
 
 
-METHOD = 3   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
+METHOD = 4   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
 
 
 def key_for(d: Path, width: int) -> str:

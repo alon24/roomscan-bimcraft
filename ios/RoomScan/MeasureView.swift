@@ -216,12 +216,30 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         return Double(v.sorted()[v.count / 2])
     }
 
+    /// The angle between the line of sight and the surface at the crosshair, from how fast the depth changes round it. Depth pixels
+    /// are square at the depth map's focal length in either orientation (see align_depth on the server), so the turn does not matter.
+    private func surfaceAngle(_ frame: ARFrame) -> Double? {
+        guard let map = frame.sceneDepth?.depthMap else { return nil }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
+        let cx = w / 2, cy = h / 2, step = 10
+        func at(_ x: Int, _ y: Int) -> Double { Double(base.advanced(by: y * rb).assumingMemoryBound(to: Float32.self)[x]) }
+        let z = at(cx, cy), l = at(cx - step, cy), r = at(cx + step, cy), u = at(cx, cy - step), d = at(cx, cy + step)
+        guard z > 0.1, l > 0.1, r > 0.1, u > 0.1, d > 0.1 else { return nil }
+        let f = Double(frame.camera.intrinsics[0][0]) * Double(max(w, h)) / Double(frame.camera.imageResolution.width)
+        let gx = (r - l) / Double(2 * step), gy = (d - u) / Double(2 * step)
+        return atan(sqrt(gx * gx + gy * gy) * f / z) * 180 / .pi
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard live else { return }
         let lost: Bool
         if case .limited(.relocalizing) = frame.camera.trackingState { lost = true } else { lost = false }
         if lost != relocalizing { relocalizing = lost }
 
+        CalibrationStore.shared.surfaceAngle = surfaceAngle(frame)
         var d = depth(frame, nx: 0.5, ny: 0.5)
         if d == nil {
             // No LiDAR: fall back to an ARKit raycast from the screen centre (less exact).
@@ -450,7 +468,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
               let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
-        return UIImage(cgImage: cg, scale: 1, orientation: .right)
+        return UIImage(cgImage: cg, scale: 1, orientation: .up)      // stored turned, so it already matches a portrait screen
     }
 
     // MARK: readings
@@ -543,7 +561,7 @@ struct MeasureView: View {
                 .overlay {
                     GeometryReader { geo in
                         if model.showDepth, let img = model.overlay {
-                            Image(uiImage: img).resizable().scaledToFill().frame(width: geo.size.width, height: geo.size.height).clipped()
+                            Image(uiImage: img).resizable().frame(width: geo.size.width * 4 / 3, height: geo.size.width).position(x: geo.size.width / 2, y: geo.size.height / 2)
                         }
                     }
                     .allowsHitTesting(false)

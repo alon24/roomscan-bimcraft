@@ -38,29 +38,20 @@ Files (in `prints/lidar-target/`, see [prints/README.md](../prints/README.md); t
      the last is **101.0 mm** (the ticks are 1 mm wide, 10 mm apart, centre to centre 100 mm). Type what the calipers read into
      the app's **Ruler reading** field: it works out the print's scale itself (PLA shrinks a few tenths of a percent).
 
-## 2. Using it (the app does the guiding)
+## 2. Using it (one motion, about a minute)
 
 App: **Measure** tab > **Calibrate** > **With the print (guided)** (also in Settings > Calibrate LiDAR with the print).
 
-1. Lay the print flat on a **hard floor** (not a rug), text the right way up, good even light (no sun patches), with room to walk
-   round it. The floor is best because the far stations are 80-120 cm from the print: at arm's length standing up, where over a
-   table you would need a ladder. A low table works too. 120 cm is there because rooms are measured from a metre or more, and
-   LiDAR error changes with distance, so a correction fitted only up close would not hold there.
-2. Point the crosshair at the middle of the print, about 40 cm away, and tap **This is the middle**. A teal ring appears on the
-   print: from now on ARKit tracks it, so the app always knows your **distance** to the print and your **tilt** (0 = looking
-   straight down at it).
-3. The screen shows a grid of 11 stations (distance 30 / 50 / 80 / 120 cm across, tilt down / 30° / 55° down the side) and the
-   live readout: distance now -> wanted, tilt now -> wanted, aim, steady. The top line says the one thing to do next
-   ("Move back 20 cm", "Move out to the side and lower the phone", "Hold still..."). Any order works: whenever you are at a
-   station that still needs photos and hold still, it takes 3 photos by itself (a tap of the phone each, a stronger one when the
-   station is done) and ticks it off.
-4. With 3 or more stations done (all 11 is best, about 3 minutes), tap **Send and calculate**. The server answers in a few
-   seconds with the error before and after, the left-over error by distance, by angle and by colour, and how ARKit's own scale
-   compares with the print. **Use this correction for measuring** makes the Measure tab use it (tape checks, if any, still win).
+Lay the print on a **bare, hard floor** (not a rug) with a metre of clear floor round it, in even light (no sun patches). The floor matters: it gives far more depth points than the print, and it is what makes far distances and steep angles measurable.
 
-Why the phone alone is enough: ARKit tracks the print at 60 fps on the phone, no network needed while you move. The precise part
-(reading the markers, fitting) runs on the server afterwards from the photos; the photos and the result are kept in
-`data/lidarcal/<time>/` so a better analysis can be re-run on them later.
+1. Hold the phone flat over the middle of the print, about 40 cm up, and tap **Start**. A teal ring marks the print. The screen stays on and a voice says what to do.
+2. **Stand up** slowly with the phone flat over the print (30 to about 150 cm).
+3. **Step back**: stand over the print, then walk slowly backwards keeping it in the middle of the screen (tilt 10 to 60°). The screen keeps facing you.
+4. **Another side**: walk round about a quarter turn and step back the same way.
+
+There are no angles or distances to hit: the app takes the photos itself, a tap and a tick for each, and fills a bar. If you can't reach a band, **Next step** appears once there is enough. At the end it sends the photos and answers in one sentence, for example "Your LiDAR reads 5 mm long looking straight at a surface and 2 mm long at 60°. After the correction, ±5 mm is left." A good result is used for measuring straight away. If something is wrong it says the one thing to do and offers **Try again**.
+
+The photos and the result are kept in `data/lidarcal/<time>/` so a better analysis can be re-run on them later.
 
 ## 3. The geometry (exact, for rebuilding or changing it)
 
@@ -128,31 +119,29 @@ they are not hidden at 55° tilt; keep everything matte.
 
 ## 4. How the numbers are worked out (server)
 
-`POST /api/lidar-cal` (photos + depth + `photos.json` + optional `print_scale`), `GET /api/lidar-target` (stations, tolerances),
-`GET /api/lidar-cal/latest`. For each photo:
+`POST /api/lidar-cal` (photos + depth + `photos.json` + optional `print_scale`), `GET /api/lidar-cal/latest`. For each photo:
 
-1. **Camera pose from the markers.** Detect DICT_4X4_50 markers 40-45 (sub-pixel corners), solve the pose from all their
-   corners with SQPnP (not IPPE: IPPE assumes the points lie at z = 0) and refine it (Levenberg-Marquardt). Needs 2 markers.
-   ARKit's intrinsics are used with the principal point moved by half a pixel (OpenCV puts pixel centres at whole numbers).
-2. **True depth per LiDAR pixel.** Each depth pixel's ray (through its centre, with the intrinsics scaled to 256 x 192) is cast
-   against the target, built from convex pieces (plate, pads, wedges, markers and patches as half-spaces). That gives the depth it
-   should read (z along the optical axis, the same as LiDAR reports), the face it hits, its colour and the angle of incidence.
-   Pixels within 2 of a face boundary are left out (LiDAR blurs edges), and so are pixels off the print.
-3. **Station.** The camera's distance to the plate's centre and its tilt from straight down put the photo on a station
-   (within 15% and 7°).
+1. **Camera pose from the markers.** Detect DICT_4X4_50 markers 40-45 (sub-pixel corners), solve the pose from all their corners with SQPnP (not IPPE: IPPE assumes the points lie at z = 0) and refine it. Needs 2 markers. On the first real session the plate's normal agreed with ARKit's gravity within 1° on every photo.
+2. **Line the depth up.** The stored depth map is turned 90° from the photo: see below.
+3. **True depth per LiDAR pixel.** Each depth pixel's ray is cast at the plate's flat top, and off the print at the floor (z = 0) in a ring out to 50 cm. A frame's floor counts only if it is flat (spread under 12 mm) and level with the plate (within 10 mm), so a rug or a table's edge drops out by itself.
 
-Then all frames together (at most 4000 pixels per frame, so a close-up does not outweigh the rest):
+Then all frames together, flat surfaces only (at most 4000 pixels of each per frame): `true = a * measured + b + h(angle)`, with `h` straight-line between 0, 15, 30, 45 and 60° and 0 at 0°, refitted without points over 3 robust sigmas (and 5 mm) off. The app's Measure tab applies `a`, `b` and `h`, working out the angle from how fast the depth changes round the crosshair. `good` when the leftover is under 10 mm, the scale within 10% of 1 and the offset under 5 cm.
 
-- `true = a * measured + b`, fitted on the **white** surfaces (walls are mostly light), least squares, refitted without points
-  more than 3 robust sigmas (and over 5 mm) off. The same form as the app's tape calibration, so it slots into the Measure tab.
-- The error left after the correction by true distance (0-0.4, 0.4-0.65, 0.65-1, 1-1.5 m), by angle of incidence (15° bins) and
-  **by colour** (white, black, blue, red): dark or coloured surfaces can read long or short in the LiDAR's infrared, and steep
-  surfaces too, which one scale and offset cannot fix.
-- **Camera against the print**: the camera positions from the markers (metric, from the printed size) against ARKit's camera
-  positions for the same photos, as the median ratio of the distances between pairs: 1.000 means ARKit's metres are the print's.
-- `good` when the error after is under 15 mm, the scale within 10% of 1 and the offset under 5 cm.
+**Why the pads and wedges are not fitted:** even correctly lined up they read 10-30 mm off. LiDAR has only a few hundred real dots, spread into its depth image, so a 40 mm pad at 45 cm is blurred into its surroundings. They remain useful as marker carriers. Because of that blur, the colour figures for blue and red (on pad tops) are not a true colour test on this print.
 
-Tested on synthetic frames (photos with each marker drawn on its own surface by homography, depth cast from the model with a
-known error, black surfaces reading 4 mm long): a LiDAR that reads true = 1.02 x measured - 8 mm comes back as 1.02 / -8 mm
-within 0.4% / 2 mm, black is reported 4 mm long and the other colours true, every frame lands on its station, ARKit-vs-print 1.00
-(`server/tests/test_lidartarget.py`). Not yet tried with a real print and phone.
+### The depth map is turned from the photo
+
+`meshscan.align_depth` handles it for every server reader; the app's live point cloud does the same itself. A photo-grid column x is stored at row x - m and a photo-grid row y at column w - m - 1 - y, with m = (w - h) / 2 = 32, at the photo's scale (7.5 photo pixels per depth pixel). So the stored map covers the middle 75% of the photo's width and 133% of its height. Columns beyond the photo are dropped.
+
+Straight at a flat surface both orientations look the same, which is how it stayed hidden. It was found on the first real calibration, where the print and floor have a known shape:
+
+| Measure | Depth as stored | Turned |
+|---|---|---|
+| Error on tilted calibration frames (robust spread) | 157 mm | 7 mm |
+| Frame-to-frame disagreement, calibration | 33 mm | 5.3 mm |
+| Same, sweep b6776530ac8e | 189 mm | 31 mm |
+| Same, sweep 2a132b51eca0 | 260 mm | 55 mm |
+
+Apple documents the depth map as lined up with the camera image, so why this phone stores it turned is not known. It has only been measured on one phone (iPhone 13 Pro, iOS 18.7): check it again on any other device with the frame-to-frame test.
+
+First real session (29 usable photos, this print on a wooden floor): scale 0.9992, offset -4.3 mm, ±4.8 mm left over at every distance from 0.2 to 1.2 m. Tests use synthetic frames with a known error, including floor and angle error (`server/tests/test_lidartarget.py`).

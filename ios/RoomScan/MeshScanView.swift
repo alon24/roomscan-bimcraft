@@ -490,12 +490,16 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         let dbpr = CVPixelBufferGetBytesPerRow(dm), cbpr = CVPixelBufferGetBytesPerRow(conf)
         var seen = Set<Int64>()
         var out: [(key: Int64, point: SIMD3<Float>, colour: SIMD3<Float>)] = []
-        for y in stride(from: 0, to: dh, by: 2) {
-            let drow = (db + y * dbpr).assumingMemoryBound(to: Float32.self)
-            let crow = (cb + y * cbpr).assumingMemoryBound(to: UInt8.self)
-            for x in stride(from: 0, to: dw, by: 2) {
-                let d = drow[x]
-                guard d > 0.15, d < 5, crow[x] >= 1 else { continue }
+        // The depth map is turned from the photo (server/app/meshscan.py, align_depth): stored row r, column c is the photo grid's
+        // column x = r + m, row y = dw - m - 1 - c, with m = (dw - dh) / 2. Stored columns outside m..<dw-m are off the photo.
+        let m = (dw - dh) / 2
+        for r in stride(from: 0, to: dh, by: 2) {
+            let drow = (db + r * dbpr).assumingMemoryBound(to: Float32.self)
+            let crow = (cb + r * cbpr).assumingMemoryBound(to: UInt8.self)
+            for c in stride(from: m, to: dw - m, by: 2) {
+                let d = drow[c]
+                guard d > 0.15, d < 5, crow[c] >= 1 else { continue }
+                let x = r + m, y = dw - m - 1 - c
                 // ARKit camera: +X right, +Y up, looks down -Z; image rows go down
                 let w = t * SIMD4<Float>((Float(x) - cx) * d / fx, -(Float(y) - cy) * d / fy, -d, 1)
                 let key = voxelKey(w, vox)

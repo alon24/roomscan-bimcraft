@@ -42,7 +42,7 @@ def _look_at(cam: np.ndarray, target: np.ndarray) -> np.ndarray:
     return np.stack([x, y, z])
 
 
-def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true):
+def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true, floor=False, angle_mm_per_deg=0.0):
     """Write photo n, its depth and its manifest entry: the camera `dist_m` from the plate centre, tilted `tilt_deg` from straight
     down. The LiDAR reads `measured` such that true = a_true * measured + b_true."""
     target = np.array([0, 0, lt.PLATE])
@@ -75,9 +75,13 @@ def _frame(d, n, dist_m, tilt_deg, az_deg, a_true, b_true):
     u, v = np.meshgrid(np.arange(DW) + 0.5, np.arange(DH) + 0.5)
     rays = np.stack([(u - cx) / fx, (v - cx * DH / DW) / fx, np.ones_like(u)], -1).reshape(-1, 3) @ R
     tz, _, face = lt.cast(cam, rays)
-    true = np.where(np.isfinite(tz), tz / 1000, 2.0)                # off the print: a floor 2 m away
+    tf = -cam[2] / rays[:, 2] / 1000
+    true = np.where(np.isfinite(tz), tz / 1000, tf if floor else 2.0)   # off the print: the floor it lies on, or far away
     black = np.array(lt.colours())[np.maximum(face, 0) // 8] == "black"
-    meas = ((true - b_true) / a_true + np.where(black & (face >= 0), BLACK_EXTRA, 0)).astype("<f4").reshape(DH, DW)
+    _, nrm, _ = lt.cast(cam, rays)
+    un = rays / np.linalg.norm(rays, axis=1, keepdims=True)
+    inc = np.degrees(np.arccos(np.clip(np.abs((un * np.where(np.isfinite(tz)[:, None], nrm, [[0, 0, 1.0]])).sum(1)), 0, 1)))
+    meas = ((true - b_true) / a_true + np.where(black & (face >= 0), BLACK_EXTRA, 0) - angle_mm_per_deg * inc / 1000).astype("<f4").reshape(DH, DW)
     meas.tofile(d / "photos" / f"p{n:03d}.depth")
     M = np.eye(4)                                                   # ARKit pose: camera-to-world, camera looks down -Z, +Y up
     M[:3, :3] = R.T @ np.diag([1, -1, -1])
@@ -150,3 +154,34 @@ def test_markers_on_the_pads_are_used_and_each_colour_is_reported(run):
     assert col["black"]["bias_mm"] == pytest.approx(BLACK_EXTRA * 1000 * 1.02, abs=1.0)      # reads long by 4 mm, only black
     assert "blue" in col and "red" in col and abs(col["blue"]["bias_mm"]) < 0.5
 
+
+
+def test_the_floor_and_the_angle_error_come_back(tmp_path):
+    (tmp_path / "photos").mkdir()
+    photos = [_frame(tmp_path, n, dist, tilt, az, 1.0, -0.007, floor=True, angle_mm_per_deg=0.25)
+              for n, (dist, tilt, az) in enumerate([(0.3, 0, 0), (0.6, 0, 90), (1.0, 0, 0), (1.3, 0, 0), (0.6, 20, 0), (0.8, 30, 90), (0.8, 40, 0), (0.8, 50, 180)], 1)]
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+    res = lt.analyse(tmp_path)
+    assert res["good"] and res["fit"]["floor_frames"] >= 6
+    assert res["fit"]["b"] == pytest.approx(-0.007, abs=0.002)
+    table = {r["deg"]: r["m"] for r in res["angle_correction"]}
+    assert table[45] == pytest.approx(0.25 * 45 / 1000, abs=0.003)          # reads short at an angle, so the correction adds
+    assert "mm" in res["summary"] and res["fix"] is None
+
+
+def test_a_bad_session_says_what_to_do(tmp_path):
+    (tmp_path / "photos").mkdir()
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": []}))
+    res = lt.analyse(tmp_path)
+    assert not res["good"] and res["fix"]
+
+
+def test_depth_alignment(monkeypatch, tmp_path):
+    """Stored depth is turned from the photo: a photo pixel at (x, y) is stored at row x - 32, column 223 - y."""
+    from app import meshscan
+    monkeypatch.setattr(meshscan, "DEPTH_TURNED", True)
+    stored = np.zeros((192, 256), "<f4")
+    stored[96 - 32 + 10, 223 - 50] = 3.0                  # photo-grid column 106, row 50
+    out = meshscan.align_depth(stored)
+    assert out.shape == (192, 256) and out[50, 106] == 3.0
+    assert (out[:, :32] == 0).all() and (out[:, 224:] == 0).all()     # the photo's sides have no depth

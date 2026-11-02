@@ -10,8 +10,10 @@ the stations the app lists (distance x tilt). For every frame:
    measures against the print, not against ARKit's own sense of scale),
 2. every LiDAR depth pixel's ray is cast against the known shape, which gives the true depth it should read and the angle at which
    it meets the surface,
-3. true and measured depths from all frames are fitted: `true = a * measured + b` (the same form as the app's tape calibration),
-   with the leftover error listed by distance and by angle of incidence.
+3. the floor round the print (z = 0, the print lies on it) gives the same for thousands more pixels at any distance and angle,
+4. the flat surfaces only (plate top and floor) are fitted: `true = a * measured + b + h(angle of incidence)`. The pads and wedges are
+   left out: LiDAR has too few real dots to resolve them and reads them 10-30 mm off even with a correct pose. The leftover error is
+   listed by distance and angle, and colour is reported against the same correction.
 
 Units: the geometry here is in millimetres in the plate's frame (origin at the middle of the bottom face, z up, +y towards
 markers 40 and 41); depths and the fit are in metres."""
@@ -45,6 +47,11 @@ WEDGE_IN, WEDGE_OUT, WEDGE_HALF = 61.0, 91.0, 25.0
 DISTANCES = (0.3, 0.5, 0.8, 1.2)
 TILTS = (0, 30, 55)
 FRAMES_PER_STATION = 3
+FLOOR_RING = 500.0            # floor pixels are used out to this far from the print's middle, mm
+FLOOR_SPREAD, FLOOR_AGREE = 0.012, 0.010    # a frame's floor is used if flat to this (m, robust spread) and within this of the plate
+ANGLE_KNOTS = (0, 15, 30, 45, 60)           # the angle correction is piecewise linear between these, 0 at 0 degrees
+MIN_RANGE_M, MIN_ANGLE = 0.4, 30.0          # what the photos must span for the scale and the angle part to mean anything
+GOOD_RMS = 0.010
 DIST_TOL, TILT_TOL = 0.15, 7.0      # within 15% of the distance and 7 degrees of the tilt counts as at the station
 
 
@@ -211,7 +218,15 @@ def frame_samples(d: Path, ph: dict, scale: float = 1.0) -> dict | None:
     centre_dir = (R.T @ np.array([0.0, 0.0, 1.0]))        # the camera's forward axis in the plate's frame
     tilt = math.degrees(math.acos(max(-1.0, min(1.0, -centre_dir[2]))))
     dist = float(np.linalg.norm(origin - np.array([0, 0, PLATE * scale]))) / 1000
-    return {"file": ph["file"], "true": tz[ok] / 1000, "meas": meas.ravel()[ok], "incidence": inc, "colour": colour[ok],
+    plate_top = same.ravel()[ok] & (face.ravel()[ok] // 8 == 0) & (normal[ok][:, 2] > 0.999)
+    # the floor: off the print, in a ring round it, where the ray meets z = 0
+    tf = -origin[2] / rays[:, 2]
+    fp = origin + rays * np.where(tf > 0, tf, 0)[:, None]
+    fr = np.maximum(np.abs(fp[:, 0]), np.abs(fp[:, 1]))
+    fl = (face.ravel() < 0) & (tf > 0) & (fr > (SIZE / 2 + 15) * scale) & (fr < FLOOR_RING * scale) & (meas.ravel() > 0.1)
+    flunit = rays[fl] / np.linalg.norm(rays[fl], axis=1, keepdims=True)
+    return {"file": ph["file"], "true": tz[ok] / 1000, "meas": meas.ravel()[ok], "incidence": inc, "colour": colour[ok], "plate_top": plate_top,
+            "floor_true": tf[fl] / 1000, "floor_meas": meas.ravel()[fl], "floor_incidence": np.degrees(np.arccos(np.clip(np.abs(flunit[:, 2]), 0, 1))),
             "markers": seen, "marker_error_px": err,
             "distance_m": dist, "tilt_deg": tilt, "camera_mm": origin}
 
@@ -230,6 +245,36 @@ def robust_fit(raw: np.ndarray, truth: np.ndarray) -> tuple[float, float, np.nda
         mad = float(np.median(np.abs(r[keep] - np.median(r[keep])))) * 1.4826
         keep = np.abs(r) < max(3 * mad, 0.005)
     return float(a), float(b), keep
+
+
+def _tents(inc: np.ndarray, knots: list[float]) -> np.ndarray:
+    """Piecewise-linear basis: one column per knot after the first, 1 at that knot, 0 at the others; flat past the last."""
+    x = np.clip(inc, knots[0], knots[-1])
+    return np.stack([np.interp(x, knots, np.eye(len(knots))[i]) for i in range(1, len(knots))], axis=1) if len(knots) > 1 else np.zeros((len(x), 0))
+
+
+def fit_flat(meas: np.ndarray, true: np.ndarray, inc: np.ndarray) -> dict:
+    """true = a * meas + b + h(inc) by least squares, refitted without points over 3 robust sigmas (and 5 mm) off. Only angles with
+    enough points get a knot of their own, and the first knot stays at 0 so b is the offset straight on."""
+    knots = [ANGLE_KNOTS[0]] + [k for k in ANGLE_KNOTS[1:] if (np.abs(inc - k) < 7.5).sum() >= 200]
+    T = _tents(inc, knots)
+    A = np.c_[meas, np.ones(len(meas)), T]
+    keep = np.ones(len(meas), bool)
+    x = np.zeros(A.shape[1])
+    for _ in range(4):
+        x = np.linalg.lstsq(A[keep], true[keep], rcond=None)[0]
+        r = true - A @ x
+        mad = float(np.median(np.abs(r[keep] - np.median(r[keep])))) * 1.4826
+        keep = np.abs(r) < max(3 * mad, 0.005)
+    return {"a": float(x[0]), "b": float(x[1]), "knots": knots, "h": [0.0] + [float(v) for v in x[2:]], "keep": keep}
+
+
+def _corrected(f: dict, meas: np.ndarray, inc: np.ndarray) -> np.ndarray:
+    return f["a"] * meas + f["b"] + np.interp(np.clip(inc, f["knots"][0], f["knots"][-1]), f["knots"], f["h"])
+
+
+def _long_short(mm: float) -> str:
+    return f"{abs(mm):.0f} mm " + ("long" if mm > 0 else "short")
 
 
 def _bins(values, err, edges, label) -> list[dict]:
@@ -254,49 +299,68 @@ def analyse(d: Path, print_scale: float = 1.0, max_points: int = 4000) -> dict:
     photos = frames.manifest(d)
     per, notes = [], []
     rng = np.random.default_rng(0)
+    def thin(arrs, n):
+        if len(arrs[0]) <= n:
+            return arrs
+        pick = rng.choice(len(arrs[0]), n, replace=False)
+        return [x[pick] for x in arrs]
     for ph in photos:
         s = frame_samples(d, ph, print_scale)
         if s is None:
             continue
-        if len(s["true"]) > max_points:                     # every frame counts about the same, however much of it the target fills
-            pick = rng.choice(len(s["true"]), max_points, replace=False)
-            for k in ("true", "meas", "incidence", "colour"):
-                s[k] = s[k][pick]
+        s["true"], s["meas"], s["incidence"], s["colour"], s["plate_top"] = thin([s["true"], s["meas"], s["incidence"], s["colour"], s["plate_top"]], max_points)
+        s["floor_true"], s["floor_meas"], s["floor_incidence"] = thin([s["floor_true"], s["floor_meas"], s["floor_incidence"]], max_points)
+        # this frame's floor counts only if it is flat and level with the print (not a rug, a table's edge, furniture)
+        s["floor_ok"] = False
+        if len(s["floor_true"]) >= 100 and s["plate_top"].sum() >= 10:
+            e = s["floor_meas"] - s["floor_true"]
+            spread = float(np.median(np.abs(e - np.median(e)))) * 1.4826
+            top = s["meas"][s["plate_top"]] - s["true"][s["plate_top"]]
+            s["floor_ok"] = spread < FLOOR_SPREAD and abs(float(np.median(e)) - float(np.median(top))) < FLOOR_AGREE
         s["station"] = station_of(s["distance_m"], s["tilt_deg"])
         per.append(s)
     res = {"version": VERSION, "frames": len(photos), "frames_used": len(per), "print_scale": print_scale, "messages": notes}
-    if len(per) < 3:
-        notes.append(f"Only {len(per)} of {len(photos)} photos showed two or more of the print's markers clearly. Keep the whole print "
-                     "in view, in good light, and hold still for each photo.")
-        res["good"] = False
+    def stop(summary: str, fix: str) -> dict:
+        res.update(good=False, summary=summary, fix=fix)
+        notes.append(fix)
         (d / "result.json").write_text(json.dumps(res, indent=1))
         return res
+    if len(per) < 3:
+        return stop(f"The camera could read the print in only {len(per)} of {len(photos)} photos.",
+                    "Try again in brighter, even light with the whole print on screen, and move a little more slowly.")
     true = np.concatenate([s["true"] for s in per])
     meas = np.concatenate([s["meas"] for s in per])
     inc = np.concatenate([s["incidence"] for s in per])
     col = np.concatenate([s["colour"] for s in per])
-    # fitted on the white surfaces (walls are mostly light); each colour's own error after that correction is listed below
-    white = col == "white"
-    if white.sum() < 200:
-        white = np.ones(len(col), bool)
-    a, b, kw = robust_fit(meas[white], true[white])
-    keep = np.zeros(len(col), bool)
-    keep[np.nonzero(white)[0][kw]] = True
-    before, after = meas - true, a * meas + b - true
+    top = np.concatenate([s["plate_top"] for s in per])
+    fl = [s for s in per if s["floor_ok"]]
+    Fm = np.concatenate([meas[top]] + [s["floor_meas"] for s in fl])
+    Ft = np.concatenate([true[top]] + [s["floor_true"] for s in fl])
+    Fi = np.concatenate([inc[top]] + [s["floor_incidence"] for s in fl])
+    if len(Fm) < 200:
+        return stop("Too little of the print's flat top was seen by the LiDAR.", "Try again with the print on a bare, hard floor, starting about 30 cm above it.")
+    f = fit_flat(Fm, Ft, Fi)
+    a, b, keep = f["a"], f["b"], f["keep"]
+    Fa = _corrected(f, Fm, Fi) - Ft
+    Fb = Fm - Ft
+    after_all = _corrected(f, meas, inc) - true
     res["by_colour"] = []
     for c in ("white", "black", "blue", "red"):
-        m = (col == c) & (np.abs(after) < 0.05)
+        m = (col == c) & (np.abs(after_all) < 0.05)
         if m.sum() >= 30:
-            res["by_colour"].append({"colour": c, "n": int(m.sum()), "bias_mm": round(float(after[m].mean()) * 1000, 1),
-                                     "rms_mm": round(float(np.sqrt((after[m] ** 2).mean())) * 1000, 1)})
-    res["fit"] = {"a": round(a, 5), "b": round(b, 5), "points": int(len(true)), "kept": int(keep.sum()),
-                  "rms_before_mm": round(float(np.sqrt((before[keep] ** 2).mean())) * 1000, 1),
-                  "rms_after_mm": round(float(np.sqrt((after[keep] ** 2).mean())) * 1000, 1),
-                  "bias_before_mm": round(float(before[keep].mean()) * 1000, 1)}
+            res["by_colour"].append({"colour": c, "n": int(m.sum()), "bias_mm": round(float(after_all[m].mean()) * 1000, 1),
+                                     "rms_mm": round(float(np.sqrt((after_all[m] ** 2).mean())) * 1000, 1)})
+    rms_after = float(np.sqrt((Fa[keep] ** 2).mean()))
+    res["fit"] = {"a": round(a, 5), "b": round(b, 5), "points": int(len(Fm)), "kept": int(keep.sum()), "floor_frames": len(fl),
+                  "rms_before_mm": round(float(np.sqrt((Fb[keep] ** 2).mean())) * 1000, 1),
+                  "rms_after_mm": round(rms_after * 1000, 1),
+                  "bias_before_mm": round(float(Fb[keep].mean()) * 1000, 1)}
+    # what to add to a reading, in metres, by the angle it meets the surface: for the app's Measure tab
+    res["angle_correction"] = [{"deg": k, "m": round(h, 5)} for k, h in zip(f["knots"], f["h"])]
     dist_edges = [0.0, 0.4, 0.65, 1.0, 1.5, 3.0]
     ang_edges = [0, 15, 30, 45, 60, 75, 90]
-    res["by_distance"] = {"before": _bins(true[keep], before[keep], dist_edges, "m"), "after": _bins(true[keep], after[keep], dist_edges, "m")}
-    res["by_angle"] = {"before": _bins(inc[keep], before[keep], ang_edges, "deg"), "after": _bins(inc[keep], after[keep], ang_edges, "deg")}
+    res["by_distance"] = {"before": _bins(Ft[keep], Fb[keep], dist_edges, "m"), "after": _bins(Ft[keep], Fa[keep], dist_edges, "m")}
+    res["by_angle"] = {"before": _bins(Fi[keep], Fb[keep], ang_edges, "deg"), "after": _bins(Fi[keep], Fa[keep], ang_edges, "deg")}
     # the camera: how well the markers fit, and whether ARKit's scale agrees with the print's (camera baselines both ways)
     res["camera"] = {"marker_error_px": round(float(np.median([s["marker_error_px"] for s in per])), 2),
                      "markers_per_photo": round(float(np.mean([len(s["markers"]) for s in per])), 1)}
@@ -308,19 +372,26 @@ def analyse(d: Path, print_scale: float = 1.0, max_points: int = 4000) -> dict:
     far = lm > 0.15
     if far.sum() >= 3:
         res["camera"]["tracking_scale"] = round(float(np.median(la[far] / lm[far])), 4)     # 1.0: ARKit's metres are the print's metres
-    # stations
-    done = {}
-    for s in per:
-        if s["station"]:
-            done[s["station"]] = done.get(s["station"], 0) + 1
-    res["stations"] = [{**st, "taken": done.get(st["id"], 0)} for st in stations()]
-    missing = [st["say"] for st in res["stations"] if st["taken"] == 0]
-    if missing:
-        notes.append("Not photographed yet: " + "; ".join(missing) + ". The fit is less sure at those distances and angles.")
-    res["good"] = res["fit"]["rms_after_mm"] < 15 and abs(a - 1) < 0.1 and abs(b) < 0.05
+    span = float(np.percentile(Ft[keep], 98) - np.percentile(Ft[keep], 2))
+    steepest = float(f["knots"][-1])
+    res["coverage"] = {"distance_m": [round(float(np.percentile(Ft[keep], 2)), 2), round(float(np.percentile(Ft[keep], 98)), 2)], "max_angle_deg": steepest}
+    res["good"] = rms_after < GOOD_RMS and abs(a - 1) < 0.1 and abs(b) < 0.05
+    def err_mm(angle: float) -> float:                      # what the LiDAR reads over the truth at 1 m, at this angle
+        return -float(_corrected(f, np.array([1.0]), np.array([float(angle)]))[0] - 1.0) * 1000
+    said = f"Your LiDAR reads {_long_short(err_mm(0))} looking straight at a surface"
+    said += f" and {_long_short(err_mm(steepest))} at {steepest:.0f}°." if steepest >= MIN_ANGLE else "."
+    res["summary"] = said + f" After the correction, ±{rms_after * 1000:.0f} mm is left."
+    res["fix"] = None
     if abs(a - 1) >= 0.1 or abs(b) >= 0.05:
-        notes.append("The correction is unusually large (scale more than 10% off or offset over 5 cm). Check the print's size "
-                     "(type what your ruler says), that it lies flat, and that the markers are not glossy.")
+        res["fix"] = "That correction is too large to trust. Check the plate is flat on the floor and the ruler reading you typed, then try again."
+    elif rms_after >= GOOD_RMS:
+        res["fix"] = "The readings are too scattered. Try again on a bare, hard, matte floor, away from sun patches."
+    elif span < MIN_RANGE_M:
+        res["fix"] = "It is usable, but only a short range was covered, so the scale is uncertain. Try again and rise all the way to standing."
+    elif steepest < MIN_ANGLE:
+        res["fix"] = "It is usable, but steep angles are missing. Try again and take the two steps back, keeping the print on screen."
+    if res["fix"]:
+        notes.append(res["fix"])
     res["frames_detail"] = [{"file": s["file"], "distance_m": round(s["distance_m"], 3), "tilt_deg": round(s["tilt_deg"], 1),
                              "markers": s["markers"], "station": s["station"], "points": int(len(s["true"]))} for s in per]
     (d / "result.json").write_text(json.dumps(res, indent=1))

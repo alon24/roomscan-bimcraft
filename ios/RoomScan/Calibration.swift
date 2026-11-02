@@ -19,6 +19,20 @@ struct PrintFit: Codable, Equatable {
     var rmsBefore: Double
     var rmsAfter: Double
     var date: Date
+    var angles: [AnglePoint]? = nil       // what to add to a reading by the angle it meets the surface; older saves have none
+
+    struct AnglePoint: Codable, Equatable { var deg: Double; var m: Double }
+
+    /// Straight-line between the fitted angles, flat past the last.
+    func angleCorrection(_ deg: Double?) -> Double {
+        guard let deg, let t = angles, let first = t.first, let last = t.last else { return 0 }
+        if deg <= first.deg { return first.m }
+        if deg >= last.deg { return last.m }
+        for (p, q) in zip(t, t.dropFirst()) where deg <= q.deg {
+            return p.m + (q.m - p.m) * (deg - p.deg) / max(q.deg - p.deg, 1e-6)
+        }
+        return last.m
+    }
 }
 
 /// The user's own calibration. `truth = a * raw + b` is fitted from their tape checks; nothing is hidden: points can be
@@ -35,6 +49,7 @@ final class CalibrationStore: ObservableObject {
     @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: "calEnabled") } }
     @Published var allowOdd: Bool { didSet { UserDefaults.standard.set(allowOdd, forKey: "calAllowOdd") } }
     /// From the printed target. Used for camera-to-wall readings unless there are tape checks of that kind (the user's own tape wins).
+    var surfaceAngle: Double?       // degrees, the surface under the crosshair against the line of sight; set by Measure every frame
     @Published var printFit: PrintFit? { didSet { UserDefaults.standard.set(try? JSONEncoder().encode(printFit), forKey: "calPrintFit") } }
 
     init() {
@@ -75,7 +90,7 @@ final class CalibrationStore: ObservableObject {
     /// Camera-to-wall distance, corrected.
     func wall(_ raw: Double) -> Double {
         if let f = usable(fit(.wall)) { return f.a * raw + f.b }
-        if enabled, let p = printFit { return p.a * raw + p.b }
+        if enabled, let p = printFit { return p.a * raw + p.b + p.angleCorrection(surfaceAngle) }
         return raw
     }
 
