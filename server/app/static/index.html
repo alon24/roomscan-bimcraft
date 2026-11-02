@@ -986,34 +986,59 @@ function youHere(p, ext, floorDrop) {   // where you stood while sweeping: one m
   return g;
 }
 
-// Distances from the middle to each wall / floor / ceiling, drawn as lines with labels in the 3D view
+// The room's walls drawn in the 3D view: the outline, a line and a dot at each corner, and each wall's width x height.
+// A wall has a width only when the walls at both its ends were seen. Corners are square: the room is measured as a rectangle.
+const WALL_ENDS = { front: ["left", "right"], back: ["left", "right"], left: ["back", "front"], right: ["back", "front"] };
+function wallSize(room, name) {
+  const [a, b] = WALL_ENDS[name], wa = room.walls?.[a]?.wall_m, wb = room.walls?.[b]?.wall_m;
+  return room.walls?.[name]?.wall_m != null && wa != null && wb != null ? wa + wb : null;
+}
 function roomLabels(room, ext) {
-  const out = [], c = new THREE.Vector3(...room.centre), unit = Math.max(0.04, ext * 0.011);
-  const mk = (name, dir, m) => {
-    if (!m) return;
-    const end = c.clone().addScaledVector(dir, m);
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c, end]), new THREE.LineBasicMaterial({ color: 0x2a7de1, depthTest: false }));
-    line.renderOrder = 18; line.userData.nofit = true; out.push(line);
-    const t = textSprite(`${name} ${m.toFixed(2)} m`, unit); t.position.copy(c.clone().addScaledVector(dir, m * 0.55)); out.push(t);
+  const out = [], c = new THREE.Vector3(...room.centre), unit = Math.max(0.05, ext * 0.014);
+  const W = room.walls || {}, axis = n => new THREE.Vector3(...W[n].axis), dist = n => W[n]?.wall_m;
+  const floorY = room.floor?.wall_m != null ? c.y - room.floor.wall_m : null, ceilY = room.ceiling?.wall_m != null ? c.y + room.ceiling.wall_m : null;
+  const height = floorY != null && ceilY != null ? ceilY - floorY : null;
+  const lines = pts => {
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x2a7de1, depthTest: false }));
+    l.renderOrder = 18; l.userData.nofit = true; out.push(l);
   };
-  for (const [name, w] of Object.entries(room.walls || {})) mk(name, new THREE.Vector3(...w.axis), w.wall_m);
-  mk("floor", new THREE.Vector3(0, -1, 0), room.floor?.wall_m);
-  mk("ceiling", new THREE.Vector3(0, 1, 0), room.ceiling?.wall_m);
+  const corner = (a, b) => dist(a) != null && dist(b) != null ? c.clone().addScaledVector(axis(a), dist(a)).addScaledVector(axis(b), dist(b)) : null;
+  const at = (p, y) => new THREE.Vector3(p.x, y, p.z);
+  for (const [a, b] of [["front", "right"], ["right", "back"], ["back", "left"], ["left", "front"]]) {
+    const p = corner(a, b);
+    if (!p) continue;
+    if (height != null) {
+      lines([at(p, floorY), at(p, ceilY)]);
+      const t = textSprite(`${height.toFixed(2)} m`, unit * 0.8); t.position.copy(at(p, floorY + height * 0.3)); out.push(t);
+    }
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(unit * 0.25, 16, 12), new THREE.MeshBasicMaterial({ color: 0x2a7de1, depthTest: false }));
+    dot.position.copy(at(p, floorY ?? c.y)); dot.renderOrder = 19; dot.userData.nofit = true; out.push(dot);
+  }
+  for (const name of Object.keys(WALL_ENDS)) {
+    const [e1, e2] = WALL_ENDS[name], p = corner(name, e1), q = corner(name, e2), w = wallSize(room, name);
+    if (p && q) for (const y of [floorY, ceilY]) if (y != null) lines([at(p, y), at(q, y)]);
+    if (w == null) continue;
+    const mid = p.clone().add(q).multiplyScalar(0.5);
+    const t = textSprite(height != null ? `${w.toFixed(2)} × ${height.toFixed(2)} m` : `${w.toFixed(2)} m wide`, unit * 1.25);
+    t.position.copy(at(mid, floorY != null && height != null ? floorY + height * 0.72 : c.y)); out.push(t);
+  }
   return out;
 }
 
 function showRoomBox(room) {
   const b = $("roomBox");
   if (!room) { b.hidden = true; return; }
-  const f = v => v == null ? "not seen" : `${v.toFixed(2)} m`;
-  // one row per surface: fits the narrow side column
-  const row = (n, d, note) => `<tr><td>${n}</td><td style="text-align:right;padding:2px 14px"><b>${f(d)}</b></td><td class="hint">${note}</td></tr>`;
-  b.innerHTML = `<b>Room measured from where you stood</b> <span class="hint">(${Math.round((room.depth_coverage ?? 0) * 100)}% of the directions around you were seen; front = where you first pointed the phone)</span>` +
-    `<div style="margin:8px 0 10px;font-size:1.05rem;line-height:1.6">${room.width_m ? `width <b>${room.width_m.toFixed(2)} m</b>` : "width not seen"} · ${room.length_m ? `length <b>${room.length_m.toFixed(2)} m</b>` : "length not seen"} · ${room.height_m ? `height <b>${room.height_m.toFixed(2)} m</b>` : "height not seen"}</div>` +
-    `<table style="border-collapse:collapse;font-size:13px;white-space:nowrap">` +
-    ["front", "right", "back", "left"].map(n => row(n, room.walls?.[n]?.wall_m, `nearest ${f(room.walls?.[n]?.nearest_m)}`)).join("") +
-    row("floor", room.floor?.wall_m, "below the phone") + row("ceiling", room.ceiling?.wall_m, "above the phone") + `</table>` +
-    (room.depth_coverage < 0.6 ? `<div class="hint" style="margin-top:6px">Walls marked "not seen" were not in the sweep. Turn the whole way round (and tip the phone up and down) from one spot to measure them.</div>` : "");
+  const h = room.height_m;
+  const row = n => {
+    const w = wallSize(room, n);
+    return `<tr><td>${n[0].toUpperCase() + n.slice(1)} wall</td><td style="text-align:right;padding:2px 14px"><b>${w != null ? `${w.toFixed(2)} m` : "not seen"}</b></td><td class="hint">${w != null && h ? `× ${h.toFixed(2)} m high` : ""}</td></tr>`;
+  };
+  const seen = Math.round((room.depth_coverage ?? 0) * 100);
+  b.innerHTML = `<b>Room size</b>` +
+    `<div style="margin:8px 0 10px;font-size:1.05rem;line-height:1.6">${room.width_m ? `width <b>${room.width_m.toFixed(2)} m</b>` : "width not seen"} · ${room.length_m ? `length <b>${room.length_m.toFixed(2)} m</b>` : "length not seen"} · ${h ? `height <b>${h.toFixed(2)} m</b>` : "height not seen"}</div>` +
+    `<table style="border-collapse:collapse;font-size:13px;white-space:nowrap">` + ["front", "right", "back", "left"].map(row).join("") + `</table>` +
+    `<div class="hint" style="margin-top:6px">Measured as a rectangle with square corners, so alcoves and doorways are not separate walls. ${seen}% of the directions around you were seen; front = where you first pointed the phone.` +
+    (room.depth_coverage < 0.6 ? ` To see more, turn the whole way round and tip the phone up and down.` : "") + `</div>`;
   b.hidden = false;
 }
 

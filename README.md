@@ -214,8 +214,7 @@ flags it as "Sweep from one spot") and builds, from the photo, the LiDAR depth a
 - **A room model seen from the middle**: the depth of every frame is fused into one depth image around where you stood, meshed, flattened
   where it lies on a wall, floor or ceiling and coloured from the panorama. The scan page opens it **from the middle** (button **From outside**
   to orbit it). Furniture stays as it is; edges against the wall behind are not stretched.
-- **Numbers**: distance from where you stood to the front, right, back and left walls (front = where you first pointed the phone),
-  to the floor and the ceiling, and the **room's width, length and height**. They are listed under the model and drawn as labels in the 3D view,
+- **Numbers**: the **room's width, length and height**, and each wall's width and height. They are listed beside the model and drawn in the 3D view, with the room's outline and a mark at each corner. The room is measured as a rectangle with square corners, and a wall's width needs the walls at both its ends to have been seen.
   with how much of the room was seen. A wall not in the sweep shows "not seen": turn the whole way round to get it.
 - The red camera arrows on the model are now one **"you stood here"** marker when you turned on the spot (28 arrows on one point looked like a red star).
 
@@ -378,6 +377,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.51.2 (server) | Sweeps: the room view and panel show each **wall's width and height** and mark the corners, instead of the distance from you to each wall. |
 | 0.51.1 (server) | Print calibration: photos from far away now count through the floor round the print, even when the print itself covers few LiDAR pixels (the step-back photos were being thrown out). The angle correction stops at 45°: above that two sessions disagreed. |
 | 0.51.0 | **LiDAR depth lined up with the photo.** The stored depth map turns out to be turned 90° from the photo, in every scan: straight at a flat surface it doesn't show, at an angle it wrecks the geometry. Sweeps and every other depth-based result now use it the right way round (frames that disagreed by 19-26 cm now disagree by 3-5 cm); press **Re-convert** on older scans to rebuild them. **New print calibration**: stand up, step back, another side, about a minute, no angles to hit, voice guidance, one plain answer and a **Try again**. It fits on the plate and the floor round it and now corrects for the angle too. |
 | 0.50.4 | Calibrate with the print: the screen stays on the whole time, and the instructions say to lay the print on the floor. |
