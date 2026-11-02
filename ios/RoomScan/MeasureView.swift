@@ -42,8 +42,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
     @Published var distance: Double?     // smoothed camera-to-target, metres
     @Published var steady = false
     @Published var level: PhoneLevel?    // how the phone is held, from gravity
-    @Published var levelTurn: Double?    // degrees off square to the surface at the crosshair: + = right of the view is farther
-    @Published var levelTilt: Double?    // + = bottom of the view is farther
+    @Published var levelTurn: Double?    // degrees to turn to face the wall at the crosshair: + = right. Nil off a flat wall
     static let squareWithin = 2.0        // degrees: at 4 m this is under 3 mm of error
     private var wasSquare = false
     @Published var span: Double?         // the one selected pin to the crosshair, metres
@@ -221,22 +220,42 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         return Double(v.sorted()[v.count / 2])
     }
 
-    /// How far the phone is off square to the surface at the crosshair, in degrees, from how fast the depth changes round it. Held upright, the
-    /// stored depth map's columns run left to right on the screen and its rows top to bottom (see align_depth on the server). `turn` + means the
-    /// right of the view is farther, so turn left; `tilt` + means the bottom of the view is farther, so tilt up.
-    private func squareness(_ frame: ARFrame) -> (turn: Double, tilt: Double)? {
+    /// Degrees to turn to face the wall at the crosshair head-on: + = right. Worked out in the room's own level space, so leaning the phone doesn't
+    /// change it, and only on a wall: nil when what is round the crosshair isn't one flat, upright surface (a floor just below it, a corner, a plant).
+    private func wallTurn(_ frame: ARFrame) -> Double? {
         guard let map = frame.sceneDepth?.depthMap else { return nil }
         CVPixelBufferLockBaseAddress(map, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
-        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
-        let cx = w / 2, cy = h / 2, step = 10
-        func at(_ x: Int, _ y: Int) -> Double { Double(base.advanced(by: y * rb).assumingMemoryBound(to: Float32.self)[x]) }
-        let z = at(cx, cy), l = at(cx - step, cy), r = at(cx + step, cy), u = at(cx, cy - step), d = at(cx, cy + step)
-        guard z > 0.1, l > 0.1, r > 0.1, u > 0.1, d > 0.1 else { return nil }
-        let f = Double(frame.camera.intrinsics[0][0]) * Double(max(w, h)) / Double(frame.camera.imageResolution.width)
-        let deg = { (g: Double) in atan(g * f / z) * 180 / .pi }
-        return (deg((r - l) / Double(2 * step)), deg((d - u) / Double(2 * step)))
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map), m = (w - h) / 2
+        let k = frame.camera.intrinsics, res = frame.camera.imageResolution, sc = Float(w) / Float(res.width)
+        let fx = k[0][0] * sc, fy = k[1][1] * sc, cx = k[2][0] * sc, cy = k[2][1] * Float(h) / Float(res.height)
+        let t = frame.camera.transform
+        func point(_ r: Int, _ c: Int) -> simd_float3? {       // averaged over nine readings: depth is noisy this far out
+            var sum: Float = 0, n: Float = 0
+            for dr in -1...1 { for dc in -1...1 {
+                let d = base.advanced(by: (r + dr) * rb).assumingMemoryBound(to: Float32.self)[c + dc]
+                if d.isFinite, d > 0.2 { sum += d; n += 1 }
+            } }
+            guard n >= 5 else { return nil }
+            let d = sum / n
+            let x = Float(r + m) + 0.5, y = Float(w - m - 1 - c) + 0.5
+            let p = t * SIMD4<Float>((x - cx) * d / fx, -(y - cy) * d / fy, -d, 1)
+            return simd_float3(p.x, p.y, p.z)
+        }
+        let r0 = h / 2, c0 = w / 2, wide = 24, tall = 12
+        guard let l = point(r0, c0 - wide), let r = point(r0, c0 + wide), let u = point(r0 - tall, c0), let b = point(r0 + tall, c0), let mid = point(r0, c0) else { return nil }
+        let flat = max(0.02, simd_length(mid - simd_float3(t.columns.3.x, t.columns.3.y, t.columns.3.z)) * 0.01)
+        guard simd_length((l + r) / 2 - mid) < flat, simd_length((u + b) / 2 - mid) < flat else { return nil }
+        var n = simd_normalize(simd_cross(r - l, b - u))
+        let cam = simd_float3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        if simd_dot(n, cam - mid) < 0 { n = -n }
+        guard abs(n.y) < 0.2 else { return nil }                // not upright
+        let face = simd_normalize(SIMD2(-n.x, -n.z))            // the way to look to face it
+        var ahead = SIMD2(-t.columns.2.x, -t.columns.2.z)
+        guard simd_length(ahead) > 0.3 else { return nil }
+        ahead = simd_normalize(ahead)
+        return Double(atan2(-ahead.y * face.x + ahead.x * face.y, simd_dot(ahead, face))) * 180 / .pi
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -245,16 +264,17 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         if case .limited(.relocalizing) = frame.camera.trackingState { lost = true } else { lost = false }
         if lost != relocalizing { relocalizing = lost }
 
-        if let q = squareness(frame) {
-            levelTurn = (levelTurn ?? q.turn) * 0.8 + q.turn * 0.2         // the depth is noisy: smoothed over about a third of a second
-            levelTilt = (levelTilt ?? q.tilt) * 0.8 + q.tilt * 0.2
-            let off = hypot(levelTurn ?? 0, levelTilt ?? 0)
+        let lv = PhoneLevel(frame.camera.transform)
+        level = lv
+        if let q = wallTurn(frame) {
+            levelTurn = (levelTurn ?? q) * 0.8 + q * 0.2             // the depth is noisy: smoothed over about a third of a second
+            let off = hypot(levelTurn ?? 0, lv.pitch)
             CalibrationStore.shared.surfaceAngle = off
-            let isSquare = off < Self.squareWithin
+            let isSquare = abs(levelTurn ?? 0) < Self.squareWithin && lv.isLevel
             if isSquare && !wasSquare { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
             wasSquare = isSquare
         } else {
-            levelTurn = nil; levelTilt = nil; wasSquare = false
+            levelTurn = nil; wasSquare = false
             CalibrationStore.shared.surfaceAngle = nil
         }
         var d = depth(frame, nx: 0.5, ny: 0.5)
@@ -268,7 +288,6 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         let t = frame.camera.transform
-        level = PhoneLevel(t)
         camPos = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         poor = d == nil && frame.sceneDepth != nil
         guard let depth = d else { distance = nil; steady = false; return }
@@ -591,11 +610,8 @@ struct MeasureView: View {
                             PinLayer(model: model, size: geo.size, zoom: zoom)
                             Crosshair(colour: status.1).position(x: geo.size.width / 2, y: geo.size.height / 2)
                             LevelLine(level: model.level)
-                            LevelBadge(turn: model.levelTurn, tilt: model.levelTilt, distance: model.distance)
-                                .position(x: geo.size.width / 2, y: geo.size.height / 2 + 62)
-                            Text("tap to pin").font(.caption2.bold()).padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(.black.opacity(0.55), in: Capsule()).foregroundStyle(.white)
-                                .position(x: geo.size.width / 2, y: geo.size.height / 2 + 50)
+                            LevelBadge(turn: model.levelTurn, pitch: model.level?.pitch, distance: model.distance)
+                                .position(x: geo.size.width / 2, y: geo.size.height / 2 + 84)
                         }
                     }
                     .allowsHitTesting(false)
@@ -822,37 +838,28 @@ private struct PinLayer: View {
     }
 }
 
-/// Am I square to the wall? Off square, the phone reads a slanted distance, longer than the real one: 10 degrees off at 4 m is 6 cm.
+/// Am I facing the wall head-on? Tipped or turned, the phone reads a slanted distance, longer than the real one: 10 degrees off at 4 m is 6 cm. The tilt is
+/// on the level above this; this adds the turn, which gravity can't know.
 private struct LevelBadge: View {
     let turn: Double?
-    let tilt: Double?
+    let pitch: Double?
     let distance: Double?
 
     var body: some View {
-        if let turn, let tilt {
-            let off = hypot(turn, tilt)
+        if let turn, let pitch, abs(pitch) < 45 {
+            let off = hypot(turn, pitch)
+            let square = abs(turn) < MeasureModel.squareWithin
             VStack(spacing: 2) {
-                if off < MeasureModel.squareWithin {
-                    Label("Square to the surface", systemImage: "checkmark.circle.fill").font(.callout.bold())
-                } else {
-                    Text(advice(turn: turn, tilt: tilt)).font(.callout.bold())
-                    if let distance {
-                        Text(String(format: "%.0f° off · straight to it: %.2f m", off, distance * cos(off * .pi / 180))).font(.caption2.monospacedDigit())
-                    }
+                Text(square ? "Facing the wall" : "Turn \(turn > 0 ? "right" : "left") \(Int(abs(turn).rounded()))°").font(.callout.bold())
+                if off >= MeasureModel.squareWithin, let distance {
+                    Text(String(format: "straight to it: %.2f m", distance * cos(off * .pi / 180))).font(.caption2.monospacedDigit())
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
             .foregroundStyle(.white)
-            .background((off < MeasureModel.squareWithin ? Color.green : Color.orange).opacity(0.85), in: Capsule())
+            .background((square ? Color.green : Color.orange).opacity(0.85), in: Capsule())
             .allowsHitTesting(false)
         }
-    }
-
-    private func advice(turn: Double, tilt: Double) -> String {
-        var parts: [String] = []
-        if abs(turn) >= 1.5 { parts.append("Turn \(turn > 0 ? "left" : "right") \(Int(abs(turn).rounded()))°") }
-        if abs(tilt) >= 1.5 { parts.append("Tilt \(tilt > 0 ? "up" : "down") \(Int(abs(tilt).rounded()))°") }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -860,12 +867,8 @@ private struct Crosshair: View {
     let colour: Color
     var body: some View {
         ZStack {
-            Circle().stroke(colour, lineWidth: 2).frame(width: 34, height: 34)
-            Circle().fill(colour).frame(width: 5, height: 5)
-            Rectangle().fill(colour).frame(width: 2, height: 14).offset(y: -26)
-            Rectangle().fill(colour).frame(width: 2, height: 14).offset(y: 26)
-            Rectangle().fill(colour).frame(width: 14, height: 2).offset(x: -26)
-            Rectangle().fill(colour).frame(width: 14, height: 2).offset(x: 26)
+            Circle().stroke(colour, lineWidth: 1.5).frame(width: 16, height: 16)      // small: the level's bars are read round it
+            Circle().fill(colour).frame(width: 4, height: 4)
         }
         .shadow(color: .black.opacity(0.6), radius: 2)
     }

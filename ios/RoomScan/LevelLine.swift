@@ -21,8 +21,8 @@ struct PhoneLevel: Equatable {
 /// circle, the ladder of marks moves with the tilt: when its middle mark is on the fixed dash, the phone isn't tipped up or down. Green when both are right.
 struct LevelLine: View {
     let level: PhoneLevel?
-    private let radius: CGFloat = 40
-    private let pointsPerDegree: CGFloat = 4
+    private let radius: CGFloat = 48
+    private let pointsPerDegree: CGFloat = 6
 
     var body: some View {
         GeometryReader { geo in
@@ -32,19 +32,26 @@ struct LevelLine: View {
                 ZStack {
                     if !level.isSteep {
                         Circle().stroke(.white.opacity(0.9), lineWidth: 1.5).frame(width: radius * 2, height: radius * 2).position(centre)
+                        // fixed marks at the circle's sides, for the ladder and the line to meet
+                        Path { p in
+                            p.move(to: CGPoint(x: centre.x - radius - 26, y: centre.y)); p.addLine(to: CGPoint(x: centre.x - radius + 6, y: centre.y))
+                            p.move(to: CGPoint(x: centre.x + radius - 6, y: centre.y)); p.addLine(to: CGPoint(x: centre.x + radius + 26, y: centre.y))
+                        }
+                        .stroke(.white, lineWidth: 2)
                         ZStack {
-                            ForEach([-10, -5, 0, 5, 10], id: \.self) { deg in
-                                Rectangle().fill(.white).frame(width: deg == 0 ? 36 : (abs(deg) == 10 ? 30 : 18), height: 1.5)
+                            ForEach([-12, -9, -6, -3, 0, 3, 6, 9, 12], id: \.self) { deg in
+                                Rectangle().fill(deg == 0 ? colour : Color.white)
+                                    .frame(width: deg == 0 ? 56 : (deg % 6 == 0 ? 40 : 24), height: deg == 0 ? 3 : 2)
+                                    .shadow(radius: 1)
                                     .offset(y: CGFloat(deg) * pointsPerDegree)
                             }
                         }
-                        .frame(width: radius * 2, height: radius * 2)
-                        .offset(y: max(-radius, min(radius, CGFloat(level.pitch) * pointsPerDegree)))
+                        .offset(y: max(-radius * 1.5, min(radius * 1.5, CGFloat(level.pitch) * pointsPerDegree)))
                         .frame(width: radius * 2, height: radius * 2)
                         .clipShape(Circle())
                         .position(centre)
                         Rectangle().fill(colour).frame(width: 14, height: 4).position(centre)        // the fixed dash
-                        Rectangle().fill(colour).frame(width: geo.size.width * 0.55, height: 2.5).shadow(radius: 1)
+                        Rectangle().fill(colour).frame(width: radius * 3.4, height: 2.5).shadow(radius: 1)
                             .rotationEffect(.degrees(level.roll)).position(centre)
                     }
                     Text(words(level)).font(.caption.bold().monospacedDigit())
