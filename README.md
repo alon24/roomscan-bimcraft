@@ -383,6 +383,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.56.0 | Sweeps: a **green line on the rings** shows where the camera points now, with a dot on the ring you are at, so you can steer into anything empty. "Everything is covered" is gone: it appeared with up to 30% of the ceiling or floor empty. The voice and text now take you to the nearest empty section ("Ceiling gap to your right: turn 40° and tip the phone up"), and a section needs the camera closer to it to count. |
 | 0.55.3 | Measure: the level shows tilt with more bars, and "tap to pin" is gone from under the crosshair. The badge below it now only says which way to turn to face a wall, works when the phone leans, and stays away when the crosshair isn't on one flat wall (a floor just below it made it say 43° off). |
 | 0.55.2 | Measure and the marking screen: a **level like a phone camera's**, from the phone's gravity sensor: a long line shows if it leans, marks inside a circle show if it is tipped up or down. It turns green when the phone is level, and says how far it is off ("Roll 3° · Tilt up 5°"). Pointing at the floor or ceiling, it says how far off straight down or up you are. |
 | 0.55.1 | Measure: a **level badge** under the crosshair says if the phone is square to the surface ("Turn left 4° · Tilt up 6°", green with a tap when it is), and what the straight distance is meanwhile. Off square, a reading is a slanted distance: 10° at 4 m is 6 cm too long. |

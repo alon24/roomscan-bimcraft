@@ -5,6 +5,8 @@ import SwiftUI
 struct RingCoverageDial: View {
     let cells: [Bool]
     var old: [Bool]? = nil       // adding to a scan: grey = it had this already, red = still missing, the usual colour = filled just now
+    var yaw: Double? = nil       // where the camera points now: a green line on the dial, to steer it into what is still empty
+    var pitch: Double = 0
     private let sectors = RingTracker.sectors
 
     var body: some View {
@@ -28,6 +30,20 @@ struct RingCoverageDial: View {
                     }
                     ctx.fill(p, with: .color(colour))
                 }
+            }
+            if let yaw {
+                let a = (yaw - 90) * .pi / 180
+                func at(_ r: CGFloat) -> CGPoint { CGPoint(x: c.x + cos(a) * R * r, y: c.y + sin(a) * R * r) }
+                var line = Path()
+                line.move(to: at(0.04))
+                line.addLine(to: at(1.0))
+                ctx.stroke(line, with: .color(.black.opacity(0.6)), lineWidth: 4)
+                ctx.stroke(line, with: .color(.green), lineWidth: 2.5)
+                // the dot sits on the ring the camera is at now: walls outer, ceiling middle, floor inner
+                let ring: CGFloat = pitch > 28 ? 0.52 : pitch < -25 ? 0.22 : 0.84
+                let p = at(ring)
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10)), with: .color(.green))
+                ctx.stroke(Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10)), with: .color(.white), lineWidth: 1)
             }
         }
         .accessibilityLabel("Coverage round the ring at three heights")

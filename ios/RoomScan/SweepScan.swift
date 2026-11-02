@@ -8,7 +8,7 @@ import SwiftUI
 /// This tracks where the camera has looked, round the circle and at three heights, so the user can fill the dial.
 final class SweepCoverage: ObservableObject {
     static let sectors = RingTracker.sectors   // 24 sectors of 15 degrees of turn
-    static let reach = 25.0                            // a cell counts as seen when the camera points within this many degrees of its centre
+    static let reach = 18.0                            // a cell counts as seen when the camera points within this many degrees of its centre
     /// Where the phone may be. From real sweeps: 20 cm typical / 50 cm worst drift and 44 cm of height change gave doubled edges,
     /// because a photo taken off the centre sees round things the one-spot model cannot hold.
     /// Since the server lines the frames up itself (sweep.refine_positions) moving about is fine: measurements held with frames up to 1 m
@@ -44,6 +44,7 @@ final class SweepCoverage: ObservableObject {
     private var speeds: [Double] = []
     private var lastWarn: String?
     private var lastSpoken = ""
+    private var lastSpokenAt = Date.distantPast
 
     var driftLevel: Level { moved > Self.driftBad ? .bad : moved > Self.driftOk ? .warn : .good }
     var liftLevel: Level { abs(lift) > Self.liftBad ? .bad : abs(lift) > Self.liftOk ? .warn : .good }
@@ -151,8 +152,9 @@ final class SweepCoverage: ObservableObject {
         let (h, warning) = text()
         // spoken once per new instruction: the numbers in the text change all the time, the first words and the warning do not
         let words = warning ?? String(h.split(whereSeparator: { ".:".contains($0) }).first ?? "")
-        if words != lastSpoken {
+        if words != lastSpoken, warning != nil || Date().timeIntervalSince(lastSpokenAt) > 5 {      // a new problem at once, the next step without chatter
             lastSpoken = words
+            lastSpokenAt = Date()
             Voice.say(warning == "drift" ? "You moved. Go back to where you started." : String(h.split(whereSeparator: { ".:".contains($0) }).first ?? ""), every: 0)
         }
         hint = h
@@ -195,7 +197,7 @@ final class SweepCoverage: ObservableObject {
             gapTurn = nil
             if !upDone { return "Point straight up at the ceiling for a moment." }
             if !downDone { return "Point straight down at the floor under you for a moment." }
-            return "All the gaps are filled. Tap Stop."
+            return "All the rings are filled. Tap Stop, then check the 360 view: Add more fills anything still grey."
         }
         let cellYaw = (Double(b.sector) + 0.5) * 360 / Double(Self.sectors)
         var turn = (cellYaw - yaw).truncatingRemainder(dividingBy: 360)
@@ -205,7 +207,7 @@ final class SweepCoverage: ObservableObject {
         let name = ["Wall", "Ceiling", "Floor"][b.band]
         let tip = Self.bandPitch[b.band] - pitch
         let doTip = tip > 15 ? "tip the phone up" : tip < -15 ? "tip the phone down" : ""
-        if abs(turn) < 20 { return "\(name) gap ahead: " + (doTip.isEmpty ? "hold it there" : doTip) + "." }
+        if abs(turn) < 20 { return doTip.isEmpty ? "Keep turning slowly: \(name.lowercased()) still to fill." : "\(name) next: \(doTip)." }
         return "\(name) gap to your \(turn > 0 ? "right" : "left"): turn \(Int(abs(turn)))°" + (doTip.isEmpty ? "." : " and \(doTip).")
     }
 
@@ -224,15 +226,7 @@ final class SweepCoverage: ObservableObject {
             return (String(format: "Phone %.0f cm %@ than at the start. Keep it at one height: tip it, don't lift it.", abs(lift) * 100, lift > 0 ? "higher" : "lower"), "lift")
         }
         if speedLevel == .bad { return (String(format: "Slow down: %.0f°/s. About 10°/s keeps the photos sharp.", speed), "speed") }
-        if oldCells != nil { return (gapText(), nil) }
-        gapTurn = nil
-        let walls = share(0), up = share(1), down = share(2)
-        if walls < 0.85 { return ("Turn slowly on the spot: the walls are \(Int(walls * 100))% done.", nil) }
-        if up < 0.7 { return ("Now tip the phone up about 45° and turn again: ceiling and wall tops (\(Int(up * 100))%).", nil) }
-        if down < 0.7 { return ("Now tip it down about 45° and turn again: floor and wall bottoms (\(Int(down * 100))%).", nil) }
-        if !upDone { return ("Point straight up at the ceiling for a moment.", nil) }
-        if !downDone { return ("Point straight down at the floor under you for a moment.", nil) }
-        return ("Everything is covered. Tap Stop.", nil)
+        return (gapText(), nil)
     }
 }
 
@@ -259,7 +253,7 @@ struct SweepPanel: View {
                 .frame(width: 96, height: 96)
             } else {
             ZStack {
-                RingCoverageDial(cells: sweep.cells, old: sweep.oldCells)
+                RingCoverageDial(cells: sweep.cells, old: sweep.oldCells, yaw: sweep.yaw, pitch: sweep.pitch)
                 VStack(spacing: 0) {   // straight up / straight down, in the middle of the dial
                     Image(systemName: sweep.upDone ? "arrow.up.circle.fill" : "arrow.up.circle").foregroundStyle(sweep.upDone ? Theme.accent : .secondary)
                     Image(systemName: sweep.downDone ? "arrow.down.circle.fill" : "arrow.down.circle").foregroundStyle(sweep.downDone ? Theme.accent : .secondary)
