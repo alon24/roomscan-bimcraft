@@ -42,7 +42,10 @@ Files (in `prints/lidar-target/`, see [prints/README.md](../prints/README.md); t
 
 App: **Measure** tab > **Calibrate** > **With the print (guided)** (also in Settings > Calibrate LiDAR with the print).
 
-1. Lay the print flat on a table, text the right way up, good even light (no sun patches).
+1. Lay the print flat on a **hard floor** (not a rug), text the right way up, good even light (no sun patches), with room to walk
+   round it. The floor is best because the far stations are 80-120 cm from the print: at arm's length standing up, where over a
+   table you would need a ladder. A low table works too. 120 cm is there because rooms are measured from a metre or more, and
+   LiDAR error changes with distance, so a correction fitted only up close would not hold there.
 2. Point the crosshair at the middle of the print, about 40 cm away, and tap **This is the middle**. A teal ring appears on the
    print: from now on ARKit tracks it, so the app always knows your **distance** to the print and your **tilt** (0 = looking
    straight down at it).

@@ -26,7 +26,7 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
     @Published var aimError: Double?         // degrees between where the phone points and the print
     @Published var current: CalStation?      // the station the phone is at now
     @Published var next: CalStation?         // the nearest one still to do
-    @Published var hint = "Lay the print flat on a table in good light. Point the crosshair at its middle and tap \"This is the middle\"."
+    @Published var hint = "Lay the print flat on the floor in good light (a hard floor, not a rug), with room to walk round it. Point the crosshair at its middle and tap \"This is the middle\"."
     @Published var steady = false
     @Published var result: [String: Any]?
     @Published var note = ""
@@ -58,7 +58,8 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
         let cfg = ARWorldTrackingConfiguration()
         cfg.planeDetection = [.horizontal]
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
-        CameraOwner.claim(self) { [weak self] in self?.sceneView.session.pause() }
+        CameraOwner.claim(self) { [weak self] in self?.sceneView.session.pause(); Screen.awake(false) }
+        Screen.awake(true)      // the screen stays on until this screen is left
         sceneView.session.run(cfg)
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.update() }
@@ -91,7 +92,7 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
         tiltTol = (j["tilt_tolerance_deg"] as? NSNumber)?.doubleValue ?? tiltTol
     }
 
-    /// Where the crosshair meets the table: a horizontal plane ARKit found, else the LiDAR depth straight ahead.
+    /// Where the crosshair meets the floor or table: a horizontal plane ARKit found, else the LiDAR depth straight ahead.
     func markMiddle() {
         guard let frame = sceneView.session.currentFrame else { note = "The camera is not ready yet."; return }
         let mid = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
@@ -105,7 +106,7 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
             let fwd = -simd_float3(t.columns.2.x, t.columns.2.y, t.columns.2.z)
             p = simd_float3(t.columns.3.x, t.columns.3.y, t.columns.3.z) + fwd * d
         }
-        guard let p else { note = "Could not find the table there. Point at the print from about 40 cm and try again."; return }
+        guard let p else { note = "Could not find the surface there. Point at the print from about 40 cm and try again."; return }
         centre = p
         note = ""
         let ring = SCNNode(geometry: SCNTube(innerRadius: 0.095, outerRadius: 0.105, height: 0.002))   // about the print's size

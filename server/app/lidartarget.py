@@ -3,7 +3,7 @@
 The target is a 200 x 200 mm white plate with four black ArUco markers (DICT_4X4_50, ids 40-43, never used by the ring's 0-17),
 four square pads 10/20/30/40 mm high and four wedges sloping 15/30/45/60 degrees, plus markers 44 and 45 on the tops of the 20 and
 40 mm pads (corners at three heights: a much better pose than from one plane), a blue and a red patch on the other two pads (how
-the LiDAR reads coloured surfaces) and a 100 mm ruler. This is print v2; v1 was never printed and is not supported. Lay it flat on a table and photograph it from
+the LiDAR reads coloured surfaces) and a 100 mm ruler. This is print v2; v1 was never printed and is not supported. Lay it flat on a hard floor and photograph it from
 the stations the app lists (distance x tilt). For every frame:
 
 1. the markers give the camera's exact pose relative to the print (metric, because the print's size is known: the camera
