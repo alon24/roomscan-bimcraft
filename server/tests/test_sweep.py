@@ -382,3 +382,111 @@ def test_walked_plan_saves_and_takes_a_join(tmp_path):
     import pytest
     with pytest.raises(ValueError):
         layout.from_walk(d, {"corners": [[0, 0]], "floor_y": 0, "ceiling_y": 2.5})
+
+
+def _room_scan(tmp_path, w=5.0, l=4.0, h=2.6, floor=-1.4, step=0.02):
+    """A scanned empty room as a mesh file: walls, floor and ceiling as readings. x from 0 to w, world z from 0 to -l, so plan y from 0 to l."""
+    import numpy as np
+    import trimesh
+    xs, zs, ys = np.arange(0, w, step), -np.arange(0, l, step), floor + np.arange(0, h, step)
+    grid = lambda a, b: np.array(np.meshgrid(a, b)).reshape(2, -1).T
+    parts = [np.c_[g[:, 0], g[:, 1], np.full(len(g), z)] for g, z in ((grid(xs, ys), 0.0), (grid(xs, ys), -l))]
+    parts += [np.c_[np.full(len(g), x), g[:, 1], g[:, 0]] for g, x in ((grid(zs, ys), 0.0), (grid(zs, ys), w))]
+    parts += [np.c_[g[:, 0], np.full(len(g), y), g[:, 1]] for g, y in ((grid(xs, zs), floor), (grid(xs, zs), floor + h))]
+    P = np.vstack(parts) + np.random.default_rng(0).normal(0, 0.002, (sum(map(len, parts)), 3))
+    trimesh.PointCloud(P).export(tmp_path / "scan.ply")
+
+
+def test_walk_works_out_each_click_and_snaps_corners(tmp_path):
+    from app import layout, walk
+    _room_scan(tmp_path)
+    off = 0.06   # clicks are never exactly on the corner
+    clicks = [{"id": "a", "x": off, "y": -1.3, "z": -off}, {"id": "b", "x": 5 - off, "y": 1.1, "z": -off}, {"id": "c", "x": 5 - off, "y": -1.3, "z": -4 + off},
+              {"id": "mid", "x": 2.5, "y": -1.33, "z": -off},  # a wall meeting the floor, on the way round
+              {"id": "d", "x": off, "y": 0.0, "z": -4 + off}, {"id": "door", "x": 2.5, "y": -0.3, "z": -4 + off, "tag": "door"}, {"id": "f", "x": 2.5, "y": -1.4, "z": -2}]
+    res = walk.build(tmp_path, clicks)
+    assert res["built"] and abs(res["height_m"] - 2.6) < 0.05
+    got = {p["id"]: p for p in __import__("json").loads((tmp_path / "walk_result.json").read_text())["points"]}
+    assert got["a"]["kind"] == got["b"]["kind"] == got["c"]["kind"] == got["d"]["kind"] == "corner"
+    assert got["mid"]["kind"] == "floor edge" and got["door"]["kind"] == "door" and got["f"]["kind"] == "floor"
+    assert abs(got["a"]["x"]) < 0.015 and abs(got["a"]["z"]) < 0.015       # 6 cm off when clicked, on the real corner now
+    lay = layout.load(tmp_path)
+    assert len(lay["vertices"]) == 4 and len(lay["openings"]) == 1 and not any(lay["open"])
+    import math
+    sides = sorted(math.dist(a, b) for a, b in zip(lay["vertices"], lay["vertices"][1:] + lay["vertices"][:1]))
+    assert abs(sides[0] - 4) < 0.03 and abs(sides[-1] - 5) < 0.03
+    assert layout.problem(lay) is None and "door" in layout.script(lay)
+
+
+def test_walk_marks_a_stretch_with_no_readings_open(tmp_path):
+    import numpy as np
+    from app import walk
+    v = [[0.0, 0.0], [5.0, 0.0], [5.0, 4.0], [0.0, 4.0]]
+    cells = np.array([[x, 0.0] for x in np.arange(0, 5, 0.05)] + [[x, 4.0] for x in np.arange(0, 5, 0.05)] + [[0.0, y] for y in np.arange(0, 4, 0.05)])
+    assert walk._no_wall(v, cells) == [False, True, False, False]
+
+
+def _shape_scan(tmp_path, corners, h=2.6, floor=-1.4, step=0.02):
+    """A scanned room of any outline, plan x, y, as readings of its walls, floor and ceiling."""
+    import numpy as np
+    import trimesh
+    parts = []
+    ys = floor + np.arange(0, h, step)
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        n = int(np.hypot(b[0] - a[0], b[1] - a[1]) / step)
+        line = np.linspace(a, b, n)
+        for y in ys:
+            parts.append(np.c_[line[:, 0], np.full(n, y), -line[:, 1]])
+    xs = np.array(corners, float)
+    gx, gy = np.meshgrid(np.arange(xs[:, 0].min(), xs[:, 0].max(), step), np.arange(xs[:, 1].min(), xs[:, 1].max(), step))
+    flat = np.c_[gx.ravel(), gy.ravel()]
+    for y in (floor, floor + h):
+        parts.append(np.c_[flat[:, 0], np.full(len(flat), y), -flat[:, 1]])
+    P = np.vstack(parts)
+    trimesh.PointCloud(P + np.random.default_rng(0).normal(0, 0.002, P.shape)).export(tmp_path / "scan.ply")
+
+
+def test_walk_order_of_clicks_does_not_matter_and_missing_corners_are_found(tmp_path):
+    import json
+    import math
+    import random
+    from app import layout, walk
+    # an L: only points along the walls are clicked, no corner at all, and in a jumbled order
+    L = [[0, 0], [6, 0], [6, 3], [3, 3], [3, 5], [0, 5]]
+    _shape_scan(tmp_path, L)
+    along = []
+    for a, b in zip(L, L[1:] + L[:1]):
+        for t in (0.3, 0.7):
+            along.append([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+    results = []
+    for seed in (1, 2, 3):
+        random.Random(seed).shuffle(along)
+        clicks = [{"id": str(i), "x": p[0] + 0.03, "y": random.Random(i).choice([-1.3, -0.2, 1.1]), "z": -p[1] - 0.03} for i, p in enumerate(along)]
+        assert walk.build(tmp_path, clicks)["built"]
+        lay = layout.load(tmp_path)
+        assert layout.problem(lay) is None
+        t = -lay["turn_deg"]
+        v = sorted([round(x, 1), round(y, 1)] for x, y in (layout._rotate(p, t) for p in lay["vertices"]))
+        results.append(v)
+    assert results[0] == results[1] == results[2]
+    assert results[0] == sorted([float(a), float(b)] for a, b in L), results[0]
+    assert not any(lay["open"])
+    assert math.isclose(layout._area(lay["vertices"]) ** 2, (6 * 3 + 3 * 2) ** 2, rel_tol=0.03)
+    assert json.loads((tmp_path / "walk_result.json").read_text())["points"]
+
+
+def test_walk_flags_points_and_finds_their_photos(tmp_path):
+    import numpy as np
+    from app import walk
+    pts = [{"id": "a", "kind": "wall", "x": 0.0, "y": 1.0, "z": 0.0}, {"id": "b", "kind": "wall", "x": 2.0, "y": 1.0, "z": -2.0}, {"id": "c", "kind": "unknown", "x": 1.0, "y": 1.0, "z": -1.0}, {"id": "d", "kind": "ignore", "x": 9.0, "y": 1.0, "z": -9.0}]
+    v = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]
+    walk.flag_points(pts, v, 0.0, 2.6)
+    assert pts[0]["flag"] is None and "Not on the plan" in pts[1]["flag"] and "door or window" in pts[2]["flag"] and pts[3]["flag"] is None
+    # a camera at the origin, upright, looking along -z: a point 2 m ahead is in the middle of the picture
+    upright = np.eye(4).T.tolist()
+    frame = {"file": "p001.jpg", "transform": upright, "intrinsics": [[1000, 0, 0], [0, 1000, 0], [960, 720, 1]], "width": 1920, "height": 1440}
+    got = walk.photos_of(tmp_path, [0.0, 0.0, -2.0], [frame])
+    assert len(got) == 1 and abs(got[0]["u"] - 0.5) < 1e-3 and abs(got[0]["v"] - 0.5) < 1e-3 and got[0]["away_m"] == 2.0
+    assert walk.photos_of(tmp_path, [0.0, 0.0, 2.0], [frame]) == []     # behind the camera
+    # higher in the room is higher in the picture
+    assert walk.photos_of(tmp_path, [0.0, 0.5, -2.0], [frame])[0]["v"] < 0.5

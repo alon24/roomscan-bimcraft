@@ -710,6 +710,7 @@ async function show(id) {
     $("log").textContent = "A plan walked on the phone. Open it to see and correct it, add sweeps to it, and build the BIMCraft and Blender files.";
     return;
   }
+  if (meta.phone?.walk) mk("Plan", () => { location.href = `/layout.html?scan=${id}`; });
   if (isMesh && (meta.photo_count || 0) >= 2) mk("Panorama", () => openPano(id));
   mk("Save as zip", () => { location.href = `/api/scans/${id}/bundle.zip`; });
   if (meta.kind !== "room") {

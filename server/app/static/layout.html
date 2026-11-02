@@ -56,6 +56,7 @@
   <button id="tMeasure">Set a length</button>
   <button id="tDoor">Add door</button>
   <button id="tWindow">Add window</button>
+  <button id="tPoint" hidden title="Add a point of the walk: click where it goes">Add point</button>
   <span style="width:8px"></span>
   <button id="undo" disabled>Undo</button>
   <button id="tidy" title="Takes out very short walls and corners that are nearly straight, then straightens walls that are nearly along the axes">Tidy</button>
@@ -65,6 +66,11 @@
 <main>
   <div id="wrap"><svg id="svg"></svg><div id="gl" hidden></div><div id="tip"><span id="tipText"></span></div></div>
   <aside>
+    <div id="pointPhotos" hidden>
+      <h2>Photos of this point</h2>
+      <div id="ppFrame" style="position:relative;border-radius:7px;overflow:hidden;background:var(--bg)"><img id="ppImg" alt="Photo of this point" style="display:block;width:100%"><div id="ppDot" style="position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid #35e06a;border-radius:50%;box-shadow:0 0 0 2px rgba(0,0,0,.6);pointer-events:none"></div></div>
+      <div class="row"><button id="ppPrev">‹</button><span id="ppText" class="mute" style="flex:1;text-align:center"></span><button id="ppNext">›</button></div>
+    </div>
     <div id="photoBox" hidden>
       <h2>What the phone saw here</h2>
       <canvas id="photo"></canvas>
@@ -84,6 +90,14 @@
     <div id="only3d" hidden>
       <div class="row"><label><input type="checkbox" id="xray" checked> See the plan through the scan</label></div>
       <div class="v3"><button id="vAbove">From above</button><button id="vPhone">From the phone's spot</button></div>
+    </div>
+    <div id="walkBox" hidden>
+      <h2>Points from the walk</h2>
+      <div id="walkKey" class="mute"></div>
+      <table id="walkList" style="margin-top:6px"></table>
+      <button id="walkRebuild" style="margin-top:6px">Make the plan again from the points</button>
+      <div class="mute" style="margin-top:4px">Points are never deleted. "Ignore it" leaves one off the plan. Making the plan again replaces corrections to the plan itself, not to the points.</div>
+      <div id="walkMsg" class="mute" style="margin-top:4px"></div>
     </div>
     <h2>Scans in this plan</h2>
     <div id="joinList"></div>
@@ -114,7 +128,9 @@ const $ = id => document.getElementById(id);
 const id = new URLSearchParams(location.search).get("scan");
 const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
 let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
-let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = [], scanSeen = false, is3d = false, scene = null, joined = [], photos = new Map();
+let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = [], scanSeen = false, is3d = false, scene = null, joined = [], photos = new Map(), walk = [];
+const WALK = { corner: "#15191c", "floor edge": "#2478c8", "ceiling edge": "#d9761e", wall: "#0f9d8f", floor: "#6aa9e0", ceiling: "#efb27a", door: "#a0522d", window: "#7b3fc4", ignore: "#b9c0c6", unknown: "#e0226e" };
+const WALK_NAME = { corner: "Corner", "floor edge": "Wall and floor meet", "ceiling edge": "Wall and ceiling meet", wall: "On a wall", floor: "On the floor", ceiling: "On the ceiling", door: "Door", window: "Window", ignore: "Ignore it", unknown: "Not sure" };
 
 const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
 const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
@@ -138,6 +154,10 @@ function el(name, attrs, parent = svg, text) {
   for (const k in attrs) e.setAttribute(k, attrs[k]);
   if (text != null) e.textContent = text;
   parent.appendChild(e); return e;
+}
+function walkPlan(w) {        // a clicked point in this drawing
+  const t = (L.turn_deg || 0) * Math.PI / 180, c = Math.cos(t), s = Math.sin(t), y = -w.z;
+  return [w.x * c - y * s, w.x * s + y * c];
 }
 function nearestOnWall(p) {
   let best = null;
@@ -191,6 +211,11 @@ function draw() {
     const s = toScreen(v), on = sel?.corner === i;
     el("circle", { cx: s[0], cy: s[1], r: on ? 8 : 6, fill: on ? c("--sel") : c("--card"), stroke: on ? c("--sel") : c("--ink"), "stroke-width": 2, "data-corner": i, style: "cursor:move" });
   });
+  // the points clicked on the walk
+  walk.forEach((w, i) => {
+    const s = toScreen(walkPlan(w)), on = sel?.point === i;
+    el("circle", { cx: s[0], cy: s[1], r: on ? 8 : 5, fill: WALK[w.kind] || WALK.unknown, stroke: on ? c("--sel") : "#fff", "stroke-width": on ? 3 : 1.5, "data-point": i, style: "cursor:pointer" });
+  });
   // a length being set
   measure.forEach((m, i) => { const s = toScreen(m.p); el("circle", { cx: s[0], cy: s[1], r: 6, fill: c("--acc") }); if (i) { const r = toScreen(measure[0].p); el("line", { x1: r[0], y1: r[1], x2: s[0], y2: s[1], stroke: c("--acc"), "stroke-width": 2.5, "stroke-dasharray": "6 4" }); } });
   side();
@@ -216,6 +241,7 @@ function photo() {
   let marks = [], note = "";
   if (measure.length) { marks = measure.map(m => m.p); note = "The green lines are your points."; }
   else if (sel?.wall != null && wallsOf()[sel.wall]) { const w = wallsOf()[sel.wall]; marks = [w.a, w.b]; note = "The green lines are this wall's two ends. They should sit on its real corners."; }
+  else if (sel?.point != null && walk[sel.point]) { marks = [walkPlan(walk[sel.point])]; note = "The green line is this point."; }
   else if (sel?.corner != null && L.vertices[sel.corner]) { marks = [L.vertices[sel.corner]]; note = "The green line is this corner. Drag it onto the real corner."; }
   else if (sel?.opening != null && L.openings[sel.opening]) { marks = [nearestOnWall(L.openings[sel.opening].at).q]; note = "The green line is the middle of it."; }
   const pano = marks.length ? pictureFor(marks[0]) : null;
@@ -241,7 +267,7 @@ function photo() {
     g.strokeStyle = "#35e06a"; g.lineWidth = 2 * dpr; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, cv.height); g.stroke();
   }
 }
-function select(s) { sel = s; draw(); if (s?.wall != null) { $("wallLen")?.focus(); $("wallLen")?.select(); } }
+function select(s) { sel = s; draw(); pointPhotos(); if (s?.wall != null) { $("wallLen")?.focus(); $("wallLen")?.select(); } }
 
 // A typed length stretches the room: everything past the far end moves along the line, so walls that cross it get longer and the rest keep their shape.
 function stretch(a, b, to, from = null) {
@@ -278,6 +304,21 @@ function panel() {
     const ob = document.createElement("button"); ob.textContent = L.open[w.i] ? "There is a wall here" : "No wall here: it's open";
     ob.onclick = () => { remember(); L.open[w.i] = !L.open[w.i]; changed(); }; o.append(ob); P.append(o);
     const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past this wall's end moves to match. Double-click a wall to add a corner."; P.append(n);
+  } else if (sel?.point != null && walk[sel.point]) {
+    const w = walk[sel.point], k = w.kind;
+    head(`Point ${sel.point + 1}: ${WALK_NAME[k] || k}`);
+    const row = document.createElement("div"); row.className = "row";
+    const pick = document.createElement("select");
+    pick.append(...Object.keys(WALK_NAME).map(n => Object.assign(document.createElement("option"), { value: n, textContent: WALK_NAME[n], selected: n === k })));
+    pick.onchange = async () => {
+      const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, kind: pick.value }) });
+      if (r.ok) { Object.assign(w, await r.json()); renderWalk(); draw(); $("walkMsg").textContent = "Saved. Make the plan again to use it."; }
+    };
+    row.append(pick); P.append(row);
+    const n = document.createElement("div"); n.className = "mute";
+    n.textContent = w.added ? "Added by hand." : `${w.guess === k ? "Worked out from" : "Your choice. The scan suggested: " + (WALK_NAME[w.guess] || w.guess) + ". It found"} ${w.walls} wall${w.walls === 1 ? "" : "s"} around it${w.fixed ? ". Placed by hand" : w.snapped_cm ? `, and moved it ${w.snapped_cm} cm onto the surface` : ""}. Drag it on the plan to move it.`;
+    P.append(n);
+    if (w.flag) { const f = document.createElement("div"); f.style.cssText = "color:var(--door);font-weight:600;margin-top:4px"; f.textContent = "⚑ " + w.flag; P.append(f); }
   } else if (sel?.corner != null) {
     head(`Corner ${sel.corner + 1}`);
     const b = document.createElement("button"); b.textContent = "Delete this corner"; b.onclick = removeSelected; P.append(b);
@@ -291,7 +332,7 @@ function tip() {
   $("tipText").textContent = {
     select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · drag a corner's ball to move it · click a wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
     measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : "Type the real length on the right",
-    door: "Click a wall where the door is", window: "Click a wall where the window is",
+    point: "Click where the new point goes", door: "Click a wall where the door is", window: "Click a wall where the window is",
   }[tool];
 }
 function removeSelected() {
@@ -300,7 +341,7 @@ function removeSelected() {
 }
 function setTool(t) {
   tool = t; measure = [];
-  for (const [b, k] of [["tSelect", "select"], ["tMeasure", "measure"], ["tDoor", "door"], ["tWindow", "window"]]) $(b).classList.toggle("on", k === t);
+  for (const [b, k] of [["tSelect", "select"], ["tMeasure", "measure"], ["tDoor", "door"], ["tWindow", "window"], ["tPoint", "point"]]) $(b).classList.toggle("on", k === t);
   if (t !== "select") sel = null;
   draw();
 }
@@ -352,11 +393,20 @@ svg.addEventListener("pointerdown", e => {
     measure.push(c ? { p: [...c], corner: true } : { p: n && n.d * view.s < 14 ? n.q : p, corner: false });
     draw(); if (measure.length === 2) { $("wallLen")?.focus(); $("wallLen")?.select(); } return;
   }
+  if (tool === "point") {
+    const [wx, wz] = planToWorld(p);
+    fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ add: { x: wx, z: wz } }) }).then(r => r.ok ? r.json() : null).then(n => {
+      if (!n) return;
+      walk.push(n); renderWalk(); setTool("select"); select({ point: walk.length - 1 }); $("walkMsg").textContent = "Saved. Say what it is, then make the plan again.";
+    });
+    return;
+  }
   if (tool === "door" || tool === "window") {
     const n = nearestOnWall(p);
     if (n && n.d * view.s < 30) { remember(); L.openings.push({ kind: tool, at: n.q }); setTool("select"); changed(); }
     return;
   }
+  if (t.point != null) { select({ point: +t.point }); drag = { point: +t.point, moved: false }; svg.setPointerCapture(e.pointerId); return; }
   if (t.corner != null) { remember(); drag = { corner: +t.corner, moved: false }; sel = { corner: +t.corner }; svg.setPointerCapture(e.pointerId); draw(); return; }
   if (t.opening != null) { select({ opening: +t.opening }); return; }
   if (t.wall != null) { select({ wall: +t.wall }); return; }
@@ -366,9 +416,21 @@ svg.addEventListener("pointermove", e => {
   if (!drag) return;
   const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   if (drag.pan) { view.x = x - drag.pan[0]; view.y = y - drag.pan[1]; draw(); return; }
+  if (drag.point != null) {
+    const [wx, wz] = planToWorld(toPlan(x, y)), w = walk[drag.point];
+    w.x = wx; w.z = wz; drag.moved = true; draw(); return;
+  }
   const p = toPlan(x, y); L.vertices[drag.corner] = [+p[0].toFixed(3), +p[1].toFixed(3)]; drag.moved = true; draw();
 });
-svg.addEventListener("pointerup", () => { if (drag?.corner != null) { if (drag.moved) changed(); else history.pop(), $("undo").disabled = !history.length; } drag = null; });
+svg.addEventListener("pointerup", async () => {
+  if (drag?.point != null && drag.moved) {
+    const w = walk[drag.point]; drag = null;
+    const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, z: w.z }) });
+    if (r.ok) { Object.assign(w, await r.json()); $("walkMsg").textContent = "Saved. Make the plan again to use it."; pointPhotos(); draw(); }
+    return;
+  }
+  if (drag?.point != null) { drag = null; return; }
+  if (drag?.corner != null) { if (drag.moved) changed(); else history.pop(), $("undo").disabled = !history.length; } drag = null; });
 svg.addEventListener("dblclick", e => {
   if (tool !== "select" || e.target.dataset.wall == null) return;
   const r = svg.getBoundingClientRect(), p = toPlan(e.clientX - r.left, e.clientY - r.top), n = nearestOnWall(p);
@@ -388,12 +450,52 @@ document.addEventListener("keydown", e => {
 });
 window.addEventListener("resize", draw);
 $("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
-$("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
+$("tPoint").onclick = () => setTool("point"); $("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
 $("fit").onclick = () => is3d ? view3d("start") : fit(); $("tidy").onclick = tidy;
 $("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw;
 $("vAbove").onclick = () => view3d("above"); $("vPhone").onclick = () => view3d("phone");
 $("v3d").onclick = () => set3d(!is3d);
 $("scanCut").onchange = loadScan;
+let ppList = [], ppAt = 0, ppAsk = 0;
+async function pointPhotos() {
+  const w = sel?.point != null ? walk[sel.point] : null, box = $("pointPhotos");
+  if (!w) { box.hidden = true; return; }
+  const ask = ++ppAsk;
+  const r = await fetch(`/api/scans/${id}/walk/photos?x=${w.x}&y=${w.y}&z=${w.z}`).catch(() => null);
+  const j = r?.ok ? await r.json() : { photos: [] };
+  if (ask !== ppAsk) return;
+  ppList = j.photos; ppAt = 0; box.hidden = !ppList.length; showPhotoAt();
+}
+function showPhotoAt() {
+  const f = ppList[ppAt]; if (!f) return;
+  $("ppImg").src = `/api/scans/${id}/photos/${f.file}?up=1`;
+  $("ppDot").style.left = f.u * 100 + "%"; $("ppDot").style.top = f.v * 100 + "%";
+  $("ppText").textContent = `${ppAt + 1} of ${ppList.length} · taken ${f.away_m} m away`;
+}
+$("ppPrev").onclick = () => { ppAt = (ppAt + ppList.length - 1) % ppList.length; showPhotoAt(); };
+$("ppNext").onclick = () => { ppAt = (ppAt + 1) % ppList.length; showPhotoAt(); };
+function renderWalk() {
+  $("walkBox").hidden = !walk.length;
+  $("tPoint").hidden = !walk.length;
+  $("walkList").replaceChildren(...walk.map((w, i) => {
+    const r = document.createElement("tr"); if (sel?.point === i) r.className = "sel";
+    r.innerHTML = `<td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${WALK[w.kind] || WALK.unknown};margin-right:6px"></span>Point ${i + 1}</td><td style="font-weight:400"></td>`;
+    r.children[1].textContent = (w.flag ? "⚑ " : "") + (WALK_NAME[w.kind] || w.kind);
+    r.onclick = () => { setTool("select"); select({ point: i }); };
+    return r;
+  }));
+  const count = {}; for (const w of walk) count[w.kind] = (count[w.kind] || 0) + 1;
+  $("walkKey").replaceChildren(...Object.keys(count).map(k => { const d = document.createElement("div"); d.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${WALK[k] || WALK.unknown};margin-right:6px"></span>`; d.append(`${count[k]} ${WALK_NAME[k] || k}`); return d; }));
+}
+$("walkRebuild").onclick = async () => {
+  const b = $("walkRebuild"), m = $("walkMsg"); b.disabled = true; m.textContent = "Working it out…";
+  clearTimeout(saveT); saveT = null;
+  const r = await fetch(`/api/scans/${id}/walk/rebuild`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const j = await r.json().catch(() => ({})); b.disabled = false;
+  if (!r.ok) { m.textContent = j.detail || "Could not do it."; return; }
+  m.textContent = j.built ? "" : `It needs at least 3 points along the walls (${j.outline} now).`;
+  await reload();
+};
 async function loadScan() {
   if (is3d) { clip3d(); return; }
   const cutV = $("scanCut").value, cut = cutV && cutV !== "off" ? `cut=${cutV}` : "";
@@ -457,7 +559,7 @@ $("joinAdd").onclick = async () => {
 // after joining: the outline, the readings and the pictures can all have changed
 async function reload() {
   const j = await (await fetch(`/api/scans/${id}/layout`)).json();
-  pts = j.points || pts; joined = j.joins || []; history = []; $("undo").disabled = true; sel = null;
+  pts = j.points || pts; joined = j.joins || []; walk = j.walk || []; renderWalk(); history = []; $("undo").disabled = true; sel = null;
   Object.assign(L, { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 });
   scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
   $("height").value = L.height_m; renderJoins(); fillJoinPick();
@@ -472,7 +574,7 @@ async function set3d(on) {
   is3d = on;
   $("v3d").classList.toggle("on", on); $("v3d").textContent = on ? "Plan" : "3D";
   $("gl").hidden = !on; svg.style.display = on ? "none" : ""; $("only3d").hidden = !on;
-  for (const b of ["tMeasure", "tDoor", "tWindow"]) $(b).disabled = on;
+  for (const b of ["tMeasure", "tDoor", "tWindow", "tPoint"]) $(b).disabled = on;
   setTool("select");
   if (on) { resize3d(); await loadMesh(); clip3d(); view3d(G.placed ? null : "start"); G.placed = true; draw(); } else { loadScan(); }
 }
@@ -511,7 +613,7 @@ function init3d() {
   });
   dom.addEventListener("pointerup", e => {
     if (act?.corner != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
-    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { select(act.hit?.object.userData.wall != null ? { wall: act.hit.object.userData.wall } : null); }
+    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.wall != null ? { wall: u.wall } : null); }
     act = null;
   });
   dom.addEventListener("wheel", e => { e.preventDefault(); G.r = Math.max(.05, Math.min(60, G.r * Math.exp(e.deltaY * .0012))); place3d(); }, { passive: false });
@@ -633,6 +735,10 @@ function build3d() {
     const pl = label3d("Phone stood here", "#8a6d00"); pl.position.copy(P).add(new T.Vector3(0, .2, 0)); ov.add(pl);
   });
   showPhone();
+  walk.forEach((w, i) => {
+    const on = sel?.point === i, b = new T.Mesh(new T.SphereGeometry(on ? .08 : .055, 14, 10), mat(on ? 0xe0226e : (WALK[w.kind] || WALK.unknown)));
+    b.position.set(w.x, w.y, w.z); b.renderOrder = 26; b.userData.point = i; ov.add(b); G.hits.push(b);
+  });
   // the readings the walls came from, in the band they were read
   if ($("showTop").checked && pts.top.length) {
     const yb = (scene.ceiling ?? y1) - .35, arr = new Float32Array(pts.top.length * 3);
@@ -651,7 +757,7 @@ function build3d() {
   pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 };
   scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
-  joined = j.joins || []; renderJoins(); fillJoinPick();
+  joined = j.joins || []; walk = j.walk || []; renderWalk(); renderJoins(); fillJoinPick();
   fit(); tip(); loadScan();
 })();
 </script>

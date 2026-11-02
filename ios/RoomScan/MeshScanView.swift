@@ -44,7 +44,25 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     var joinPlan: String?            // a sweep taken from a plan: the server fits it onto that plan
     private var spotNode: SCNNode?
     private var wallNodes: [UUID: SCNNode] = [:]
-    @Published var builtID: String?  // the scan the last upload made or added to
+    @Published var builtID: String? {  // the scan the last upload made or added to
+        didSet { if walkMode, let builtID { Task { await sendWalk(scan: builtID) } } }     // the build may have finished before the last points arrived
+    }
+    // "Walk": film and click. The phone only shows what it can guess; the server works out what each point is.
+    struct WalkPoint: Identifiable { let id = UUID().uuidString; let p: SIMD3<Float>; let t: TimeInterval; let tag: String? }
+    var walkMode = false
+    @Published var walkPoints: [WalkPoint] = []
+    @Published var walkSeen = Set<Int64>()
+    @Published var walkYou: (x: Float, z: Float, heading: Float)?
+    @Published var walkReading: Double?
+    @Published var walkLevel: PhoneLevel?
+    @Published var walkFloor: Float?
+    @Published var walkCeiling: Float?
+    @Published var walkNote = ""
+    private var walkBins: [Int: Int] = [:]
+    private var walkNodes: [SCNNode] = []
+    private var walkTimer: Timer?
+    private var walkTicks = 0
+    static let walkCell: Float = 0.1
     var sweepMode = false
     @Published var ringActive = false
     private var coverageTimer: Timer?
@@ -190,6 +208,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         savedCopy = nil; stopNote = ""
         recorder = PhotoRecorder()
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
+        walkBegin()
         ring.begin()
         sweep.reset()
         sweep.waitingForSpot = sweepMode && addTo != nil
@@ -197,7 +216,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         clearWalls()
         if addTo != nil || (liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true)) {
             live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
-                       name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo, addTo: addTo)
+                       name: (sweepMode ? "Sweep " : walkMode ? "Walk " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo, addTo: addTo)
         }
         if ring.enabled || sweepMode { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read; a sweep's 360 picture is made of these
         ringActive = ring.capturing
@@ -271,7 +290,130 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     }
 
     /// Throw everything away and go back to the start, whatever state the scan is in.
+    func walkBegin() {
+        walkPoints = []; walkSeen = []; walkBins = [:]; walkFloor = nil; walkCeiling = nil; walkNote = ""
+        walkNodes.forEach { $0.removeFromParentNode() }; walkNodes = []
+        walkTimer?.invalidate()
+        guard walkMode else { return }
+        walkTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.walkTick() }
+    }
+
+    private func walkTick() {
+        guard let frame = sceneView.session.currentFrame else { return }
+        let t = frame.camera.transform
+        walkLevel = PhoneLevel(t)
+        walkReading = Self.walkCentre(frame)
+        let fwd = simd_normalize(-SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z))
+        walkYou = (t.columns.3.x, t.columns.3.z, atan2(fwd.x, -fwd.z))
+        walkTicks += 1
+        guard case .normal = frame.camera.trackingState else { return }
+        walkAddSeen(frame)
+        if walkTicks % 8 == 0 { walkHeights(phoneY: t.columns.3.y) }
+    }
+
+    /// The depth at the crosshair: the middle of five readings. The middle of the depth map is the middle of the photo whichever way it is stored.
+    private static func walkCentre(_ frame: ARFrame) -> Double? {
+        guard let map = (frame.smoothedSceneDepth ?? frame.sceneDepth)?.depthMap else { return nil }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
+        func at(_ x: Int, _ y: Int) -> Float { base.advanced(by: y * rb).assumingMemoryBound(to: Float32.self)[x] }
+        let v = [at(w / 2, h / 2), at(w / 2 - 2, h / 2), at(w / 2 + 2, h / 2), at(w / 2, h / 2 - 2), at(w / 2, h / 2 + 2)].filter { $0.isFinite && $0 > 0.1 }.sorted()
+        return v.count >= 3 ? Double(v[v.count / 2]) : nil
+    }
+
+    /// What the LiDAR sees now, for the little plan. Depth pixels are stored turned from the photo (server/app/meshscan.py, align_depth).
+    private func walkAddSeen(_ frame: ARFrame) {
+        guard let map = frame.sceneDepth?.depthMap else { return }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map), m = (w - h) / 2
+        let k = frame.camera.intrinsics, res = frame.camera.imageResolution, s = Float(w) / Float(res.width)
+        let fx = k[0][0] * s, fy = k[1][1] * s, cx = k[2][0] * s, cy = k[2][1] * Float(h) / Float(res.height)
+        let t = frame.camera.transform
+        var fresh = Set<Int64>()
+        for r in stride(from: 0, to: h, by: 12) {
+            let row = base.advanced(by: r * rb).assumingMemoryBound(to: Float32.self)
+            for col in stride(from: m, to: w - m, by: 12) {
+                let d = row[col]
+                guard d.isFinite, d > 0.2, d < 5 else { continue }
+                let x = Float(r + m) + 0.5, y = Float(w - m - 1 - col) + 0.5
+                let p = t * SIMD4<Float>((x - cx) * d / fx, -(y - cy) * d / fy, -d, 1)
+                walkBins[Int((p.y / 0.05).rounded(.down)), default: 0] += 1
+                if let f = walkFloor, p.y < f + 0.3 { continue }       // the little plan shows walls, not the floor or the ceiling
+                if let c = walkCeiling, p.y > c - 0.1 { continue }
+                fresh.insert(Self.walkKey(p.x, p.z))
+            }
+        }
+        if !fresh.isSubset(of: walkSeen) { walkSeen.formUnion(fresh) }
+    }
+
+    /// Floor and ceiling: flat surfaces pile up many readings at one height, walls spread theirs out.
+    private func walkHeights(phoneY: Float) {
+        func peak(_ keep: (Float) -> Bool) -> Float? {
+            let side = walkBins.filter { keep((Float($0.key) + 0.5) * 0.05) }
+            guard let top = side.max(by: { $0.value < $1.value }), top.value >= 60 else { return nil }
+            let others = side.values.sorted()
+            guard top.value >= 3 * others[others.count / 2] else { return nil }
+            return (Float(top.key) + 0.5) * 0.05
+        }
+        if let f = peak({ $0 < phoneY - 0.4 }) { walkFloor = f }
+        if let c = peak({ $0 > phoneY + 0.15 }) { walkCeiling = c }
+    }
+
+    static func walkKey(_ x: Float, _ z: Float) -> Int64 {
+        (Int64((x / walkCell).rounded(.down)) + 100000) * 200003 + (Int64((z / walkCell).rounded(.down)) + 100000)
+    }
+    static func walkUnkey(_ k: Int64) -> (Int, Int) { (Int(k / 200003) - 100000, Int(k % 200003) - 100000) }
+
+    /// A click: where the crosshair is, right now. `tag` says it is a door or window; anything else the server works out.
+    func walkClick(tag: String? = nil) {
+        guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState else { walkNote = "Move slowly, the phone is finding its place."; return }
+        guard let raw = Self.walkCentre(frame) else { walkNote = "No reading there. Move closer, or aim at a matte part."; return }
+        walkNote = ""
+        let t = frame.camera.transform
+        let pos = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z), fwd = simd_normalize(-SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z))
+        let p = pos + fwd * Float(CalibrationStore.shared.wall(raw))
+        walkPoints.append(WalkPoint(p: p, t: Date().timeIntervalSince1970, tag: tag))
+        let g = SCNSphere(radius: 0.025)
+        g.firstMaterial?.diffuse.contents = tag == "door" ? UIColor.brown : tag == "window" ? UIColor.purple : UIColor.systemYellow
+        g.firstMaterial?.lightingModel = .constant
+        g.firstMaterial?.readsFromDepthBuffer = false
+        let node = SCNNode(geometry: g)
+        node.simdPosition = p
+        sceneView.scene.rootNode.addChildNode(node)
+        walkNodes.append(node)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        if let id = live.scanID { Task { await sendWalk(scan: id) } }
+    }
+
+    func walkUndo() {
+        guard !walkPoints.isEmpty else { return }
+        walkPoints.removeLast()
+        walkNodes.popLast()?.removeFromParentNode()
+        if let id = live.scanID { Task { await sendWalk(scan: id) } }
+    }
+
+    /// The whole list each time, so a lost message costs nothing.
+    @MainActor func sendWalk(scan id: String) async {
+        guard !walkPoints.isEmpty, let url = URL(string: ServerAddress.url)?.appendingPathComponent("api/scans/\(id)/walk") else { return }
+        let list: [[String: Any]] = walkPoints.map { q in
+            var o: [String: Any] = ["id": q.id, "x": q.p.x, "y": q.p.y, "z": q.p.z, "t": q.t]
+            if let tag = q.tag { o["tag"] = tag }
+            return o
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["points": list])
+        _ = try? await URLSession.shared.data(for: req)
+    }
+
     func discard() {
+        walkTimer?.invalidate(); walkTimer = nil
+        walkPoints = []; walkNodes.forEach { $0.removeFromParentNode() }; walkNodes = []
         timer?.invalidate(); timer = nil
         cloudTimer?.invalidate(); cloudTimer = nil
         coverageTimer?.invalidate(); coverageTimer = nil
@@ -298,6 +440,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     /// `leftScreen`: the tab was switched (or Settings opened) mid-scan. Stop exactly as the button does, so the result is kept,
     /// and say why: the timers and the AR session must not run behind another tab that uses the camera.
     func stop(leftScreen: Bool = false) {
+        walkTimer?.invalidate(); walkTimer = nil
         if leftScreen {
             stopNote = "Stopped because you left the scan screen."
             Reporter.log("mesh: stopped, the scan screen was left")
@@ -360,6 +503,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             info["sweep straight up/down"] = "\(sweep.upDone ? "up" : "-") \(sweep.downDone ? "down" : "-")"
         }
         if let joinPlan { info["join_plan"] = joinPlan }
+        if walkMode { info["walk"] = true; info["scan type"] = "Walk, filming and clicking points" }
         return info
     }
 
@@ -805,13 +949,17 @@ struct MeshScanView: View {
     var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
     var liveGuide = false       // Room tab: use the two-way link to the server when it can be reached
     var addTo: String? = nil    // Models tab, "Add more": new frames join this scan
-    var joinPlan: String? = nil // Room tab, "Sketch": this sweep goes onto that plan
+    var joinPlan: String? = nil // a sweep that goes onto a plan
+    var walkMode = false        // Room tab, "Walk": film the whole time and click points
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var zoom: CGFloat = 1
 
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
+        if walkMode && model.plyURL == nil { return "Tap Start scan and walk round the room, filming the whole time. Aim the cross at anything that helps, in any order: corners, where walls meet the floor or ceiling, doors, windows. Tap Point for each." }
+        if walkMode && model.builtID != nil { return "Sent. Open the plan to see what each point turned out to be, and correct it." }
+        if walkMode { return "Tap Upload to send it all to the server, which works out the plan." }
         if addTo != nil && !model.scanning && model.plyURL == nil {
             return sweepMode ? "Adding to this sweep: tap Start scan and look around. The app finds where it is and leads you to where you stood, then you film what was missing."
                              : "Adding to this scan: start where something from the first scan is in view, tap Start scan and film what was missing."
@@ -844,7 +992,7 @@ struct MeshScanView: View {
                 ARSceneRepresentable(view: model.sceneView).ignoresSafeArea().scaleEffect(zoom)
                     .opacity(!model.previewOn && !model.scanning && model.plyURL == nil ? 0 : 1)
             }
-            if model.scanning {
+            if model.scanning && !walkMode {
                 Canvas { ctx, _ in
                     for d in model.dots {
                         ctx.fill(Path(ellipseIn: CGRect(x: CGFloat(d.x) - 2.5, y: CGFloat(d.y) - 2.5, width: 5, height: 5)),
@@ -853,7 +1001,7 @@ struct MeshScanView: View {
                 }
                 .ignoresSafeArea().allowsHitTesting(false).scaleEffect(zoom)
             }
-            if liveGuide && model.scanning {
+            if liveGuide && model.scanning && !walkMode {
                 GeometryReader { geo in LiveNeedLayer(live: model.live, view: model.sceneView, size: geo.size, zoom: zoom) }
                     .ignoresSafeArea().allowsHitTesting(false)
             }
@@ -867,10 +1015,10 @@ struct MeshScanView: View {
                         .accessibilityLabel(model.previewOn ? "Turn the camera off" : "Turn the camera on")
                     }
                 }
-                if !model.ringActive && !(sweepMode && model.scanning) {
+                if !model.ringActive && !(sweepMode && model.scanning) && !(walkMode && model.scanning) {
                     HelpCard(text: guide)
                 }
-                if model.scanning && !model.ringActive && !sweepMode {
+                if model.scanning && !model.ringActive && !sweepMode && !walkMode {
                     VStack(spacing: 2) {
                         Text("\(model.pointCount) points · \(model.framesSoFar) photos").font(.title3.weight(.bold))
                         if model.framesSoFar < 120 { Text("Keep going: a room needs about 120 photos (1 to 2 minutes)").font(.caption) }
@@ -879,7 +1027,8 @@ struct MeshScanView: View {
                 }
                 Spacer()
                 if sweepMode && model.scanning { SweepPanel(sweep: model.sweep, frames: model.framesSoFar) }
-                if liveGuide && model.scanning { LivePanel(live: model.live) }
+                if liveGuide && model.scanning && !walkMode { LivePanel(live: model.live) }
+                if walkMode && model.scanning { WalkPanel(model: model) }
                 if model.ringActive && model.scanning { RingPanel(tracker: model.ring) }
                 if model.scanning, !model.hud.isEmpty { Text(model.hud).font(.caption).padding(6).background(.thinMaterial, in: Capsule()) }
                 if !model.status.isEmpty { Text(model.status).padding(6).background(.thinMaterial, in: Capsule()) }
@@ -901,6 +1050,9 @@ struct MeshScanView: View {
                     }
                 }
                 .buttonStyle(CaptureButtonStyle())
+                if walkMode, let id = model.builtID {
+                    NavigationLink("Open the plan") { WebPage(scanID: id) }
+                }
                 if sweepMode, let id = model.builtID {
                     NavigationLink("Mark floor, ceiling and wall points") { MarkHeightView(scanID: id) }
                 }
@@ -910,7 +1062,86 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
-        .onAppear { model.sweepMode = sweepMode; model.addTo = addTo; model.joinPlan = joinPlan; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
+        .onAppear { model.sweepMode = sweepMode; model.addTo = addTo; model.joinPlan = joinPlan; model.walkMode = walkMode; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
         .onDisappear { CameraOwner.release(model) }      // stops it only if it still has the camera (another tab may have taken it)
+    }
+}
+
+
+/// Walk mode: the cross and level over the camera, the little plan of what the phone can guess, and the buttons. The real plan is worked out on the server.
+struct WalkPanel: View {
+    @ObservedObject var model: MeshScanModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Image(systemName: "plus").font(.system(size: 34, weight: .light)).foregroundStyle(.white).shadow(radius: 2)
+                LevelLine(level: model.walkLevel)
+            }
+            .frame(maxWidth: .infinity, minHeight: 130).allowsHitTesting(false)
+            WalkMap(model: model).frame(height: 170).clipShape(RoundedRectangle(cornerRadius: 10))
+            Text(line).font(.caption.monospacedDigit()).padding(.horizontal, 8).padding(.vertical, 3).background(.thinMaterial, in: Capsule())
+            if !model.walkNote.isEmpty { Text(model.walkNote).font(.footnote).foregroundStyle(.orange).padding(6).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8)) }
+            Button { model.walkClick() } label: { Text("Point").font(.title3.weight(.bold)).frame(maxWidth: .infinity) }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+            HStack(spacing: 10) {
+                Button("Door") { model.walkClick(tag: "door") }.tint(.brown)
+                Button("Window") { model.walkClick(tag: "window") }.tint(.purple)
+                Button("Undo") { model.walkUndo() }.disabled(model.walkPoints.isEmpty)
+            }
+            .font(.footnote).buttonStyle(.bordered)
+        }
+    }
+
+    private var line: String {
+        var bits = ["\(model.walkPoints.count) points"]
+        if let f = model.walkFloor, let c = model.walkCeiling { bits.append(String(format: "height %.2f m", c - f)) }
+        if let r = model.walkReading { bits.append(String(format: "cross %.2f m away", r)) } else { bits.append("no reading at the cross") }
+        return bits.joined(separator: " · ")
+    }
+}
+
+/// Grey = what the LiDAR has seen. Dots = your points: blue near the floor, orange near the ceiling, yellow between, brown doors, purple windows. Click in any order: the server decides what they are and how they join.
+private struct WalkMap: View {
+    @ObservedObject var model: MeshScanModel
+
+    var body: some View {
+        Canvas { ctx, size in
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(.secondarySystemBackground)))
+            let cell = MeshScanModel.walkCell
+            let cells = model.walkSeen.map { MeshScanModel.walkUnkey($0) }
+            var xs: [Float] = cells.map { (Float($0.0) + 0.5) * cell }, zs: [Float] = cells.map { (Float($0.1) + 0.5) * cell }
+            for q in model.walkPoints { xs.append(q.p.x); zs.append(q.p.z) }
+            if let y = model.walkYou { xs.append(y.x); zs.append(y.z) }
+            guard let x0 = xs.min(), let x1 = xs.max(), let z0 = zs.min(), let z1 = zs.max() else { return }
+            let pad: CGFloat = 16
+            let scale = min((size.width - 2 * pad) / CGFloat(max(x1 - x0, 1)), (size.height - 2 * pad) / CGFloat(max(z1 - z0, 1)))
+            let midX = CGFloat(x0 + x1) / 2, midZ = CGFloat(z0 + z1) / 2
+            func at(_ x: Float, _ z: Float) -> CGPoint { CGPoint(x: size.width / 2 + (CGFloat(x) - midX) * scale, y: size.height / 2 + (CGFloat(z) - midZ) * scale) }
+            let side = max(1.5, CGFloat(cell) * scale)
+            var seen = Path()
+            for c in cells {
+                let p = at((Float(c.0) + 0.5) * cell, (Float(c.1) + 0.5) * cell)
+                seen.addRect(CGRect(x: p.x - side / 2, y: p.y - side / 2, width: side, height: side))
+            }
+            ctx.fill(seen, with: .color(.gray.opacity(0.45)))
+            for q in model.walkPoints {
+                let p = at(q.p.x, q.p.z)
+                var colour = Color.yellow
+                if q.tag == "door" { colour = .brown } else if q.tag == "window" { colour = .purple }
+                else if let f = model.walkFloor, abs(q.p.y - f) < 0.25 { colour = .blue }
+                else if let c = model.walkCeiling, abs(q.p.y - c) < 0.25 { colour = .orange }
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(colour))
+            }
+            if let y = model.walkYou {
+                let p = at(y.x, y.z), a = CGFloat(y.heading)
+                var arrow = Path()
+                arrow.move(to: CGPoint(x: p.x + sin(a) * 9, y: p.y - cos(a) * 9))
+                arrow.addLine(to: CGPoint(x: p.x + sin(a + 2.5) * 6, y: p.y - cos(a + 2.5) * 6))
+                arrow.addLine(to: CGPoint(x: p.x + sin(a - 2.5) * 6, y: p.y - cos(a - 2.5) * 6))
+                arrow.closeSubpath()
+                ctx.fill(arrow, with: .color(.blue))
+            }
+        }
     }
 }

@@ -26,6 +26,7 @@ from starlette.background import BackgroundTask
 
 from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
 from . import join as join_mod
+from . import walk as walk_mod
 from . import layout as layout_mod
 from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage, lidartarget
 
@@ -33,7 +34,7 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/sc
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
-             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json", "layout.glb", "layout.json", "layout_points.json", "joined.json"}
+             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json", "layout.glb", "layout.json", "layout_points.json", "joined.json", "walk_points.json", "walk_result.json"}
 PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json|model\.usdz|features\.json)$")  # derived from model.stl: stale once it changes
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a model uploaded by hand, kept as it came
@@ -151,6 +152,17 @@ def _join_to_plan(d: Path, meta: dict) -> None:
         _save_meta(d, meta)
 
 
+def _build_walk(d: Path, force: bool = False) -> dict | None:
+    """Clicks from a walk become a plan, once the scan is built. A plan corrected by hand is only replaced on request."""
+    f = d / "walk_points.json"
+    if not f.exists():
+        return None
+    saved = d / "layout.json"
+    if not force and saved.exists() and json.loads(saved.read_text()).get("edited"):
+        return {"built": False, "kept": True}
+    return walk_mod.build(d, json.loads(f.read_text()))
+
+
 def _convert(d: Path) -> dict:
     _clear_print_prep(d)
     meta = _meta(d)
@@ -190,6 +202,12 @@ def _convert(d: Path) -> dict:
         meta["settings"] = _settings(d, meta)
         _save_meta(d, meta)
         _join_to_plan(d, meta)
+        if ok:
+            try:
+                _build_walk(d)
+            except Exception as e:      # the scan itself is fine; say why there is no plan
+                meta["log"] = (meta.get("log") or "") + f"\nCould not make the plan from the points: {type(e).__name__}: {e}"
+                _save_meta(d, meta)
         return meta
     if meta.get("kind") == "object":
         scale = meta.get("scale", 1.0)
@@ -443,7 +461,7 @@ def _layout_scene(d: Path, lay: dict) -> dict:
 
 
 def _has_layout(d: Path) -> bool:
-    return (d / "room.json").exists() or (d / "layout.json").exists()
+    return (d / "room.json").exists() or (d / "layout.json").exists() or (d / "walk_result.json").exists()
 
 
 def _join_view(d: Path, j: dict) -> dict:
@@ -465,7 +483,86 @@ def get_layout(scan_id: str):
     lay = layout_mod.load(d)
     js = [j for j in layout_mod.joins(d) if (DATA / j["scan"]).exists()]
     pts = layout_mod.seen_cells(d, lay)
-    return {**lay, "points": pts, "name": _meta(d).get("name", ""), "kind": _meta(d).get("kind"), **_layout_scene(d, lay), "joins": [_join_view(d, j) for j in js]}
+    return {**lay, "points": pts, "name": _meta(d).get("name", ""), "kind": _meta(d).get("kind"), **_layout_scene(d, lay), "joins": [_join_view(d, j) for j in js],
+            "walk": json.loads((d / "walk_result.json").read_text())["points"] if (d / "walk_result.json").exists() else []}
+
+
+@app.post("/api/scans/{scan_id}/walk")
+def walk_points(scan_id: str, body: dict):
+    """The points clicked while filming: the whole list each time, so a lost message costs nothing. Once the scan is built they become its plan."""
+    d = _dir(scan_id)
+    raw = body.get("points")
+    if not isinstance(raw, list) or len(raw) > 5000:
+        raise HTTPException(422, "needs a list of points")
+    try:
+        points = [{"id": str(p.get("id") or i)[:40], "x": float(p["x"]), "y": float(p["y"]), "z": float(p["z"]), "t": float(p.get("t") or 0),
+                   **({"tag": p["tag"]} if p.get("tag") in walk_mod.KINDS else {})} for i, p in enumerate(raw)]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise HTTPException(422, "each point needs x, y and z")
+    f = d / "walk_points.json"
+    if f.exists():                # the phone resends its list: what was changed or added here on the server stays
+        had = {p["id"]: p for p in json.loads(f.read_text())}
+        sent = {p["id"] for p in points}
+        points = [{**p, **{k: had[p["id"]][k] for k in ("tag", "x", "y", "z", "fixed") if had[p["id"]].get("fixed") or k == "tag" and k in had[p["id"]]}} if p["id"] in had else p for p in points]
+        points += [p for p in had.values() if p["id"] not in sent and p.get("fixed")]
+    f.write_text(json.dumps(points))
+    return _build_walk(d) if _meta(d).get("status") == "ok" else {"built": False, "waiting": True}
+
+
+@app.post("/api/scans/{scan_id}/walk/edit")
+def walk_edit(scan_id: str, body: dict):
+    """Change one point by hand: {"id", "kind"?, "x"?, "y"?, "z"?}, or add one: {"add": {"x", "z", "y"?, "kind"?}}. Points are never deleted: "ignore" leaves one out of the plan.
+    Saved at once; the plan itself changes on Make the plan again."""
+    d = _dir(scan_id)
+    fp, fr = d / "walk_points.json", d / "walk_result.json"
+    points = json.loads(fp.read_text()) if fp.exists() else []
+    result = json.loads(fr.read_text()) if fr.exists() else {"points": [], "floor_y": None, "ceiling_y": None}
+    new = body.get("add")
+    try:
+        if isinstance(new, dict):
+            fl, ce = result.get("floor_y"), result.get("ceiling_y")
+            y = float(new["y"]) if new.get("y") is not None else ((fl + ce) / 2 if fl is not None and ce is not None else 0.0)
+            kind = new.get("kind") if new.get("kind") in walk_mod.KINDS else "unknown"
+            pid = uuid.uuid4().hex[:12]
+            raw = {"id": pid, "x": float(new["x"]), "y": y, "z": float(new["z"]), "t": time.time(), "fixed": True, **({"tag": kind} if kind != "unknown" else {})}
+            points.append(raw)
+            res = {**raw, "tag": raw.get("tag"), "kind": kind, "guess": "unknown", "walls": 0, "lines": [], "snapped_cm": 0.0, "added": True, "flag": None}
+            result["points"].append(res)
+        else:
+            pid = str(body.get("id"))
+            raw = next((p for p in points if p["id"] == pid), None)
+            res = next((p for p in result["points"] if p["id"] == pid), None)
+            if raw is None or res is None:
+                raise HTTPException(404, "no such point")
+            if body.get("kind") in walk_mod.KINDS:
+                raw["tag"] = res["tag"] = res["kind"] = body["kind"]
+                res["flag"] = None
+            for k in ("x", "y", "z"):
+                if body.get(k) is not None:
+                    raw[k] = res[k] = float(body[k])
+                    raw["fixed"] = res["fixed"] = True
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(422, "a point needs x and z")
+    fp.write_text(json.dumps(points))
+    fr.write_text(json.dumps(result))
+    return res
+
+
+@app.get("/api/scans/{scan_id}/walk/photos")
+def walk_photos(scan_id: str, x: float, y: float, z: float):
+    """The photos that show this spot."""
+    d = _dir(scan_id)
+    return {"photos": walk_mod.photos_of(d, [x, y, z], frame_tools.manifest(d))}
+
+
+@app.post("/api/scans/{scan_id}/walk/rebuild")
+def walk_rebuild(scan_id: str):
+    """Make the plan again from the points. It replaces corrections made to the plan by hand; the points stay as they are."""
+    d = _dir(scan_id)
+    f = d / "walk_points.json"
+    if not f.exists():
+        raise HTTPException(404, "this scan has no clicked points")
+    return _build_walk(d, force=True)
 
 
 @app.post("/api/plans")

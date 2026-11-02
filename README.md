@@ -252,19 +252,23 @@ Taken automatically in the iOS Simulator on every build (no camera or LiDAR ther
 
 ---
 
-### Sketch: walk the room and draw its plan
+### Walk: film the room and click points
 
-Room tab → **Sketch**. The phone keeps its place as you walk, so the plan draws itself on the screen.
+Room tab → **Walk**. The phone films the whole time, and photos, LiDAR depth, positions and your clicks all go to the server, in one set of coordinates.
 
-1. Stand at your first corner and tap **Start**. Nothing is recorded before that.
-1. Walk to a corner. Aim the cross at it, at the floor or at the ceiling if furniture is in the way, from under 2.5 m away, and tap **Corner**. A post appears in the room, and the phone says the length from the last corner.
-2. Tip the phone down and up once, so it finds the floor and ceiling. The height appears on the screen.
-3. If the next stretch has no wall, as into a kitchen, tap **Next: wall** so it says **Next: no wall**, then tap **Corner** where the wall starts again.
-4. Follow the room round. **Undo** takes back a corner. **Reset** throws the whole sketch away, after asking, and goes back to **Start**.
-5. At the end, tap **End**. Turn on **Last corner joins the first with a wall** if it does; otherwise that stretch is saved as open. Then tap **Save plan**. **Keep going** goes back to adding corners.
-6. **Add 360 photos from one spot** takes a normal sweep, and the server fits it onto the plan by itself. You can do this from several spots.
+1. Tap **Start scan** and walk round the room slowly.
+2. Aim the cross at anything useful and tap **Point**: corners, where a wall meets the floor or ceiling, anything, **in any order**. Click from close up. More points do no harm. There are no voice instructions in this mode.
+3. For doors and windows, tap **Door** or **Window**, because the shape of the scan can't tell them apart reliably. Click the middle of each.
+4. The little plan shows what the LiDAR has seen and your points, blue near the floor and orange near the ceiling. It is only a guess. **Undo** takes back the last point.
+5. Tap **Stop**, then **Upload**. Then **Open the plan**, and on that page press **Plan**.
 
-The plan opens on the server's Layout page to correct it and build the BIMCraft and Blender files.
+The server looks at the flat surfaces round each click to work out what it is. Two walls meeting make a corner, and the point is moved to where they really meet. Clicks on one wall agree on one line, and walls are joined by what the LiDAR saw between them, so the order of the clicks doesn't matter. Where two walls meet and nobody clicked the corner, it is added if the readings run along both walls to it. A stretch with few readings along it is marked open. On the Layout page every point is listed. Click one, on the plan or in the list, to see **Photos of this point**, the frames that show it best, with a green ring on the spot. Then:
+
+- **Change what it is:** pick from the list, including Door and Window. **Ignore it** leaves it off the plan.
+- **Move it:** drag it on the plan.
+- **Add one:** press **Add point**, then click the plan.
+
+Points are never deleted. Anything the server is unsure of is flagged ⚑, such as a point off the plan's walls, or one with nothing solid there, which may be a door or window. Changes to points save at once. Press **Make the plan again from the points** to use them; that replaces corrections made to the plan itself, not to the points.
 
 ## 2. The web page (the server)
 
@@ -426,6 +430,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.61.0 | **Walk** replaces Sketch: film the room and click points in any order. Everything goes to the server, which works out what each point is, fits walls through the LiDAR, finds corners and makes the plan. On the Layout page every point has its photos and can be changed, moved or added. Points are flagged, never deleted. |
 | 0.60.1 | Sketch: **Start**, **End** and **Reset** buttons. Nothing is recorded before Start, End decides how the last stretch finishes, and Reset wipes the sketch after asking. |
 | 0.60.0 | New **Sketch** on the phone: walk the room, tap each corner, and the plan draws itself live; 360 photos then go onto it by themselves. Layout page: join other sweeps into one plan. |
 | 0.59.0 | Layout page: a **3D** view with the layout standing inside the scan, to turn round and see every corner, wall, floor and ceiling chosen. Rooms no longer have to be closed: stretches with no wall are found from the readings, can be changed by hand, and get no wall in BIMCraft and Blender. |
