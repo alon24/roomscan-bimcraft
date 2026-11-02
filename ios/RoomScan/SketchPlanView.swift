@@ -9,6 +9,8 @@ final class SketchPlanModel: NSObject, ObservableObject {
     struct Corner: Identifiable { let id = UUID(); let x: Float; let y: Float; let z: Float; var openToNext = false }
 
     let sceneView = ARSCNView(frame: .zero)
+    @Published var started = false           // the camera shows from the start; nothing is gathered until Start
+    @Published var ended = false
     @Published var corners: [Corner] = []
     @Published var closed = false
     @Published var nextOpen = false
@@ -42,7 +44,12 @@ final class SketchPlanModel: NSObject, ObservableObject {
     /// What to do next, shown and spoken.
     var guide: String {
         if planID != nil { return "Saved. Add 360 photos from one spot, or open the plan on the server." }
-        if closed { return "The room is closed. Tap Save plan." }
+        if !started { return "Stand at your first corner and tap Start." }
+        if ended {
+            if height == nil { return floorY == nil ? "Tip the phone down so it sees the floor, then save." : "Tip the phone up so it sees the ceiling, then save." }
+            if corners.count < 3 { return "A plan needs at least 3 corners. Tap Keep going to add more." }
+            return closed ? "The last corner joins the first with a wall. Tap Save plan." : "The way back to the first corner is open, with no wall. Tap Save plan."
+        }
         if let r = reading, r > Self.nearEnough { return "Move closer: the corner is more exact from under \(String(format: "%.1f", Self.nearEnough)) metres." }
         if corners.isEmpty { return "Walk to a corner of the room. Aim the cross at it, at the floor or the ceiling, and tap Corner." }
         if floorY == nil { return "Tip the phone down so it sees the floor." }
@@ -60,12 +67,16 @@ final class SketchPlanModel: NSObject, ObservableObject {
         return x * 1_600_000_000 + y * 40000 + z
     }
 
-    func start() {
+    private func config() -> ARWorldTrackingConfiguration {
         let cfg = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
+        return cfg
+    }
+
+    func start() {
         CameraOwner.claim(self) { [weak self] in self?.sceneView.session.pause(); Screen.awake(false) }
         Screen.awake(true)
-        sceneView.session.run(cfg)
+        sceneView.session.run(config())
         if root.parent == nil { sceneView.scene.rootNode.addChildNode(root) }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.tick() }
@@ -83,6 +94,7 @@ final class SketchPlanModel: NSObject, ObservableObject {
         if let r = reading { aim = pos + fwd * Float(CalibrationStore.shared.wall(r)) } else { aim = nil }
         you = (pos.x, pos.z, atan2(fwd.x, -fwd.z))
         ticks += 1
+        guard started, planID == nil else { return }
         if ticks % 2 == 0, case .normal = frame.camera.trackingState { addSeen(frame) }
         if ticks % 10 == 0 { findHeights(phoneY: pos.y); Voice.say(guide, every: 12) }
     }
@@ -146,7 +158,7 @@ final class SketchPlanModel: NSObject, ObservableObject {
 
     func addCorner() {
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState else { note = "Move slowly, the phone is finding its place."; return }
-        guard !closed else { return }
+        guard started, !ended else { return }
         guard let p = aim else { note = "No reading there. Move closer, or aim at a matte part."; return }
         note = ""
         let last = corners.indices.last
@@ -161,24 +173,53 @@ final class SketchPlanModel: NSObject, ObservableObject {
         redraw()
     }
 
-    func close() {
-        guard corners.count >= 3 else { return }
-        corners[corners.count - 1].openToNext = nextOpen
+    func begin() {
+        wipe()
+        sceneView.session.run(config(), options: [.resetTracking, .removeExistingAnchors])     // a clean start, with no drift carried over
+        started = true
+        Voice.say(guide, every: 0)
+    }
+
+    func end() {
+        guard started else { return }
+        ended = true
+        closed = false
+        if !corners.isEmpty { corners[corners.count - 1].openToNext = nextOpen }
         nextOpen = false
-        closed = true
+        redraw()
+        Voice.say(guide, every: 0)
+    }
+
+    func keepGoing() {
+        ended = false
+        closed = false
+        if !corners.isEmpty { corners[corners.count - 1].openToNext = false }
+        redraw()
+    }
+
+    /// At the end: does the last corner join the first with a wall, or is that stretch open?
+    func setJoined(_ joined: Bool) {
+        guard corners.count >= 3 else { return }
+        closed = joined
         redraw()
     }
 
     func undo() {
-        if closed { closed = false; corners[corners.count - 1].openToNext = false; redraw(); return }
-        guard !corners.isEmpty else { return }
+        guard !corners.isEmpty, !ended else { return }
         corners.removeLast()
         if !corners.isEmpty { corners[corners.count - 1].openToNext = false }
         redraw()
     }
 
-    func startOver() {
-        corners = []; closed = false; nextOpen = false; planID = nil; note = ""
+    /// Everything goes: the corners and what the LiDAR saw. Back to waiting for Start.
+    func reset() {
+        wipe()
+        started = false
+    }
+
+    private func wipe() {
+        corners = []; closed = false; ended = false; nextOpen = false; planID = nil; note = ""
+        walls = []; voxels = [:]; bins = [:]; floorY = nil; ceilingY = nil
         redraw()
     }
 
@@ -246,6 +287,7 @@ final class SketchPlanModel: NSObject, ObservableObject {
 struct SketchPlanView: View {
     @StateObject private var model = SketchPlanModel()
     @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
+    @State private var askReset = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -258,25 +300,39 @@ struct SketchPlanView: View {
             VStack(spacing: 6) {
                 Text(model.guide).font(.footnote).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 Text(line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                if let id = model.planID {
+                if !model.started {
+                    Button { model.begin() } label: { Text("Start").font(.headline).frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).controlSize(.large).tint(.green)
+                } else if let id = model.planID {
                     NavigationLink("Add 360 photos from one spot") { MeshScanView(sweepMode: true, liveGuide: true, joinPlan: id) }
                         .buttonStyle(.borderedProminent)
                     HStack {
                         NavigationLink("Open the plan") { WebPage(scanID: id) }
                         Spacer()
-                        Button("New plan") { model.startOver() }
+                        Button("New sketch") { model.reset() }
                     }
+                } else if model.ended {
+                    Toggle("Last corner joins the first with a wall", isOn: Binding(get: { model.closed }, set: { model.setJoined($0) }))
+                        .font(.footnote).disabled(model.corners.count < 3)
+                    Button { Task { await model.save(server: serverURL) } } label: { Text("Save plan").font(.headline).frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).controlSize(.large).disabled(!model.canSave)
+                    HStack(spacing: 10) {
+                        Button("Keep going") { model.keepGoing() }
+                        Spacer()
+                        Button("Reset", role: .destructive) { askReset = true }
+                    }
+                    .font(.footnote).buttonStyle(.bordered)
                 } else {
                     Button { model.addCorner() } label: { Text("Corner").font(.headline).frame(maxWidth: .infinity) }
-                        .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.closed)
+                        .buttonStyle(.borderedProminent).controlSize(.large)
                     HStack(spacing: 10) {
                         Button(model.nextOpen ? "Next: no wall" : "Next: wall") { model.nextOpen.toggle() }
-                            .tint(model.nextOpen ? .orange : .accentColor).disabled(model.closed || model.corners.isEmpty)
-                        Button("Close room") { model.close() }.disabled(model.closed || model.corners.count < 3)
+                            .tint(model.nextOpen ? .orange : .accentColor).disabled(model.corners.isEmpty)
                         Button("Undo") { model.undo() }.disabled(model.corners.isEmpty)
                         VoiceToggle()
                         Spacer()
-                        Button("Save plan") { Task { await model.save(server: serverURL) } }.disabled(!model.canSave)
+                        Button("End") { model.end() }
+                        Button("Reset", role: .destructive) { askReset = true }
                     }
                     .font(.footnote).buttonStyle(.bordered)
                 }
@@ -286,6 +342,11 @@ struct SketchPlanView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        .confirmationDialog("Throw this sketch away?", isPresented: $askReset, titleVisibility: .visible) {
+            Button("Reset the sketch", role: .destructive) { model.reset() }
+        } message: {
+            Text("Its corners and everything the phone saw will be gone.")
+        }
     }
 
     private var line: String {

@@ -256,11 +256,12 @@ Taken automatically in the iOS Simulator on every build (no camera or LiDAR ther
 
 Room tab → **Sketch**. The phone keeps its place as you walk, so the plan draws itself on the screen.
 
+1. Stand at your first corner and tap **Start**. Nothing is recorded before that.
 1. Walk to a corner. Aim the cross at it, at the floor or at the ceiling if furniture is in the way, from under 2.5 m away, and tap **Corner**. A post appears in the room, and the phone says the length from the last corner.
 2. Tip the phone down and up once, so it finds the floor and ceiling. The height appears on the screen.
 3. If the next stretch has no wall, as into a kitchen, tap **Next: wall** so it says **Next: no wall**, then tap **Corner** where the wall starts again.
-4. Follow the room round. **Undo** takes back a corner.
-5. At the end, tap **Close room** if the last corner joins the first with a wall, then **Save plan**. If you don't close it, the way back to the first corner is saved as open.
+4. Follow the room round. **Undo** takes back a corner. **Reset** throws the whole sketch away, after asking, and goes back to **Start**.
+5. At the end, tap **End**. Turn on **Last corner joins the first with a wall** if it does; otherwise that stretch is saved as open. Then tap **Save plan**. **Keep going** goes back to adding corners.
 6. **Add 360 photos from one spot** takes a normal sweep, and the server fits it onto the plan by itself. You can do this from several spots.
 
 The plan opens on the server's Layout page to correct it and build the BIMCraft and Blender files.
@@ -425,6 +426,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.60.1 | Sketch: **Start**, **End** and **Reset** buttons. Nothing is recorded before Start, End decides how the last stretch finishes, and Reset wipes the sketch after asking. |
 | 0.60.0 | New **Sketch** on the phone: walk the room, tap each corner, and the plan draws itself live; 360 photos then go onto it by themselves. Layout page: join other sweeps into one plan. |
 | 0.59.0 | Layout page: a **3D** view with the layout standing inside the scan, to turn round and see every corner, wall, floor and ceiling chosen. Rooms no longer have to be closed: stretches with no wall are found from the readings, can be changed by hand, and get no wall in BIMCraft and Blender. |
 | 0.58.0 | Layout page: the real scan lies under the plan, seen from above, and you can take off everything above a chosen height. Click a wall or corner to see it in the 360 picture, with green lines where the plan puts it. |
