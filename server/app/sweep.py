@@ -10,9 +10,12 @@ import json
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 import trimesh
 from scipy import ndimage as ndi
+from scipy import sparse
+from scipy.sparse import linalg as sparse_linalg
 
 from . import frames, meshscan
 from .photos import _mat
@@ -357,6 +360,147 @@ def backdrop(D: np.ndarray, centre: np.ndarray, colours: np.ndarray) -> trimesh.
     return depth_mesh(far, centre, colours, jump=50.0)
 
 
+MAX_PARTNERS = 40             # each frame is compared with at most this many others
+FEATURE_WEIGHT = 3.0
+
+
+def _feature_links(d: Path, photos: list[dict], F: list[dict]) -> list:
+    """For frames with a view in common: the same photo features as 3D points in each (i, j, points in i, points in j)."""
+    orb = cv2.ORB_create(1500)
+    feats = []
+    for ph, f in zip(photos, F):
+        img = cv2.imread(str(d / "photos" / ph["file"]), cv2.IMREAD_REDUCED_GRAYSCALE_2)
+        if img is None:
+            feats.append(None)
+            continue
+        kp, des = orb.detectAndCompute(img, None)
+        if des is None or not kp:
+            feats.append(None)
+            continue
+        xy = np.array([k.pt for k in kp]) * 2          # full photo pixels
+        u = (xy[:, 0] * f["w"] / ph["width"]).astype(int).clip(0, f["w"] - 1)
+        v = (xy[:, 1] * f["h"] / ph["height"]).astype(int).clip(0, f["h"] - 1)
+        ok = f["g"][v, u]
+        feats.append((des[ok], f["P"][v[ok], u[ok]], _mat(ph["transform"])[:3, 2]) if ok.sum() >= 10 else None)
+    match = cv2.BFMatcher(cv2.NORM_HAMMING)
+    links = []
+    n = len(F)
+    for i in range(n):
+        if feats[i] is None:
+            continue
+        for j in np.unique(np.linspace(i + 1, n - 1, min(max(n - i - 1, 0), MAX_PARTNERS)).astype(int)) if i + 1 < n else []:
+            if feats[j] is None or float(feats[i][2] @ feats[j][2]) < 0.5:     # the views are over 60 degrees apart
+                continue
+            good = [p[0] for p in match.knnMatch(feats[i][0], feats[j][0], k=2) if len(p) == 2 and p[0].distance < 0.75 * p[1].distance]
+            if len(good) < 8:
+                continue
+            Xi = feats[i][1][[g.queryIdx for g in good]]
+            Xj = feats[j][1][[g.trainIdx for g in good]]
+            near = np.linalg.norm(Xi - Xj, axis=1) < 0.6        # a wrong match lands far away
+            if near.sum() >= 6:
+                links.append((i, int(j), Xi[near], Xj[near]))
+    return links
+
+
+def refine_positions(d: Path, photos: list[dict], rounds: int = 6, step: int = 9, per_pair: int = 120) -> tuple[list[dict], float]:
+    """The frames with their positions corrected against each other, and the largest correction (m). Turning on one spot and pointing at
+    a blank ceiling give ARKit little to go on: on a real sweep its height for the phone was off by up to 29 cm from frame to frame, while
+    each frame's own surfaces were level and its turn was right. So only the positions move: where two frames see the same surface, the
+    point in one should lie on the surface in the other, which is linear in their shifts (point to plane). A wall says nothing about
+    height, though, so nothing would tie the frames looking at the floor to those looking at the ceiling: for that, the same photo feature
+    seen in two frames should be at the same place in 3D. The shift of the whole set is free, so the mean stays at zero."""
+    F = []
+    for ph in photos:
+        D = meshscan._depth_map(d, ph)
+        if D is None:
+            return photos, 0.0
+        D = D.astype(np.float64)
+        D[(D < NEAR_M) | (D > RANGE[1])] = 0
+        P = frames.world_points(ph, D)
+        n = np.cross(P[2:, 1:-1] - P[:-2, 1:-1], P[1:-1, 2:] - P[1:-1, :-2])
+        N = np.zeros_like(P)
+        N[1:-1, 1:-1] = n / (np.linalg.norm(n, axis=2, keepdims=True) + 1e-9)
+        g = D > 0
+        g[:2] = g[-2:] = False
+        g[:, :2] = g[:, -2:] = False
+        k = np.array(ph["intrinsics"], float)
+        h, w = D.shape
+        F.append({"P": P, "N": N, "g": g, "inv": np.linalg.inv(_mat(ph["transform"])), "h": h, "w": w, "fx": k[0][0] * w / ph["width"],
+                  "fy": k[1][1] * h / ph["height"], "cx": k[2][0] * w / ph["width"], "cy": k[2][1] * h / ph["height"]})
+    n = len(F)
+    t = np.zeros((n, 3))
+    rng = np.random.default_rng(0)
+    others = [np.unique(np.linspace(0, n - 1, min(n, MAX_PARTNERS)).astype(int)) for _ in range(n)]
+    links = _feature_links(d, photos, F)
+    for it in range(rounds):
+        gate = max(0.35 * 0.6 ** it, 0.03)      # surfaces further apart than this are not the same surface
+        rows, cols, vals, rhs = [], [], [], []
+        row = 0
+        for i, a_ in enumerate(F):
+            X = a_["P"][a_["g"]][::step] + t[i]
+            for j in others[i]:
+                b_ = F[j]
+                if i == j:
+                    continue
+                C = (X - t[j]) @ b_["inv"][:3, :3].T + b_["inv"][:3, 3]
+                z = -C[:, 2]
+                with np.errstate(all="ignore"):
+                    u, v = b_["fx"] * C[:, 0] / z + b_["cx"], -b_["fy"] * C[:, 1] / z + b_["cy"]
+                ok = (z > NEAR_M) & (u >= 2) & (u < b_["w"] - 2) & (v >= 2) & (v < b_["h"] - 2)
+                if ok.sum() < 150:
+                    continue
+                ui, vi = u[ok].astype(int), v[ok].astype(int)
+                seen = b_["g"][vi, ui]
+                if seen.sum() < 150:
+                    continue
+                nrm = b_["N"][vi[seen], ui[seen]]
+                e = ((X[ok][seen] - b_["P"][vi[seen], ui[seen]] - t[j]) * nrm).sum(1)
+                near = np.abs(e) < gate
+                if near.sum() < 100:
+                    continue
+                e, nrm = e[near], nrm[near]
+                if len(e) > per_pair:
+                    pick = rng.choice(len(e), per_pair, replace=False)
+                    e, nrm = e[pick], nrm[pick]
+                m = len(e)
+                r = np.arange(row, row + m)
+                row += m
+                for ax in range(3):
+                    rows += [r, r]
+                    cols += [np.full(m, 3 * i + ax), np.full(m, 3 * j + ax)]
+                    vals += [nrm[:, ax], -nrm[:, ax]]
+                rhs.append(-e)
+        for i, j, Xi, Xj in links:              # weighted: fewer but each one says more, and it holds in all three directions
+            e = Xi + t[i] - Xj - t[j]
+            near = np.linalg.norm(e, axis=1) < max(gate * 1.5, 0.06)
+            if near.sum() < 4:
+                continue
+            e = e[near]
+            m = len(e)
+            for ax in range(3):
+                r = np.arange(row, row + m)
+                row += m
+                rows += [r, r]
+                cols += [np.full(m, 3 * i + ax), np.full(m, 3 * j + ax)]
+                vals += [np.full(m, FEATURE_WEIGHT), np.full(m, -FEATURE_WEIGHT)]
+                rhs.append(-e[:, ax] * FEATURE_WEIGHT)
+        if not rhs:
+            break
+        A = sparse.coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(row, 3 * n)).tocsr()
+        A = sparse.vstack([A, sparse.identity(3 * n, format="csr")]).tocsr()     # a frame nothing else sees stays where it is
+        dt = sparse_linalg.lsqr(A, np.r_[np.concatenate(rhs), np.zeros(3 * n)], iter_lim=300)[0].reshape(n, 3)
+        t += dt - dt.mean(0)
+    out = []
+    for ph, shift in zip(photos, t):
+        c = np.array(ph["transform"], dtype=float)
+        if c.ndim == 1:
+            c[12:15] += shift
+        else:
+            c[3, :3] += shift
+        out.append({**ph, "transform": c.tolist()})
+    return out, float(np.abs(t).max())
+
+
 def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     """Sweep-from-one-spot room: depth panorama -> measurements, flat clean surface, panorama colours. Writes colored.ply, mesh.bin,
     points.bin, report.json, room.json and panorama.jpg/json. Returns (ok, log)."""
@@ -365,6 +509,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     photos = sweep_frames(d, everything)
     if len(photos) < 5:
         return False, "a sweep needs at least 5 frames with LiDAR depth"
+    photos, moved = refine_positions(d, photos)
     centre = centre_of(photos)
     D, used = fuse_depth_sphere(d, photos, centre)
     cover = float(np.isfinite(D).mean())
@@ -372,7 +517,8 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         return False, "the depth frames covered almost none of the sphere"
     heading = _heading(photos[0])
     room, D2 = measure(D, centre, heading)
-    pano = panorama.ensure(d, width=1536, centre=centre, depth=D2, force=True, photos=panorama.usable_photos(d, {p["file"] for p in photos}))
+    fixed = {p["file"]: p["transform"] for p in photos}     # the corrected positions, for the colours too
+    pano = panorama.ensure(d, width=1536, centre=centre, depth=D2, force=True, photos=[{**p, "transform": fixed[p["file"]]} for p in panorama.usable_photos(d, set(fixed))])
     img = pano["_image"]
     ph, pw = img.shape[:2]
     h, w = D2.shape
@@ -402,7 +548,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         for k in ("width_m", "length_m", "height_m"):
             if k in room:
                 room[k] = round(room[k] * scale, 3)
-    room.update(frames_used=used, frames_elsewhere=len(everything) - len(photos), panorama_coverage=pano["coverage"], depth_coverage=round(cover, 3))
+    room.update(position_fix_cm=round(moved * 100), frames_used=used, frames_elsewhere=len(everything) - len(photos), panorama_coverage=pano["coverage"], depth_coverage=round(cover, 3))
     (d / "room.json").write_text(json.dumps(room, indent=1))
     rep = {"vertices": int(len(mesh.vertices)), "faces": int(len(mesh.faces)), "points": int(ok.sum()),
            "size_m": [round(float(x), 2) for x in mesh.extents], "coloured": pano["coverage"], "photos": len(photos)}

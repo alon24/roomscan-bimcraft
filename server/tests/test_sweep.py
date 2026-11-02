@@ -156,3 +156,19 @@ def test_frames_pointed_at_you_are_left_out(tmp_path):
     ph = {"depth_width": 256, "depth_height": 192}
     assert sweep.looks_at_you(tmp_path, dict(ph, depth_file="n.depth"))
     assert not sweep.looks_at_you(tmp_path, dict(ph, depth_file="f.depth"))
+
+
+def test_frames_whose_height_drifted_are_put_back(scan):
+    """ARKit's height for the phone drifts during a sweep: frames that see the same floor or ceiling are brought back together."""
+    photos = sweep.sweep_frames(scan, sweep.depth_photos(scan))[:24]
+    bad = []
+    for n, ph in enumerate(photos):
+        T = np.array(ph["transform"], float)
+        (T.__setitem__((3, 1), T[3, 1] + 0.15) if n % 2 else None) if T.ndim == 2 else T.__setitem__(13, T[13] + (0.15 if n % 2 else 0))
+        bad.append({**ph, "transform": T.tolist()})
+    fixed, moved = sweep.refine_positions(scan, bad)
+    assert moved > 0.03
+    y = lambda p: sweep._mat(p["transform"])[1, 3]
+    gap_before = abs(np.mean([y(p) for p in bad[1::2]]) - np.mean([y(p) for p in bad[::2]]))
+    gap_after = abs(np.mean([y(p) for p in fixed[1::2]]) - np.mean([y(p) for p in fixed[::2]]))
+    assert gap_before > 0.1 and gap_after < gap_before / 2
