@@ -300,3 +300,23 @@ def test_layout_script_builds_in_bimcraft(tmp_path):
         ok, log = layout.export(tmp_path, {**lay, "openings": [{"kind": "door", "at": [2, 0]}, {"kind": "window", "at": [4, 1.5]}]}, "Test")
         assert ok, log
         assert (tmp_path / "room.bimcraft").exists() and (tmp_path / "layout.glb").exists()
+
+
+def test_layout_overlay_lies_where_the_plan_is(tmp_path):
+    import cv2
+    import trimesh
+    from app import layout
+    # a 2 x 1 m red floor at y = 0, x from 1 to 3, world z from -2 to -1, so plan y from 1 to 2; and a ceiling that must be taken off
+    floor = trimesh.Trimesh([[1, 0, -1], [3, 0, -1], [3, 0, -2], [1, 0, -2]], [[0, 1, 2], [0, 2, 3]], vertex_colors=[[255, 0, 0, 255]] * 4, process=False)
+    ceil = trimesh.Trimesh([[1, 3, -1], [3, 3, -1], [3, 3, -2], [1, 3, -2]], [[0, 1, 2], [0, 2, 3]], vertex_colors=[[0, 255, 0, 255]] * 4, process=False)
+    # long triangles would be dropped as skins, so cut the floor up small
+    floor = floor.subdivide().subdivide().subdivide()
+    ceil = ceil.subdivide().subdivide().subdivide()
+    floor.visual.vertex_colors = [255, 0, 0, 255]
+    ceil.visual.vertex_colors = [0, 255, 0, 255]
+    trimesh.util.concatenate([floor, ceil]).export(tmp_path / "colored.ply")
+    png, m = layout.overlay(tmp_path, 0.0, 0.0, 2.0)
+    assert abs(m["x0"] - 1) < 0.02 and abs(m["x1"] - 3) < 0.03 and abs(m["y1"] - 2) < 0.02 and abs(m["y0"] - 1) < 0.03
+    img = cv2.imread(str(png), cv2.IMREAD_UNCHANGED)
+    h, w = img.shape[:2]
+    assert list(img[h // 2, w // 2]) == [0, 0, 255, 255]     # red, BGRA: the floor, no ceiling

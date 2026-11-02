@@ -27,6 +27,9 @@
   aside { width:310px; flex:none; border-left:1px solid var(--line); background:var(--card); padding:14px 16px; overflow:auto; }
   aside h2 { font-size:13px; margin:18px 0 6px; }
   aside h2:first-child { margin-top:0; }
+  #photo { display:block; width:100%; height:190px; border-radius:7px; background:var(--bg); margin-bottom:4px; }
+  select { font:inherit; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
+  input[type=range] { flex:1; min-width:80px; }
   input[type=number] { font:inherit; width:90px; padding:5px 7px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
   .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0; }
   .mute { color:var(--mute); }
@@ -58,12 +61,21 @@
 <main>
   <div id="wrap"><svg id="svg"></svg><div id="tip"><span id="tipText"></span></div></div>
   <aside>
+    <div id="photoBox" hidden>
+      <h2>What the phone saw here</h2>
+      <canvas id="photo"></canvas>
+      <div class="mute" id="photoNote"></div>
+    </div>
     <div id="panel"></div>
     <h2>Room</h2>
     <div class="row"><label for="height">Height</label> <input id="height" type="number" step="0.01" min="1" max="10"> m</div>
     <div class="mute" id="stats"></div>
     <div id="prob"></div>
-    <div class="row"><label><input type="checkbox" id="showTop" checked> Readings at the walls</label></div>
+    <h2>What is under the plan</h2>
+    <div class="row"><label><input type="checkbox" id="showScan" checked> The scan from above</label></div>
+    <div class="row"><label for="scanCut">Take off above</label> <select id="scanCut"><option value="">Ceiling only</option><option value="2">2 m</option><option value="1.5">1.5 m</option><option value="1">1 m</option></select></div>
+    <div class="row"><label for="scanFade">Strength</label> <input id="scanFade" type="range" min="0.15" max="1" step="0.05" value="0.85"></div>
+    <div class="row"><label><input type="checkbox" id="showTop"> Readings at the walls</label></div>
     <div class="row"><label><input type="checkbox" id="showAll"> Furniture and lower readings</label></div>
     <h2>Walls</h2>
     <table id="walls"></table>
@@ -90,7 +102,7 @@ const $ = id => document.getElementById(id);
 const id = new URLSearchParams(location.search).get("scan");
 const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
 let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
-let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null;
+let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = null, pano = null, scanSeen = false;
 
 const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
 const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
@@ -132,6 +144,11 @@ function draw() {
   const a = toPlan(0, H), b = toPlan(W, 0);
   for (let x = Math.ceil(a[0]); x <= b[0]; x++) { const s = toScreen([x, 0])[0]; el("line", { x1: s, x2: s, y1: 0, y2: H, stroke: c("--line"), "stroke-width": x % 5 ? .5 : 1 }); }
   for (let y = Math.ceil(a[1]); y <= b[1]; y++) { const s = toScreen([0, y])[1]; el("line", { y1: s, y2: s, x1: 0, x2: W, stroke: c("--line"), "stroke-width": y % 5 ? .5 : 1 }); }
+  // the scan from above, under everything else
+  if ($("showScan").checked && scan) {
+    const tl = toScreen([scan.x0, scan.y1]), br = toScreen([scan.x1, scan.y0]);
+    el("image", { href: scan.url, x: tl[0], y: tl[1], width: br[0] - tl[0], height: br[1] - tl[1], preserveAspectRatio: "none", opacity: $("scanFade").value });
+  }
   // the readings, one path per layer: thousands of cells
   const cell = Math.max(1.5, .05 * view.s);
   const dots = (list, colour) => { if (!list.length) return; let d = ""; for (const p of list) { const s = toScreen(p); d += `M${(s[0] - cell / 2).toFixed(1)} ${(s[1] - cell / 2).toFixed(1)}h${cell.toFixed(1)}v${cell.toFixed(1)}h-${cell.toFixed(1)}z`; } el("path", { d, fill: colour }); };
@@ -166,6 +183,42 @@ function draw() {
   $("stats").textContent = `${L.vertices.length} corners · floor area ${area(L.vertices).toFixed(1)} m²`;
   $("walls").replaceChildren(...wallsOf().map(w => { const r = document.createElement("tr"); if (sel?.wall === w.i) r.className = "sel"; r.innerHTML = `<td>Wall ${w.i + 1}</td><td>${fmt(len(w))}</td>`; r.onclick = () => { setTool("select"); select({ wall: w.i }); }; return r; }));
   panel();
+  tip();
+  photo();
+}
+// The selected wall, corner, door or window marked on the 360 picture, in the direction it lies from where the phone stood.
+function azOf(p) {
+  const t = -(L.turn_deg || 0) * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  const wx = p[0] * c - p[1] * s, wz = -(p[0] * s + p[1] * c);
+  return Math.atan2(wx - pano.centre[0], -(wz - pano.centre[2])) * 180 / Math.PI;
+}
+function photo() {
+  let marks = [], note = "";
+  if (measure.length) { marks = measure.map(m => m.p); note = "The green lines are your points."; }
+  else if (sel?.wall != null && wallsOf()[sel.wall]) { const w = wallsOf()[sel.wall]; marks = [w.a, w.b]; note = "The green lines are this wall's two ends. They should sit on its real corners."; }
+  else if (sel?.corner != null && L.vertices[sel.corner]) { marks = [L.vertices[sel.corner]]; note = "The green line is this corner. Drag it onto the real corner."; }
+  else if (sel?.opening != null && L.openings[sel.opening]) { marks = [nearestOnWall(L.openings[sel.opening].at).q]; note = "The green line is the middle of it."; }
+  const ready = pano?.img?.complete && pano.img.naturalWidth;
+  $("photoBox").hidden = !(marks.length && ready);
+  if ($("photoBox").hidden) return;
+  $("photoNote").textContent = note;
+  const cv = $("photo"), W = cv.clientWidth, H = cv.clientHeight, dpr = devicePixelRatio || 1;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d"), first = azOf(marks[0]), rel = marks.map(p => ((azOf(p) - first + 540) % 360) - 180);
+  const lo = Math.min(...rel), hi = Math.max(...rel), mid = first + (lo + hi) / 2;
+  const span = Math.min(330, Math.max(80, hi - lo + 30)), iw = pano.img.naturalWidth, ih = pano.img.naturalHeight;
+  const vert = Math.min(180, span * H / W), sw = span / 360 * iw, sh = vert / 180 * ih, sy = (ih - sh) / 2;
+  const sx = (((mid - span / 2) / 360 + .5) % 1 + 1) % 1 * iw;
+  const k = cv.width / sw;
+  g.fillStyle = "#808080"; g.fillRect(0, 0, cv.width, cv.height);
+  const dh = sh * k, dy = (cv.height - dh) / 2;
+  g.drawImage(pano.img, sx, sy, Math.min(sw, iw - sx), sh, 0, dy, Math.min(sw, iw - sx) * k, dh);
+  if (sx + sw > iw) g.drawImage(pano.img, 0, sy, sx + sw - iw, sh, (iw - sx) * k, dy, (sx + sw - iw) * k, dh);
+  for (const r of rel) {
+    const x = (r - (lo + hi) / 2 + span / 2) / span * cv.width;
+    g.strokeStyle = "rgba(0,0,0,.7)"; g.lineWidth = 4 * dpr; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, cv.height); g.stroke();
+    g.strokeStyle = "#35e06a"; g.lineWidth = 2 * dpr; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, cv.height); g.stroke();
+  }
 }
 function select(s) { sel = s; draw(); if (s?.wall != null) { $("wallLen")?.focus(); $("wallLen")?.select(); } }
 
@@ -230,8 +283,9 @@ function setTool(t) {
 function fit() {
   const v = L.vertices.length ? L.vertices : pts.top; if (!v.length) return;
   const xs = v.map(p => p[0]), ys = v.map(p => p[1]), W = svg.clientWidth, H = svg.clientHeight;
+  if (scan && $("showScan").checked) { xs.push(scan.x0, scan.x1); ys.push(scan.y0, scan.y1); }
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  view.s = Math.min((W - 120) / Math.max(x1 - x0, 1), (H - 130) / Math.max(y1 - y0, 1));
+  view.s = Math.min(W * .9 / Math.max(x1 - x0, 1), H * .84 / Math.max(y1 - y0, 1));
   view.x = W / 2 - (x0 + x1) / 2 * view.s; view.y = H / 2 + (y0 + y1) / 2 * view.s + 16;
   draw();
 }
@@ -311,7 +365,29 @@ window.addEventListener("resize", draw);
 $("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
 $("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
 $("fit").onclick = fit; $("tidy").onclick = tidy;
-$("showTop").onchange = draw; $("showAll").onchange = draw;
+$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw;
+$("scanCut").onchange = loadScan;
+async function loadScan() {
+  const q = $("scanCut").value ? `?cut=${$("scanCut").value}` : "";
+  $("tipText").textContent = "Loading the scan…";
+  try {
+    const r = await fetch(`/api/scans/${id}/layout/overlay.json${q}`);
+    if (!r.ok) { scan = null; $("showScan").closest(".row").hidden = true; draw(); return; }
+    const m = await r.json();
+    scan = { ...m, url: `/api/scans/${id}/layout/overlay.png${q}` };
+  } catch { scan = null; }
+  const first = !scanSeen; scanSeen = true;
+  if (first) fit(); else draw();
+}
+async function loadPano() {
+  try {
+    const r = await fetch(`/api/scans/${id}/panorama.json`); if (!r.ok) return;
+    const j = await r.json(), img = new Image();
+    img.onload = () => draw();
+    img.src = `/api/scans/${id}/panorama.jpg?width=${j.width}`;
+    pano = { centre: j.centre, img };
+  } catch {}
+}
 $("undo").onclick = () => { const h = history.pop(); if (!h) return; const s = JSON.parse(h); L.vertices = s.v; L.openings = s.o; L.height_m = s.h; $("height").value = s.h; $("undo").disabled = !history.length; sel = null; changed(); };
 $("height").onchange = () => { const h = parseFloat($("height").value); if (h >= 1 && h <= 10) { remember(); L.height_m = h; changed(); } };
 $("reset").onclick = async () => { remember(); await fetch(`/api/scans/${id}/layout`, { method: "DELETE" }); clearTimeout(saveT); const j = await (await fetch(`/api/scans/${id}/layout`)).json(); L.vertices = j.vertices; L.openings = j.openings || []; L.height_m = j.height_m; L.turn_deg = j.turn_deg; $("height").value = j.height_m; sel = null; changed(); fit(); };
@@ -332,7 +408,7 @@ $("export").onclick = async () => {
   const j = await r.json();
   pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], height_m: j.height_m, turn_deg: j.turn_deg || 0 };
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
-  fit(); tip();
+  fit(); tip(); loadScan(); loadPano();
 })();
 </script>
 </body>

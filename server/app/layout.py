@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 import trimesh
 from shapely.geometry import Polygon
@@ -14,6 +15,8 @@ from . import convert
 WALL_THICK = 0.1           # metres, for the Blender model
 WALL_TYPE = "Generic - 200mm"
 WALL_CENTRE = 0.1          # metres from the room's face to the middle of that wall
+OVERLAY_CELL = 0.01        # metres per pixel of the scan seen from above
+OVERLAY_MAX_EDGE = 0.35    # metres
 CELL = 0.05                # metres, the grid of the grey readings on the plan
 
 
@@ -90,6 +93,43 @@ def points(d: Path, turn_deg: float = 0.0) -> dict:
     if not f.exists():
         return {"top": [], "all": []}
     return {k: [_rotate(p, turn_deg) for p in v] for k, v in json.loads(f.read_text()).items()}
+
+
+def overlay(d: Path, turn_deg: float, floor_y: float, cut_m: float) -> tuple[Path, dict] | None:
+    """The scan seen from above in its real colours, everything higher than `cut_m` over the floor taken off. Returns the PNG and its extent in plan
+    metres. Built when first asked for."""
+    tag = f"{round(cut_m * 100)}"
+    src, png, meta = d / "colored.ply", d / f"layout_overlay_{tag}.png", d / f"layout_overlay_{tag}.json"
+    if not src.exists():
+        return None
+    if png.exists() and meta.exists() and png.stat().st_mtime >= src.stat().st_mtime:
+        m = json.loads(meta.read_text())
+        if m["turn_deg"] == turn_deg:
+            return png, m
+    mesh = trimesh.load(src, process=False)
+    V, F = np.asarray(mesh.vertices, float), np.asarray(mesh.faces)
+    C = np.asarray(mesh.visual.vertex_colors)[:, :3]
+    cut = floor_y + cut_m
+    c, s = math.cos(math.radians(turn_deg)), math.sin(math.radians(turn_deg))
+    x, y = V[:, 0] * c + V[:, 2] * s, V[:, 0] * s - V[:, 2] * c           # world to plan: (x, -z) turned by turn_deg
+    tri_x, tri_y, tri_h = x[F], y[F], V[:, 1][F]
+    edge = np.maximum.reduce([np.hypot(tri_x[:, i] - tri_x[:, (i + 1) % 3], tri_y[:, i] - tri_y[:, (i + 1) % 3]) for i in range(3)])
+    keep = (tri_h.max(axis=1) < cut) & (edge < OVERLAY_MAX_EDGE)         # no ceiling, and no skins stretched from something near to the wall behind it
+    F, tri_x, tri_y, tri_h = F[keep], tri_x[keep], tri_y[keep], tri_h[keep]
+    if not len(F):
+        return None
+    x0, x1, y0, y1 = float(tri_x.min()), float(tri_x.max()), float(tri_y.min()), float(tri_y.max())
+    w, h = int((x1 - x0) / OVERLAY_CELL) + 2, int((y1 - y0) / OVERLAY_CELL) + 2
+    img = np.zeros((h, w, 4), np.uint8)
+    px = np.stack([(tri_x - x0) / OVERLAY_CELL, (y1 - tri_y) / OVERLAY_CELL], axis=-1).round().astype(np.int32)
+    col = C[F].mean(axis=1).astype(np.uint8)
+    for i in np.argsort(tri_h.mean(axis=1)):                              # lowest first: what is higher covers it, as seen from above
+        r, g, b = col[i]
+        cv2.fillConvexPoly(img, px[i], (int(b), int(g), int(r), 255))
+    cv2.imwrite(str(png), img)
+    m = {"x0": round(x0, 3), "y0": round(y1 - h * OVERLAY_CELL, 3), "x1": round(x0 + w * OVERLAY_CELL, 3), "y1": round(y1, 3), "turn_deg": turn_deg}
+    meta.write_text(json.dumps(m))
+    return png, m
 
 
 def _area(v: list[list[float]]) -> float:

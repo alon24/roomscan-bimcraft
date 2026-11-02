@@ -425,6 +425,33 @@ def get_layout(scan_id: str):
     return {**lay, "points": layout_mod.points(d, lay.get("turn_deg", 0.0)), "name": _meta(d).get("name", "")}
 
 
+def _layout_overlay(scan_id: str, cut: float | None):
+    d = _dir(scan_id)
+    room_file = d / "room.json"
+    if not room_file.exists():
+        raise HTTPException(404, "only a sweep has a layout so far")
+    room, lay = json.loads(room_file.read_text()), layout_mod.load(d)
+    floor_m = room["floor"].get("wall_m")
+    if floor_m is None:
+        raise HTTPException(404, "this sweep did not find the floor")
+    # the plain view takes off only the ceiling; the plan's height can have been edited, the scan's has not
+    cut_m = cut if cut is not None else (room.get("height_m") or 2.5) - 0.08
+    made = layout_mod.overlay(d, lay.get("turn_deg", 0.0), room["centre"][1] - floor_m, max(0.1, min(cut_m, 10.0)))
+    if not made:
+        raise HTTPException(404, "this sweep has no coloured surface")
+    return made
+
+
+@app.get("/api/scans/{scan_id}/layout/overlay.json")
+def layout_overlay_json(scan_id: str, cut: float | None = None):
+    return _layout_overlay(scan_id, cut)[1]
+
+
+@app.get("/api/scans/{scan_id}/layout/overlay.png")
+def layout_overlay_png(scan_id: str, cut: float | None = None):
+    return FileResponse(_layout_overlay(scan_id, cut)[0], media_type="image/png")
+
+
 @app.put("/api/scans/{scan_id}/layout")
 def put_layout(scan_id: str, body: dict):
     d = _dir(scan_id)
