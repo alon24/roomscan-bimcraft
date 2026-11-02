@@ -339,10 +339,14 @@ at least size + 4 mm across; connectors on strongly curved or thin cuts can fail
 
 ![The Layout page](docs/img/web-layout.jpg)
 
+![The layout standing inside the scan in 3D](docs/img/web-layout-3d.jpg)
+
 Open a sweep on the web page and press **Layout**. You get the room from above with no pictures: the walls with their lengths, on a 1 m grid, over the grey readings the scan took at the walls. Your changes save by themselves and stay when the scan is re-converted.
 
 - **See what is real:** the scan lies under the plan, seen from above in its real colours, so you can tell a wall from a sofa. **Take off above** removes everything higher than 2, 1.5 or 1 m, which lets you see under a lowered ceiling. **Strength** fades it, and you can turn it off.
 - **Check you're fixing the right place:** click a wall or corner and **What the phone saw here** shows that spot in the 360 picture, with green lines where the plan puts it. Drag a corner and its line moves. Line it up with the real corner.
+- **See it in 3D:** press **3D**. The layout stands inside the scan: walls as see-through panels, corners as balls, plus what I took as the floor and ceiling, and where the phone stood. Drag to turn it, right-drag to move sideways, scroll to zoom. **From above** and **From the phone's spot** jump to those views. Drag a corner's ball to move it, or click a wall to select it. **See the plan through the scan** shows the layout even where the scan is in front of it.
+- **Open areas:** a room doesn't have to be closed. Stretches where the phone saw well past the line, such as into a kitchen, start as **open** (dashed orange, no wall). Click a stretch and press **No wall here: it's open** or **There is a wall here** to change it. BIMCraft and Blender get walls only where there are walls. BIMCraft can only make a named room inside closed walls, so an open plan has floor, ceiling and walls but no room object.
 - **Move a corner:** drag it. Double-click a wall to add a corner. Click a corner and press Delete to remove it.
 - **Type a wall's real length:** click the wall, type the tape's number, press Enter.
 - **Type the length between any two points:** press **Set a length**, click two points, type the number, press Enter.
@@ -404,6 +408,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.59.0 | Layout page: a **3D** view with the layout standing inside the scan, to turn round and see every corner, wall, floor and ceiling chosen. Rooms no longer have to be closed: stretches with no wall are found from the readings, can be changed by hand, and get no wall in BIMCraft and Blender. |
 | 0.58.0 | Layout page: the real scan lies under the plan, seen from above, and you can take off everything above a chosen height. Click a wall or corner to see it in the 360 picture, with green lines where the plan puts it. |
 | 0.57.0 | Web page: a **Layout** page for sweeps shows the room as a plan with no pictures. Drag corners, type real lengths, add doors and windows, then build `room.bimcraft`, `room.ifc` and a Blender `layout.glb`. |
 | 0.56.0 | Sweeps: a **green line on the rings** shows where the camera points now, with a dot on the ring you are at, so you can steer into anything empty. "Everything is covered" is gone: it appeared with up to 30% of the ceiling or floor empty. The voice and text now take you to the nearest empty section ("Ceiling gap to your right: turn 40° and tip the phone up"), and a section needs the camera closer to it to count. The web page shows a spinner while the server builds a scan or makes the 360 picture. 360 pictures now use up to 200 photos and keep the best one for every direction: a sweep with big grey areas went from 46% to 80% covered. Press **Re-convert** on older sweeps. |

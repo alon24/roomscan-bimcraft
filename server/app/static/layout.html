@@ -23,6 +23,8 @@
   .gap { flex:1; }
   main { flex:1; min-height:0; display:flex; }
   #wrap { flex:1; min-width:0; position:relative; }
+  #gl { position:absolute; inset:0; } #gl canvas { display:block; touch-action:none; }
+  .v3 { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
   svg { position:absolute; inset:0; width:100%; height:100%; touch-action:none; user-select:none; display:block; }
   aside { width:310px; flex:none; border-left:1px solid var(--line); background:var(--card); padding:14px 16px; overflow:auto; }
   aside h2 { font-size:13px; margin:18px 0 6px; }
@@ -48,6 +50,8 @@
   <h1 id="name">Layout</h1>
   <a id="back" href="/">Back to the scan</a>
   <span class="gap"></span>
+  <button id="v3d" title="Turn the plan and the scan around together in 3D">3D</button>
+  <span style="width:8px"></span>
   <button id="tSelect" class="on">Move</button>
   <button id="tMeasure">Set a length</button>
   <button id="tDoor">Add door</button>
@@ -59,7 +63,7 @@
   <button id="fit">Fit</button>
 </header>
 <main>
-  <div id="wrap"><svg id="svg"></svg><div id="tip"><span id="tipText"></span></div></div>
+  <div id="wrap"><svg id="svg"></svg><div id="gl" hidden></div><div id="tip"><span id="tipText"></span></div></div>
   <aside>
     <div id="photoBox" hidden>
       <h2>What the phone saw here</h2>
@@ -73,10 +77,14 @@
     <div id="prob"></div>
     <h2>What is under the plan</h2>
     <div class="row"><label><input type="checkbox" id="showScan" checked> The scan from above</label></div>
-    <div class="row"><label for="scanCut">Take off above</label> <select id="scanCut"><option value="">Ceiling only</option><option value="2">2 m</option><option value="1.5">1.5 m</option><option value="1">1 m</option></select></div>
+    <div class="row"><label for="scanCut">Take off above</label> <select id="scanCut"><option value="off">Nothing</option><option value="" selected>Ceiling only</option><option value="2">2 m</option><option value="1.5">1.5 m</option><option value="1">1 m</option></select></div>
     <div class="row"><label for="scanFade">Strength</label> <input id="scanFade" type="range" min="0.15" max="1" step="0.05" value="0.85"></div>
     <div class="row"><label><input type="checkbox" id="showTop"> Readings at the walls</label></div>
     <div class="row"><label><input type="checkbox" id="showAll"> Furniture and lower readings</label></div>
+    <div id="only3d" hidden>
+      <div class="row"><label><input type="checkbox" id="xray" checked> See the plan through the scan</label></div>
+      <div class="v3"><button id="vAbove">From above</button><button id="vPhone">From the phone's spot</button></div>
+    </div>
     <h2>Walls</h2>
     <table id="walls"></table>
     <h2>Make the files</h2>
@@ -102,7 +110,7 @@ const $ = id => document.getElementById(id);
 const id = new URLSearchParams(location.search).get("scan");
 const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
 let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
-let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = null, pano = null, scanSeen = false;
+let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = null, pano = null, scanSeen = false, is3d = false, scene = null;
 
 const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
 const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
@@ -110,7 +118,7 @@ const wallsOf = () => L.vertices.map((a, i) => ({ i, a, b: L.vertices[(i + 1) % 
 const len = w => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
 const fmt = m => m.toFixed(2) + " m";
 const area = v => Math.abs(v.reduce((s, a, i) => { const b = v[(i + 1) % v.length]; return s + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
-const clone = () => JSON.stringify({ v: L.vertices, o: L.openings, h: L.height_m });
+const clone = () => JSON.stringify({ v: L.vertices, o: L.openings, h: L.height_m, g: L.open });
 
 function remember() { history.push(clone()); if (history.length > 100) history.shift(); $("undo").disabled = false; }
 function changed() { draw(); clearTimeout(saveT); saveT = setTimeout(save, 400); }
@@ -137,6 +145,7 @@ function nearestOnWall(p) {
   return best;
 }
 function draw() {
+  if (is3d) { build3d(); side(); return; }
   svg.replaceChildren();
   const css = getComputedStyle(document.documentElement), c = n => css.getPropertyValue(n).trim();
   const W = svg.clientWidth, H = svg.clientHeight;
@@ -156,12 +165,12 @@ function draw() {
   if ($("showTop").checked) dots(pts.top, c("--read"));
   // the walls
   for (const w of wallsOf()) {
-    const p = toScreen(w.a), q = toScreen(w.b), on = sel?.wall === w.i;
-    el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: on ? c("--sel") : c("--ink"), "stroke-width": on ? 5 : 3.5, "stroke-linecap": "round" });
+    const p = toScreen(w.a), q = toScreen(w.b), on = sel?.wall === w.i, gap = L.open[w.i];
+    el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: on ? c("--sel") : gap ? c("--door") : c("--ink"), "stroke-width": on ? 5 : gap ? 2.5 : 3.5, "stroke-linecap": "round", ...(gap ? { "stroke-dasharray": "3 8" } : {}) });
     el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: "transparent", "stroke-width": 18, "data-wall": w.i, style: "cursor:pointer" });
     const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2, l = Math.hypot(q[0] - p[0], q[1] - p[1]);
     if (l > 42) {
-      const t = fmt(len(w)), bw = t.length * 7.6 + 10;
+      const t = (gap ? "open " : "") + fmt(len(w)), bw = t.length * 7.6 + 10;
       const g = el("g", { "data-wall": w.i, style: "cursor:pointer" });
       el("rect", { x: mx - bw / 2, y: my - 10, width: bw, height: 20, rx: 5, fill: c("--card"), stroke: on ? c("--sel") : c("--line"), "data-wall": w.i }, g);
       el("text", { x: mx, y: my + 4.5, "text-anchor": "middle", "font-size": 13, "font-weight": 600, fill: on ? c("--sel") : c("--ink"), "data-wall": w.i }, g, t);
@@ -180,16 +189,23 @@ function draw() {
   });
   // a length being set
   measure.forEach((m, i) => { const s = toScreen(m.p); el("circle", { cx: s[0], cy: s[1], r: 6, fill: c("--acc") }); if (i) { const r = toScreen(measure[0].p); el("line", { x1: r[0], y1: r[1], x2: s[0], y2: s[1], stroke: c("--acc"), "stroke-width": 2.5, "stroke-dasharray": "6 4" }); } });
-  $("stats").textContent = `${L.vertices.length} corners · floor area ${area(L.vertices).toFixed(1)} m²`;
-  $("walls").replaceChildren(...wallsOf().map(w => { const r = document.createElement("tr"); if (sel?.wall === w.i) r.className = "sel"; r.innerHTML = `<td>Wall ${w.i + 1}</td><td>${fmt(len(w))}</td>`; r.onclick = () => { setTool("select"); select({ wall: w.i }); }; return r; }));
+  side();
+}
+function side() {
+  const gaps = L.open.filter(Boolean).length;
+  $("stats").textContent = `${L.vertices.length} corners · floor area ${area(L.vertices).toFixed(1)} m²${gaps ? ` · ${gaps} open, no wall` : ""}`;
+  $("walls").replaceChildren(...wallsOf().map(w => { const r = document.createElement("tr"); if (sel?.wall === w.i) r.className = "sel"; r.innerHTML = `<td>Wall ${w.i + 1}${L.open[w.i] ? " (open)" : ""}</td><td>${fmt(len(w))}</td>`; r.onclick = () => { setTool("select"); select({ wall: w.i }); }; return r; }));
   panel();
   tip();
   photo();
 }
+function planToWorld(p) {
+  const t = -(L.turn_deg || 0) * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  return [p[0] * c - p[1] * s, -(p[0] * s + p[1] * c)];
+}
 // The selected wall, corner, door or window marked on the 360 picture, in the direction it lies from where the phone stood.
 function azOf(p) {
-  const t = -(L.turn_deg || 0) * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
-  const wx = p[0] * c - p[1] * s, wz = -(p[0] * s + p[1] * c);
+  const [wx, wz] = planToWorld(p);
   return Math.atan2(wx - pano.centre[0], -(wz - pano.centre[2])) * 180 / Math.PI;
 }
 function photo() {
@@ -253,6 +269,9 @@ function panel() {
     const w = wallsOf()[sel.wall]; if (!w) return;
     head(`Wall ${w.i + 1}`);
     askLength("Real length", len(w), v => stretch(w.a, w.b, v, len(w) - .05));
+    const o = document.createElement("div"); o.className = "row";
+    const ob = document.createElement("button"); ob.textContent = L.open[w.i] ? "There is a wall here" : "No wall here: it's open";
+    ob.onclick = () => { remember(); L.open[w.i] = !L.open[w.i]; changed(); }; o.append(ob); P.append(o);
     const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past this wall's end moves to match. Double-click a wall to add a corner."; P.append(n);
   } else if (sel?.corner != null) {
     head(`Corner ${sel.corner + 1}`);
@@ -265,13 +284,13 @@ function panel() {
 }
 function tip() {
   $("tipText").textContent = {
-    select: "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
+    select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · drag a corner's ball to move it · click a wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
     measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : "Type the real length on the right",
     door: "Click a wall where the door is", window: "Click a wall where the window is",
   }[tool];
 }
 function removeSelected() {
-  if (sel?.corner != null && L.vertices.length > 3) { remember(); L.vertices.splice(sel.corner, 1); sel = null; changed(); }
+  if (sel?.corner != null && L.vertices.length > 3) { remember(); L.vertices.splice(sel.corner, 1); L.open.splice(sel.corner, 1); sel = null; changed(); }
   else if (sel?.opening != null) { remember(); L.openings.splice(sel.opening, 1); sel = null; changed(); }
 }
 function setTool(t) {
@@ -292,7 +311,7 @@ function fit() {
 // Tidy: drop the corners that make very short walls or hardly turn, then lay walls near an axis exactly along it.
 function tidy() {
   remember();
-  let v = L.vertices.map(p => [...p]);
+  let v = L.vertices.map((p, i) => { const q = [...p]; q.gap = L.open[i]; return q; });
   const prune = () => {
     let again = true;
     while (again && v.length > 3) {
@@ -313,6 +332,7 @@ function tidy() {
     else if (dx < dy * tol) a[0] = b[0] = (a[0] + b[0]) / 2;
   }
   prune();      // straightening can leave corners in a line
+  L.open = v.map(p => !!p.gap);
   L.vertices = v.map(p => [+p[0].toFixed(3), +p[1].toFixed(3)]); sel = null; changed();
 }
 
@@ -347,7 +367,7 @@ svg.addEventListener("pointerup", () => { if (drag?.corner != null) { if (drag.m
 svg.addEventListener("dblclick", e => {
   if (tool !== "select" || e.target.dataset.wall == null) return;
   const r = svg.getBoundingClientRect(), p = toPlan(e.clientX - r.left, e.clientY - r.top), n = nearestOnWall(p);
-  remember(); L.vertices.splice(n.w.i + 1, 0, [+n.q[0].toFixed(3), +n.q[1].toFixed(3)]); sel = { corner: n.w.i + 1 }; changed();
+  remember(); L.vertices.splice(n.w.i + 1, 0, [+n.q[0].toFixed(3), +n.q[1].toFixed(3)]); L.open.splice(n.w.i + 1, 0, L.open[n.w.i]); sel = { corner: n.w.i + 1 }; changed();
 });
 svg.addEventListener("wheel", e => {
   e.preventDefault();
@@ -364,11 +384,14 @@ document.addEventListener("keydown", e => {
 window.addEventListener("resize", draw);
 $("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
 $("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
-$("fit").onclick = fit; $("tidy").onclick = tidy;
-$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw;
+$("fit").onclick = () => is3d ? view3d("start") : fit(); $("tidy").onclick = tidy;
+$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw;
+$("vAbove").onclick = () => view3d("above"); $("vPhone").onclick = () => view3d("phone");
+$("v3d").onclick = () => set3d(!is3d);
 $("scanCut").onchange = loadScan;
 async function loadScan() {
-  const q = $("scanCut").value ? `?cut=${$("scanCut").value}` : "";
+  if (is3d) { clip3d(); return; }
+  const cutV = $("scanCut").value, q = cutV && cutV !== "off" ? `?cut=${cutV}` : "";
   $("tipText").textContent = "Loading the scan…";
   try {
     const r = await fetch(`/api/scans/${id}/layout/overlay.json${q}`);
@@ -388,9 +411,9 @@ async function loadPano() {
     pano = { centre: j.centre, img };
   } catch {}
 }
-$("undo").onclick = () => { const h = history.pop(); if (!h) return; const s = JSON.parse(h); L.vertices = s.v; L.openings = s.o; L.height_m = s.h; $("height").value = s.h; $("undo").disabled = !history.length; sel = null; changed(); };
+$("undo").onclick = () => { const h = history.pop(); if (!h) return; const s = JSON.parse(h); L.vertices = s.v; L.openings = s.o; L.height_m = s.h; L.open = s.g; $("height").value = s.h; $("undo").disabled = !history.length; sel = null; changed(); };
 $("height").onchange = () => { const h = parseFloat($("height").value); if (h >= 1 && h <= 10) { remember(); L.height_m = h; changed(); } };
-$("reset").onclick = async () => { remember(); await fetch(`/api/scans/${id}/layout`, { method: "DELETE" }); clearTimeout(saveT); const j = await (await fetch(`/api/scans/${id}/layout`)).json(); L.vertices = j.vertices; L.openings = j.openings || []; L.height_m = j.height_m; L.turn_deg = j.turn_deg; $("height").value = j.height_m; sel = null; changed(); fit(); };
+$("reset").onclick = async () => { remember(); await fetch(`/api/scans/${id}/layout`, { method: "DELETE" }); clearTimeout(saveT); const j = await (await fetch(`/api/scans/${id}/layout`)).json(); L.vertices = j.vertices; L.openings = j.openings || []; L.open = j.open; L.height_m = j.height_m; L.turn_deg = j.turn_deg; $("height").value = j.height_m; sel = null; changed(); fit(); };
 $("export").onclick = async () => {
   const b = $("export"), m = $("exportMsg"); b.disabled = true; m.textContent = "Building…"; $("files").replaceChildren();
   try {
@@ -401,12 +424,173 @@ $("export").onclick = async () => {
     for (const f of j.files) { const a = document.createElement("a"); a.className = "dl"; a.href = `/api/scans/${id}/${f}`; a.download = f; a.textContent = f; $("files").append(a); }
   } catch (e) { m.textContent = "Could not build: " + e; } finally { b.disabled = false; }
 };
+// ---- 3D: the plan standing in the scan, turned round together ----
+let T = null, G = null;      // three.js and everything of the view
+async function set3d(on) {
+  if (on && !T) { $("tipText").textContent = "Loading 3D…"; T = await import("./three.module.min.js"); init3d(); }
+  is3d = on;
+  $("v3d").classList.toggle("on", on); $("v3d").textContent = on ? "Plan" : "3D";
+  $("gl").hidden = !on; svg.style.display = on ? "none" : ""; $("only3d").hidden = !on;
+  for (const b of ["tMeasure", "tDoor", "tWindow"]) $(b).disabled = on;
+  setTool("select");
+  if (on) { resize3d(); await loadMesh(); clip3d(); view3d(G.placed ? null : "start"); G.placed = true; draw(); } else { loadScan(); }
+}
+function init3d() {
+  const box = $("gl"), renderer = new T.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio || 1); renderer.localClippingEnabled = true;
+  box.appendChild(renderer.domElement);
+  const world = new T.Scene(); world.background = new T.Color(getComputedStyle(document.body).backgroundColor);
+  const camera = new T.PerspectiveCamera(50, 1, 0.02, 200), overlay = new T.Group(); world.add(overlay);
+  G = { renderer, world, camera, overlay, mesh: null, target: new T.Vector3(), az: 0, el: .8, r: 10, labels: new Map(), hits: [], dirty: true };
+  const dom = renderer.domElement, ray = new T.Raycaster();
+  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); return ray.intersectObjects(G.hits, false)[0]; };
+  let act = null;
+  dom.addEventListener("contextmenu", e => e.preventDefault());
+  dom.addEventListener("pointerdown", e => {
+    if (document.activeElement?.tagName === "INPUT") document.activeElement.blur();
+    dom.setPointerCapture(e.pointerId);
+    const hit = e.button === 0 && !e.shiftKey ? pick(e) : null;
+    if (hit?.object.userData.corner != null) { remember(); act = { corner: hit.object.userData.corner, y: hit.point.y, moved: false }; sel = { corner: act.corner }; draw(); return; }
+    act = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, pan: e.button !== 0 || e.shiftKey, hit };
+  });
+  dom.addEventListener("pointermove", e => {
+    if (!act) return;
+    if (act.corner != null) {
+      const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
+      const q = ray.ray.intersectPlane(new T.Plane(new T.Vector3(0, 1, 0), -act.y), new T.Vector3());
+      if (q) { L.vertices[act.corner] = worldToPlan(q.x, q.z); act.moved = true; draw(); }
+      return;
+    }
+    const dx = e.clientX - act.x, dy = e.clientY - act.y; act.x = e.clientX; act.y = e.clientY;
+    if (act.pan) {
+      const k = G.r * .0016, right = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), up = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+      G.target.addScaledVector(right, -dx * k).addScaledVector(up, dy * k);
+    } else { G.az -= dx * .006; G.el = Math.max(-1.5, Math.min(1.54, G.el + dy * .006)); }
+    place3d();
+  });
+  dom.addEventListener("pointerup", e => {
+    if (act?.corner != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
+    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { select(act.hit?.object.userData.wall != null ? { wall: act.hit.object.userData.wall } : null); }
+    act = null;
+  });
+  dom.addEventListener("wheel", e => { e.preventDefault(); G.r = Math.max(.05, Math.min(60, G.r * Math.exp(e.deltaY * .0012))); place3d(); }, { passive: false });
+  window.addEventListener("resize", resize3d);
+  (function loop() { requestAnimationFrame(loop); if (G.dirty && is3d) { G.dirty = false; renderer.render(world, camera); } })();
+}
+function worldToPlan(wx, wz) {
+  const t = (L.turn_deg || 0) * Math.PI / 180, c = Math.cos(t), s = Math.sin(t), py = -wz;
+  return [+(wx * c - py * s).toFixed(3), +(wx * s + py * c).toFixed(3)];
+}
+function resize3d() { if (!G || !is3d) return; const w = $("wrap").clientWidth, h = $("wrap").clientHeight; G.renderer.setSize(w, h); G.camera.aspect = w / h; G.camera.updateProjectionMatrix(); G.dirty = true; }
+function place3d() {
+  const c = Math.cos(G.el);
+  G.camera.position.set(G.target.x + G.r * c * Math.sin(G.az), G.target.y + G.r * Math.sin(G.el), G.target.z + G.r * c * Math.cos(G.az));
+  G.camera.up.set(0, 1, 0); G.camera.lookAt(G.target); G.camera.updateMatrixWorld(); showPhone(); G.dirty = true;
+}
+function showPhone() { for (const o of G.phoneBits || []) o.visible = G.r > .5; }       // from the phone's own spot its marker would fill the view
+function view3d(kind) {
+  if (!kind) return place3d();
+  const v = L.vertices.map(planToWorld), xs = v.map(p => p[0]), zs = v.map(p => p[1]);
+  const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs), 2);
+  const south = planToWorld([0, -1]);       // the view starts from the plan's bottom edge, so it reads the same way round as the plan
+  G.az = Math.atan2(south[0], south[1]);
+  if (kind === "phone") { G.target.set(scene.phone[0], scene.phone[1], scene.phone[2]); G.r = .05; G.el = 0; G.az += Math.PI; return place3d(); }
+  G.target.set((Math.min(...xs) + Math.max(...xs)) / 2, scene.floor + .8, (Math.min(...zs) + Math.max(...zs)) / 2);
+  G.r = size * 1.25; G.el = kind === "above" ? 1.54 : .85; place3d();
+}
+async function loadMesh() {
+  if (G.mesh) return;
+  $("tipText").textContent = "Loading the scan…";
+  const rep = await (await fetch(`/api/scans/${id}/report.json`)).json();
+  const buf = await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), n = rep.vertices, colourBytes = Math.ceil(n * 3 / 4) * 4;
+  const g = new T.BufferGeometry();
+  g.setAttribute("position", new T.BufferAttribute(new Float32Array(buf, 0, n * 3), 3));
+  const rgb = new Uint8Array(buf, n * 12, n * 3), lin = new Float32Array(n * 3);
+  for (let i = 0; i < lin.length; i++) lin[i] = Math.pow(rgb[i] / 255, 2.2);
+  g.setAttribute("color", new T.BufferAttribute(lin, 3));
+  g.setIndex(new T.BufferAttribute(new Uint32Array(buf, n * 12 + colourBytes, rep.faces * 3), 1));
+  G.mesh = new T.Mesh(g, new T.MeshBasicMaterial({ vertexColors: true, side: T.DoubleSide }));
+  G.world.add(G.mesh); tip();
+}
+function clip3d() {
+  if (!G?.mesh) return;
+  const v = $("scanCut").value, y = v === "off" ? null : scene.floor + (v ? parseFloat(v) : (scene.ceiling != null ? scene.ceiling - scene.floor : L.height_m) - .08);
+  G.mesh.material.clippingPlanes = y == null ? [] : [new T.Plane(new T.Vector3(0, -1, 0), y)];
+  G.mesh.material.needsUpdate = true; G.dirty = true;
+}
+function label3d(text, colour) {
+  const key = text + colour; let tex = G.labels.get(key);
+  if (!tex) {
+    const c = document.createElement("canvas"), g = c.getContext("2d"), f = "600 40px system-ui,sans-serif"; g.font = f;
+    c.width = g.measureText(text).width + 32; c.height = 60; g.font = f;
+    g.fillStyle = "rgba(255,255,255,.93)"; g.strokeStyle = colour; g.lineWidth = 4; g.beginPath(); g.roundRect(2, 2, c.width - 4, c.height - 4, 12); g.fill(); g.stroke();
+    g.fillStyle = colour; g.textBaseline = "middle"; g.fillText(text, 16, 32);
+    tex = new T.CanvasTexture(c); tex.colorSpace = T.SRGBColorSpace; tex.userData = { aspect: c.width / c.height }; G.labels.set(key, tex);
+  }
+  const s = new T.Sprite(new T.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+  s.scale.set(.024 * tex.userData.aspect, .024, 1); s.renderOrder = 30; return s;
+}
+function build3d() {
+  if (!G) return;
+  const xray = $("xray").checked, ov = G.overlay;
+  ov.traverse(o => { if (o !== ov) { o.geometry?.dispose(); o.material?.dispose(); } });
+  ov.clear(); G.hits = [];
+  if (G.mesh) {
+    G.mesh.visible = $("showScan").checked;
+    const a = parseFloat($("scanFade").value); G.mesh.material.transparent = a < 1; G.mesh.material.opacity = a; G.mesh.material.needsUpdate = true;
+  }
+  const y0 = scene.floor, y1 = scene.floor + L.height_m, up = new T.Vector3(0, 1, 0);
+  const mat = (colour, o = {}) => new T.MeshBasicMaterial({ color: colour, depthTest: !xray, ...o });
+  const bar = (a, b, r, colour) => {
+    const d = new T.Vector3().subVectors(b, a), m = new T.Mesh(new T.CylinderGeometry(r, r, d.length(), 8), mat(colour));
+    m.position.copy(a).addScaledVector(d, .5); m.quaternion.setFromUnitVectors(up, d.clone().normalize()); m.renderOrder = 20; ov.add(m); return m;
+  };
+  const at = (p, y) => { const [x, z] = planToWorld(p); return new T.Vector3(x, y, z); };
+  wallsOf().forEach(w => {
+    const on = sel?.wall === w.i, gap = L.open[w.i], colour = on ? 0xe0226e : gap ? 0xd9761e : 0x0f9d8f, a0 = at(w.a, y0), b0 = at(w.b, y0), a1 = at(w.a, y1), b1 = at(w.b, y1);
+    const pos = new Float32Array([a0.x, y0, a0.z, b0.x, y0, b0.z, b1.x, y1, b1.z, a1.x, y1, a1.z]), g = new T.BufferGeometry();
+    g.setAttribute("position", new T.BufferAttribute(pos, 3)); g.setIndex([0, 1, 2, 0, 2, 3]);
+    const panel = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: gap ? (on ? .16 : .03) : on ? .42 : .22, side: T.DoubleSide, depthWrite: false, depthTest: !xray }));
+    panel.renderOrder = 10; panel.userData.wall = w.i; ov.add(panel); G.hits.push(panel);
+    bar(a0, b0, on ? .022 : .014, colour); bar(a1, b1, on ? .022 : .014, colour);
+    const s = label3d(`Wall ${w.i + 1}${gap ? " open" : ""}: ${fmt(len(w))}`, on ? "#e0226e" : gap ? "#b35f14" : "#0a7a6f");
+    s.position.copy(a1).lerp(b1, .5); ov.add(s);
+  });
+  L.vertices.forEach((v, i) => {
+    const on = sel?.corner === i, colour = on ? 0xe0226e : 0x15191c, a = at(v, y0), b = at(v, y1);
+    bar(a, b, on ? .02 : .012, colour);
+    for (const p of [a, b]) {
+      const ball = new T.Mesh(new T.SphereGeometry(on ? .1 : .075, 16, 12), mat(colour)); ball.position.copy(p); ball.renderOrder = 25; ball.userData.corner = i; ov.add(ball); G.hits.push(ball);
+    }
+    const s = label3d(`${i + 1}`, on ? "#e0226e" : "#15191c"); s.position.copy(b).add(new T.Vector3(0, .2, 0)); ov.add(s);
+  });
+  // what the floor and the ceiling were taken to be, and where the phone was
+  const mid = L.vertices.reduce((m, p) => [m[0] + p[0] / L.vertices.length, m[1] + p[1] / L.vertices.length], [0, 0]);
+  const fl = label3d(`Floor I chose`, "#2478c8"); fl.position.copy(at(mid, y0)).lerp(at(L.vertices[0], y0), .35); ov.add(fl);
+  const ceilY = scene.ceiling ?? y1, cl = label3d(`Ceiling I chose: ${(ceilY - y0).toFixed(2)} m up`, "#2478c8"); cl.position.copy(at(mid, ceilY)).lerp(at(L.vertices[0], ceilY), .35); ov.add(cl);
+  const shape = (y, colour) => { const pts = L.vertices.map(p => at(p, y)); return new T.Line(new T.BufferGeometry().setFromPoints([...pts, pts[0]]), new T.LineBasicMaterial({ color: colour, depthTest: !xray })); };
+  if (Math.abs(ceilY - y1) > .01) ov.add(shape(ceilY, 0x2478c8));
+  const P = new T.Vector3(...scene.phone), ph = new T.Mesh(new T.SphereGeometry(.09, 16, 12), mat(0xf2c200)); ph.position.copy(P); ph.renderOrder = 25; ov.add(ph);
+  const pole = bar(new T.Vector3(P.x, y0, P.z), P, .008, 0xf2c200);
+  G.phoneBits = [ph, pole]; showPhone();
+  const pl = label3d("Phone stood here", "#8a6d00"); pl.position.copy(P).add(new T.Vector3(0, .2, 0)); ov.add(pl);
+  // the readings the walls came from, in the band they were read
+  if ($("showTop").checked && pts.top.length) {
+    const yb = (scene.ceiling ?? y1) - .35, arr = new Float32Array(pts.top.length * 3);
+    pts.top.forEach((p, i) => { const [x, z] = planToWorld(p); arr[i * 3] = x; arr[i * 3 + 1] = yb; arr[i * 3 + 2] = z; });
+    const g = new T.BufferGeometry(); g.setAttribute("position", new T.BufferAttribute(arr, 3));
+    ov.add(new T.Points(g, new T.PointsMaterial({ color: 0x2b4bff, size: 3, sizeAttenuation: false, depthTest: !xray })));
+  }
+  G.dirty = true;
+}
+
 (async () => {
   $("back").href = `/?scan=${id}`;
   const r = await fetch(`/api/scans/${id}/layout`);
   if (!r.ok) { $("tipText").textContent = "This scan has no layout. Only sweeps have one so far."; return; }
   const j = await r.json();
-  pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], height_m: j.height_m, turn_deg: j.turn_deg || 0 };
+  pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 };
+  scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
   fit(); tip(); loadScan(); loadPano();
 })();

@@ -320,3 +320,21 @@ def test_layout_overlay_lies_where_the_plan_is(tmp_path):
     img = cv2.imread(str(png), cv2.IMREAD_UNCHANGED)
     h, w = img.shape[:2]
     assert list(img[h // 2, w // 2]) == [0, 0, 255, 255]     # red, BGRA: the floor, no ceiling
+
+
+def test_layout_open_stretch_gets_no_wall(tmp_path):
+    import numpy as np
+    from app import layout
+    v = [[0, 0], [0, 3], [4, 3], [4, 0]]       # clockwise; the stretch from (4, 3) to (4, 0) looks into a kitchen
+    cells = np.array([[5.5, y] for y in np.arange(0.1, 3, 0.05)] + [[2, 2.9], [0.1, 1.5], [2, 0.1]])
+    assert layout.open_edges(v, cells, np.array([2.0, 1.5])) == [False, False, True, False]
+    lay = {"vertices": v, "open": [False, False, True, False], "openings": [{"kind": "door", "at": [0, 1]}], "height_m": 2.5}
+    text = layout.script(lay)
+    assert '"closed"' not in text and "room " not in text and text.count("wall ") == 1
+    assert '[[4000, 0], [0, 0], [0, 3000], [4000, 3000]]' in text
+    m = layout.blender_model(lay)
+    assert m.bounds[1][1] > 2.4
+    if os.environ.get("BIMCRAFT_CLI"):
+        ok, log = layout.export(tmp_path, lay, "Open")
+        assert ok, log
+    assert layout.problem({"vertices": v, "open": [True] * 4}) is not None

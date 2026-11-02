@@ -15,6 +15,9 @@ from . import convert
 WALL_THICK = 0.1           # metres, for the Blender model
 WALL_TYPE = "Generic - 200mm"
 WALL_CENTRE = 0.1          # metres from the room's face to the middle of that wall
+OPEN_PAST = 0.4            # metres past a line that count as seeing through it
+OPEN_WIDE = 0.1            # metres either side of the sight line
+OPEN_SHARE = 0.5           # the share of a stretch that must be seen through
 OVERLAY_CELL = 0.01        # metres per pixel of the scan seen from above
 OVERLAY_MAX_EDGE = 0.35    # metres
 CELL = 0.05                # metres, the grid of the grey readings on the plan
@@ -48,12 +51,43 @@ def default(room: dict) -> dict:
     return {"vertices": verts, "openings": [], "height_m": room.get("height_m") or 2.5, "turn_deg": round(turn, 3), "edited": False}
 
 
+def open_edges(verts: list[list[float]], cells: np.ndarray, spot: list[float]) -> list[bool]:
+    """Which stretches of the outline have no wall: from where the phone stood, it saw things well past them, as into a kitchen. A wall hides what is behind it."""
+    out = []
+    for a, b in zip(verts, verts[1:] + verts[:1]):
+        L = math.dist(a, b)
+        n = max(2, int(L / 0.1))
+        seen = 0
+        for t in (np.arange(n) + 0.5) / n:
+            q = np.array([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]) - spot
+            dist = np.linalg.norm(q)
+            if dist < 1e-6 or not len(cells):
+                continue
+            u = q / dist
+            rel = cells - spot
+            along = rel @ u
+            across = np.abs(rel[:, 0] * u[1] - rel[:, 1] * u[0])
+            if ((along > dist + OPEN_PAST) & (across < OPEN_WIDE)).any():
+                seen += 1
+        out.append(seen / n > OPEN_SHARE)
+    return out
+
+
 def load(d: Path) -> dict:
-    f = d / "layout.json"
+    f, room_file = d / "layout.json", d / "room.json"
+    room = json.loads(room_file.read_text()) if room_file.exists() else None
     if f.exists():
-        return json.loads(f.read_text())
-    room = d / "room.json"
-    return default(json.loads(room.read_text())) if room.exists() else {"vertices": [], "openings": [], "height_m": 2.5, "turn_deg": 0.0, "edited": False}
+        lay = json.loads(f.read_text())
+    elif room:
+        lay = default(room)
+    else:
+        return {"vertices": [], "openings": [], "open": [], "height_m": 2.5, "turn_deg": 0.0, "edited": False}
+    if len(lay.get("open") or []) != len(lay["vertices"]):       # worked out from the readings until someone says otherwise
+        p = points(d, lay.get("turn_deg", 0.0))
+        cells = np.array(p["top"] + p["all"], float).reshape(-1, 2)
+        spot = _rotate([room["centre"][0], -room["centre"][2]], lay.get("turn_deg", 0.0)) if room else [0.0, 0.0]
+        lay["open"] = open_edges(lay["vertices"], cells, np.array(spot))
+    return lay
 
 
 def validate(body: dict) -> dict:
@@ -69,7 +103,9 @@ def validate(body: dict) -> dict:
         openings.append({"kind": o["kind"], "at": [round(float(o["at"][0]), 3), round(float(o["at"][1]), 3)]})
     if not all(math.isfinite(v) and abs(v) < 500 for p in clean + [o["at"] for o in openings] for v in p):
         raise ValueError("a point is out of range")
-    return {"vertices": clean, "openings": openings, "height_m": round(float(h), 3), "turn_deg": float(body.get("turn_deg") or 0), "edited": True}
+    gaps = body.get("open")
+    gaps = [bool(x) for x in gaps] if isinstance(gaps, list) and len(gaps) == len(clean) else [False] * len(clean)
+    return {"vertices": clean, "openings": openings, "open": gaps, "height_m": round(float(h), 3), "turn_deg": float(body.get("turn_deg") or 0), "edited": True}
 
 
 def save_points(d: Path, P: np.ndarray, centre: np.ndarray, floor_m: float | None, ceiling_m: float | None) -> None:
@@ -166,13 +202,15 @@ def problem(layout: dict) -> str | None:
         return "A room needs at least 3 corners."
     if _crosses(v):
         return "Two walls cross each other. Drag or delete a corner so they don't."
+    if all(layout.get("open") or [False]):
+        return "Every stretch is marked open, so there are no walls to build."
     return None
 
 
-def _on_wall(at: list[float], v: list[list[float]], half: float) -> list[float]:
+def _on_wall(at: list[float], walls: list[tuple], half: float) -> list[float]:
     """The spot on the nearest wall's centre line: the corners are the room's inside faces, and clockwise walls have their outside to the left."""
     best = None
-    for a, b in zip(v, v[1:] + v[:1]):
+    for a, b in walls:
         dx, dy = b[0] - a[0], b[1] - a[1]
         L2 = dx * dx + dy * dy or 1e-9
         t = max(0.0, min(1.0, ((at[0] - a[0]) * dx + (at[1] - a[1]) * dy) / L2))
@@ -184,19 +222,48 @@ def _on_wall(at: list[float], v: list[list[float]], half: float) -> list[float]:
     return best[1]
 
 
+def _chains(v: list[list[float]], gaps: list[bool]) -> list[list[list[float]]]:
+    """The runs of wall between the open stretches, each as its list of points. One run with its first point repeated if nothing is open."""
+    n = len(v)
+    if not any(gaps):
+        return [v + v[:1]]
+    first = next(i for i in range(n) if gaps[i])         # start just after an open stretch
+    runs, run = [], []
+    for k in range(1, n + 1):
+        i = (first + k) % n
+        if gaps[i]:
+            if run:
+                runs.append(run)
+            run = []
+        else:
+            run = run or [v[i]]
+            run.append(v[(i + 1) % n])
+    return runs
+
+
 def script(layout: dict, name: str = "Room") -> str:
     v = layout["vertices"]
-    if _area(v) > 0:           # counter-clockwise: BIMCraft walls face out when drawn clockwise
+    gaps = layout.get("open") or [False] * len(v)
+    if _area(v) > 0:           # counter-clockwise: BIMCraft walls face out when drawn clockwise. Edge i runs from v[i] to v[i + 1]
+        n = len(v)
+        gaps = [gaps[(n - 2 - j) % n] for j in range(n)]
         v = v[::-1]
-    mm = [[round(x * 1000), round(y * 1000)] for x, y in v]
+    to_mm = lambda pts: [[round(x * 1000), round(y * 1000)] for x, y in pts]
     h = round(layout["height_m"] * 1000)
-    inside = _inside_point(v)
-    lines = [f"wall {json.dumps({'points': mm, 'closed': True, 'type': WALL_TYPE, 'location': 'interior-finish', 'height': h})}",
-             f"floor {json.dumps({'boundary': mm})}",
-             f"ceiling {json.dumps({'boundary': mm, 'offset': h})}",
-             f"room {json.dumps({'point': [round(inside[0] * 1000), round(inside[1] * 1000)], 'name': name})}"]
+    mm = to_mm(v)
+    lines = []
+    if any(gaps):
+        for run in _chains(v, gaps):
+            lines.append(f"wall {json.dumps({'points': to_mm(run), 'type': WALL_TYPE, 'location': 'interior-finish', 'height': h})}")
+    else:
+        lines.append(f"wall {json.dumps({'points': mm, 'closed': True, 'type': WALL_TYPE, 'location': 'interior-finish', 'height': h})}")
+    lines += [f"floor {json.dumps({'boundary': mm})}", f"ceiling {json.dumps({'boundary': mm, 'offset': h})}"]
+    if not any(gaps):          # BIMCraft only makes a room inside a closed loop of walls
+        inside = _inside_point(v)
+        lines.append(f"room {json.dumps({'point': [round(inside[0] * 1000), round(inside[1] * 1000)], 'name': name})}")
+    solid = [(a, b) for (a, b), g in zip(zip(v, v[1:] + v[:1]), gaps) if not g]
     for o in layout.get("openings") or []:
-        x, y = _on_wall(o["at"], v, WALL_CENTRE)
+        x, y = _on_wall(o["at"], solid, WALL_CENTRE)
         lines.append(f"{o['kind']} {json.dumps({'at': [round(x * 1000), round(y * 1000)]})}")
     return "\n".join(lines) + "\n"
 
@@ -204,11 +271,12 @@ def script(layout: dict, name: str = "Room") -> str:
 def blender_model(layout: dict) -> trimesh.Trimesh:
     """Walls and a floor in metres, Y up, for glTF: Blender turns it to its own Z up on import. Doors and windows are not cut out."""
     v, h = layout["vertices"], layout["height_m"]
+    gaps = layout.get("open") or [False] * len(v)
     parts = []
-    for a, b in zip(v, v[1:] + v[:1]):
+    for (a, b), gap in zip(zip(v, v[1:] + v[:1]), gaps):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
-        if length < 1e-3:
+        if length < 1e-3 or gap:
             continue
         wall = trimesh.creation.box((length, h, WALL_THICK))
         M = trimesh.transformations.rotation_matrix(math.atan2(dy, dx), [0, 1, 0])

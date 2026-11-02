@@ -422,7 +422,12 @@ def get_layout(scan_id: str):
     if not (d / "room.json").exists():
         raise HTTPException(404, "only a sweep has a layout so far")
     lay = layout_mod.load(d)
-    return {**lay, "points": layout_mod.points(d, lay.get("turn_deg", 0.0)), "name": _meta(d).get("name", "")}
+    room = sweep_mod.apply_marks(json.loads((d / "room.json").read_text()), d)
+    floor_m, ceil_m = room["floor"].get("wall_m"), room["ceiling"].get("wall_m")
+    centre = room["centre"]
+    return {**lay, "points": layout_mod.points(d, lay.get("turn_deg", 0.0)), "name": _meta(d).get("name", ""), "phone": centre,
+            "floor_y": centre[1] - floor_m if floor_m is not None else centre[1] - 1.4,
+            "ceiling_y": centre[1] + ceil_m if ceil_m is not None else None}
 
 
 def _layout_overlay(scan_id: str, cut: float | None):
