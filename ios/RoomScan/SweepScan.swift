@@ -52,6 +52,10 @@ final class SweepCoverage: ObservableObject {
     /// Adding to a sweep: first the server has to find where the phone is (its frames are needed for that), then you walk to the spot.
     var waitingForSpot = false
     @Published var walking = false
+    @Published var oldCells: [Bool]?         // what the scan already had
+    @Published var gapTurn: Double?          // degrees to turn to the nearest gap: + right
+    private var oldUp = false, oldDown = false
+    private var looking = SIMD3<Float>(0, 0, -1)
     @Published var spotDistance = 0.0        // metres to the spot
     @Published var spotBearing = 0.0         // degrees, how far to turn to face it: + right
     /// Median turn speed over the scan, sent with the upload.
@@ -62,11 +66,13 @@ final class SweepCoverage: ObservableObject {
         hint = Self.startHint
         moved = 0; maxMoved = 0; lift = 0; maxLift = 0; speed = 0; upDone = false; downDone = false; onYou = false
         origin = nil; last = nil; speeds = []; lastWarn = nil; lastSpoken = ""
-        waitingForSpot = false; walking = false
+        waitingForSpot = false; walking = false; oldCells = nil; gapTurn = nil; oldUp = false; oldDown = false
     }
 
-    func setSpot(_ p: SIMD3<Float>) {
+    func setSpot(_ p: SIMD3<Float>, rings: [Bool]?, up: Bool, down: Bool) {
         origin = p
+        if let rings, rings.count == cells.count { oldCells = rings }
+        oldUp = up; oldDown = down
         waitingForSpot = false
         walking = true
     }
@@ -105,10 +111,10 @@ final class SweepCoverage: ObservableObject {
             spotBearing = Double(atan2(ahead.y * along.x * -1 + ahead.x * along.y, ahead.x * along.x + ahead.y * along.y)) * 180 / .pi
             if moved <= Self.driftOk {               // arrived: what counts starts now
                 walking = false
-                cells = [Bool](repeating: false, count: 72)
-                maxMoved = 0; maxLift = 0; upDone = false; downDone = false; last = nil
+                cells = oldCells ?? [Bool](repeating: false, count: 72)
+                maxMoved = 0; maxLift = 0; upDone = oldUp; downDone = oldDown; last = nil
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                guide("You're on the spot. Now film what was missing.", say: "You're on the spot. Now film what was missing.")
+                guide("You're on the spot. Red on the dial is what's missing.", say: "You're on the spot. Red on the dial is what's missing.")
             } else {
                 guide(String(format: "Walk %.1f m to the ring on the floor, and stand in the middle of it.", spotDistance), say: "Follow the arrow to the ring on the floor.")
             }
@@ -117,6 +123,7 @@ final class SweepCoverage: ObservableObject {
 
         let f = -SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)        // where the camera looks (world, Y up)
         let fn = simd_normalize(f)
+        looking = fn
         if let l = last, frame.timestamp - l.t > 0.05 {
             let ang = Double(acos(max(-1, min(1, simd_dot(fn, l.f))))) * 180 / .pi
             let now = ang / (frame.timestamp - l.t)
@@ -141,7 +148,7 @@ final class SweepCoverage: ObservableObject {
         }
         let (h, warning) = text()
         // spoken once per new instruction: the numbers in the text change all the time, the first words and the warning do not
-        let words = warning ?? String(h.prefix(14))
+        let words = warning ?? String(h.split(whereSeparator: { ".:".contains($0) }).first ?? "")
         if words != lastSpoken {
             lastSpoken = words
             Voice.say(warning == "drift" ? "You moved. Go back to where you started." : String(h.split(whereSeparator: { ".:".contains($0) }).first ?? ""), every: 0)
@@ -170,6 +177,36 @@ final class SweepCoverage: ObservableObject {
         return all > 0 && Double(near) / Double(all) >= selfShare
     }
 
+    /// Adding to a scan: the nearest gap on the dial, and how to get to it.
+    private func gapText() -> String {
+        var best: (band: Int, sector: Int, angle: Double)?
+        for band in 0..<3 {
+            let p = Self.bandPitch[band] * .pi / 180
+            for i in 0..<Self.sectors where !cells[band * Self.sectors + i] {
+                let a = (Double(i) + 0.5) * 360 / Double(Self.sectors) * .pi / 180
+                let c = SIMD3<Float>(Float(sin(a) * cos(p)), Float(sin(p)), Float(-cos(a) * cos(p)))
+                let ang = Double(acos(max(-1, min(1, simd_dot(looking, c))))) * 180 / .pi
+                if best == nil || ang < best!.angle { best = (band, i, ang) }
+            }
+        }
+        guard let b = best else {
+            gapTurn = nil
+            if !upDone { return "Point straight up at the ceiling for a moment." }
+            if !downDone { return "Point straight down at the floor under you for a moment." }
+            return "All the gaps are filled. Tap Stop."
+        }
+        let cellYaw = (Double(b.sector) + 0.5) * 360 / Double(Self.sectors)
+        var turn = (cellYaw - yaw).truncatingRemainder(dividingBy: 360)
+        if turn > 180 { turn -= 360 }
+        if turn < -180 { turn += 360 }
+        gapTurn = turn
+        let name = ["Wall", "Ceiling", "Floor"][b.band]
+        let tip = Self.bandPitch[b.band] - pitch
+        let doTip = tip > 15 ? "tip the phone up" : tip < -15 ? "tip the phone down" : ""
+        if abs(turn) < 20 { return "\(name) gap ahead: " + (doTip.isEmpty ? "hold it there" : doTip) + "." }
+        return "\(name) gap to your \(turn > 0 ? "right" : "left"): turn \(Int(abs(turn)))°" + (doTip.isEmpty ? "." : " and \(doTip).")
+    }
+
     /// The most useful thing to say now, and the name of the problem when it is a warning.
     private func text() -> (String, String?) {
         if driftLevel == .bad {
@@ -185,6 +222,8 @@ final class SweepCoverage: ObservableObject {
             return (String(format: "Phone %.0f cm %@ than at the start. Keep it at one height: tip it, don't lift it.", abs(lift) * 100, lift > 0 ? "higher" : "lower"), "lift")
         }
         if speedLevel == .bad { return (String(format: "Slow down: %.0f°/s. About 10°/s keeps the photos sharp.", speed), "speed") }
+        if oldCells != nil { return (gapText(), nil) }
+        gapTurn = nil
         let walls = share(0), up = share(1), down = share(2)
         if walls < 0.85 { return ("Turn slowly on the spot: the walls are \(Int(walls * 100))% done.", nil) }
         if up < 0.7 { return ("Now tip the phone up about 45° and turn again: ceiling and wall tops (\(Int(up * 100))%).", nil) }
@@ -218,7 +257,7 @@ struct SweepPanel: View {
                 .frame(width: 96, height: 96)
             } else {
             ZStack {
-                RingCoverageDial(cells: sweep.cells)
+                RingCoverageDial(cells: sweep.cells, old: sweep.oldCells)
                 VStack(spacing: 0) {   // straight up / straight down, in the middle of the dial
                     Image(systemName: sweep.upDone ? "arrow.up.circle.fill" : "arrow.up.circle").foregroundStyle(sweep.upDone ? Theme.accent : .secondary)
                     Image(systemName: sweep.downDone ? "arrow.down.circle.fill" : "arrow.down.circle").foregroundStyle(sweep.downDone ? Theme.accent : .secondary)
@@ -227,7 +266,12 @@ struct SweepPanel: View {
             .frame(width: 96, height: 96)
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text(sweep.hint).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    if let g = sweep.gapTurn, abs(g) >= 20 {
+                        Image(systemName: "arrow.up").font(.title2.bold()).foregroundStyle(.red).rotationEffect(.degrees(g))
+                    }
+                    Text(sweep.hint).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 5) {
                     chip("scope", String(format: "%.0f cm", sweep.moved * 100), sweep.driftLevel)
                     chip("arrow.up.and.down", String(format: "%+.0f cm", sweep.lift * 100), sweep.liftLevel)

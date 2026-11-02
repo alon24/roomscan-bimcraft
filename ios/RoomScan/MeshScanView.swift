@@ -159,7 +159,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             self.ring.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
             if self.sweep.waitingForSpot, self.live.matched {
                 if let p = self.live.spot {
-                    self.sweep.setSpot(p)
+                    self.sweep.setSpot(p, rings: self.live.oldRings, up: self.live.oldUp, down: self.live.oldDown)
                     self.showSpot(p, floorY: self.live.floorY ?? p.y - 1.4)
                 } else {
                     self.sweep.waitingForSpot = false

@@ -4,6 +4,7 @@ import SwiftUI
 /// has been seen from that angle round the ring at that height.
 struct RingCoverageDial: View {
     let cells: [Bool]
+    var old: [Bool]? = nil       // adding to a scan: grey = it had this already, red = still missing, the usual colour = filled just now
     private let sectors = RingTracker.sectors
 
     var body: some View {
@@ -18,7 +19,14 @@ struct RingCoverageDial: View {
                     p.addArc(center: c, radius: R * r1, startAngle: a0, endAngle: a1, clockwise: false)
                     p.addArc(center: c, radius: R * r0, startAngle: a1, endAngle: a0, clockwise: true)
                     p.closeSubpath()
-                    ctx.fill(p, with: .color(cells[band * sectors + i] ? Theme.accent : Color.gray.opacity(0.35)))
+                    let k = band * sectors + i
+                    let colour: Color
+                    if let old, k < old.count {
+                        colour = old[k] ? Color.gray.opacity(0.55) : cells[k] ? Theme.accent : Color.red.opacity(0.6)
+                    } else {
+                        colour = cells[k] ? Theme.accent : Color.gray.opacity(0.35)
+                    }
+                    ctx.fill(p, with: .color(colour))
                 }
             }
         }

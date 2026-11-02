@@ -198,3 +198,20 @@ def test_a_phone_adding_to_a_sweep_is_told_where_the_spot_is_in_its_own_coordina
     out = live.spot_for_phone(tmp_path, T)
     assert out["spot"] == pytest.approx([0.5, -0.25, 3.0]) and out["floor_y"] == pytest.approx(-1.75)
     assert live.spot_for_phone(tmp_path / "nothing", T) == {}
+
+
+def test_the_dial_shows_what_the_scan_has_in_the_phones_own_directions(tmp_path, monkeypatch):
+    """Depth only on the side with +x in the scan. A phone turned 90 degrees from the scan sees that side a quarter turn round."""
+    w, h = 720, 360
+    D = np.where(sweep.dirs_grid(w, h)[..., 0] > 0, 2.0, np.nan)
+    monkeypatch.setattr(sweep, "sweep_frames", lambda d, p: [{}])
+    monkeypatch.setattr(sweep, "depth_photos", lambda d: [{}])
+    monkeypatch.setattr(sweep, "fuse_depth_sphere", lambda d, p, c: (D, 1))
+    same = sweep.rings_seen(tmp_path, np.eye(3), np.zeros(3))
+    assert len(same["rings"]) == 72
+    assert same["rings"][6] and not same["rings"][18]         # sector 6 is at azimuth 90 degrees (+x), sector 18 at 270
+    c, s = 0.0, 1.0
+    turned = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])     # the phone's +z is the scan's +x
+    other = sweep.rings_seen(tmp_path, turned, np.zeros(3))
+    assert other["rings"][0] != same["rings"][0] or other["rings"][6] != same["rings"][6]
+    assert sum(other["rings"][:24]) == pytest.approx(sum(same["rings"][:24]), abs=2)

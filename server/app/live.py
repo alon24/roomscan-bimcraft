@@ -805,6 +805,11 @@ def spot_for_phone(d: Path, T: np.ndarray) -> dict:
     out = {"spot": [round(float(v), 4) for v in spot]}
     if (room.get("floor") or {}).get("wall_m"):
         out["floor_y"] = round(float(spot[1] - room["floor"]["wall_m"]), 4)
+    from . import sweep                    # not at the top: sweep is the heavier module and only this needs it
+    try:
+        out.update(sweep.rings_seen(d, T[:3, :3], np.array(room["centre"], dtype=float)) or {})
+    except Exception as e:                 # without it the phone still leads you to the spot
+        print(f"live rings {d.name}: {type(e).__name__}: {e}", flush=True)
     return out
 
 

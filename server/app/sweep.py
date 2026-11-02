@@ -360,6 +360,39 @@ def backdrop(D: np.ndarray, centre: np.ndarray, colours: np.ndarray) -> trimesh.
     return depth_mesh(far, centre, colours, jump=50.0)
 
 
+RING_SECTORS, RING_PITCH = 24, (0.0, 55.0, -50.0)     # the app's coverage dial: SweepCoverage.sectors and bandPitch
+POLE_AT = 70.0                                        # and its "straight up / down"
+
+
+def rings_seen(d: Path, R: np.ndarray, centre: np.ndarray) -> dict | None:
+    """What the scan really has depth for, as the app's coverage dial in the coordinates of a phone adding to it (R: phone's world to the
+    scan's). A cell counts when at least 70% of the directions within 16 degrees of its centre have depth."""
+    photos = sweep_frames(d, depth_photos(d))
+    if not photos:
+        return None
+    D, _ = fuse_depth_sphere(d, photos, centre)
+    seen = np.isfinite(D)
+    h, w = D.shape
+
+    def share(direction: np.ndarray) -> float:
+        side = np.cross(direction, [0.0, 1.0, 0.0])
+        side = side / np.linalg.norm(side) if np.linalg.norm(side) > 1e-6 else np.array([1.0, 0.0, 0.0])
+        other = np.cross(direction, side)
+        ring = [(r, b) for r in (8.0, 16.0) for b in np.arange(0, 360, 45.0)]
+        pts = [direction] + [math.cos(math.radians(r)) * direction + math.sin(math.radians(r)) * (math.cos(math.radians(b)) * side + math.sin(math.radians(b)) * other) for r, b in ring]
+        u, v = to_cell(np.array(pts) @ R.T, w, h)
+        return float(seen[v, u].mean())
+
+    cells = []
+    for pitch in RING_PITCH:
+        p = math.radians(pitch)
+        for i in range(RING_SECTORS):
+            a = math.radians((i + 0.5) * 360 / RING_SECTORS)
+            cells.append(share(np.array([math.sin(a) * math.cos(p), math.sin(p), -math.cos(a) * math.cos(p)])) >= 0.7)
+    pole = lambda sign: bool(seen[(np.degrees(np.arcsin(np.clip(dirs_grid(w, h)[..., 1], -1, 1))) * sign) > POLE_AT].mean() >= 0.5)
+    return {"rings": cells, "seen_up": pole(1), "seen_down": pole(-1)}
+
+
 def apply_marks(room: dict, d: Path) -> dict:
     """The height from points you marked on the phone (marks.json), over the one worked out from the sweep. Each marking session is in its
     own ARKit world, so a height comes only from floor and ceiling marks of the same session; the median over sessions is used. No marks:
