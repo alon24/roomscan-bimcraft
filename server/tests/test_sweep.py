@@ -1,4 +1,6 @@
+import os
 import json
+import os
 import shutil
 
 import numpy as np
@@ -281,3 +283,20 @@ def test_the_outline_finds_an_l_shaped_room_not_a_box():
     assert len(lengths) == 6, lengths
     assert lengths == pytest.approx([1.5, 2.0, 2.5, 4.0, 4.0, 6.0], abs=0.25)
     assert all(abs(c["angle_deg"] - 90) < 6 for c in o["corners"])
+
+
+def test_layout_script_builds_in_bimcraft(tmp_path):
+    from app import layout
+    room = {"height_m": 2.5, "outline": {"walls": [{"a": [0, 0], "b": [4, 0]}, {"a": [4, 0], "b": [4, -3]}, {"a": [4, -3], "b": [0, -3]}, {"a": [0, -3], "b": [0, 0]}]}}
+    lay = layout.default(room)
+    assert len(lay["vertices"]) == 4 and layout.problem(lay) is None
+    text = layout.script({**lay, "openings": [{"kind": "door", "at": [2, 0]}, {"kind": "window", "at": [4, 1.5]}]})
+    assert text.splitlines()[0].startswith("wall ") and "door" in text and "window" in text
+    assert layout.problem({"vertices": [[0, 0], [1, 1], [1, 0], [0, 1]]}) is not None
+    m = layout.blender_model(lay)
+    assert m.is_volume or len(m.faces) > 0
+    assert abs(m.bounds[1][1] - 2.5) < 1e-6          # height is y in glTF
+    if os.environ.get("BIMCRAFT_CLI"):
+        ok, log = layout.export(tmp_path, {**lay, "openings": [{"kind": "door", "at": [2, 0]}, {"kind": "window", "at": [4, 1.5]}]}, "Test")
+        assert ok, log
+        assert (tmp_path / "room.bimcraft").exists() and (tmp_path / "layout.glb").exists()

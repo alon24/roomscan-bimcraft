@@ -748,6 +748,8 @@ async function show(id) {
         const ext = Math.max(...(r.size_m || (r.size_mm || [3000]).map(x => x / 1000)));
         const room = r.points || r.faces ? await loadRoom(id) : null;
         if (stale()) return;
+        if (room) mk("Layout", () => { location.href = `/layout.html?scan=${id}`; });
+        if (stale()) return;
         const camList = (meta.ring || meta.turntable) ? [] : (poses || []).filter(p => p.transform);
         const camPos = camList.map(p => new THREE.Vector3(p.transform[3][0], p.transform[3][1], p.transform[3][2]));
         const camMid = camPos.length ? camPos.reduce((a, b) => a.add(b), new THREE.Vector3()).multiplyScalar(1 / camPos.length) : null;

@@ -335,6 +335,25 @@ at least size + 4 mm across; connectors on strongly curved or thin cuts can fail
 
 ---
 
+### Layout: the plan, BIMCraft and Blender
+
+![The Layout page](docs/img/web-layout.jpg)
+
+Open a sweep on the web page and press **Layout**. You get the room from above with no pictures: the walls with their lengths, on a 1 m grid, over the grey readings the scan took at the walls. Your changes save by themselves and stay when the scan is re-converted.
+
+- **Move a corner:** drag it. Double-click a wall to add a corner. Click a corner and press Delete to remove it.
+- **Type a wall's real length:** click the wall, type the tape's number, press Enter.
+- **Type the length between any two points:** press **Set a length**, click two points, type the number, press Enter.
+- A typed length stretches the room: everything past the far end moves along that line, so the other walls keep their direction. Check the walls that run on a slant, because their lengths can change too.
+- **Add door / Add window:** press it, then click the wall. They use BIMCraft's default sizes for now.
+- **Tidy** takes out very short walls and nearly straight corners, then straightens walls that are nearly along the grid. **Undo** takes back any step, and **Back to the scan's walls** starts again.
+
+**Into BIMCraft:** press **Build BIMCraft and Blender files**, download `room.bimcraft`, then run `bimcraft ~/Downloads/room.bimcraft`. The file has the walls, doors, windows, floor, ceiling and room. `room.ifc` is there for other BIM programs, and `plan.png` is BIMCraft's drawing of the plan.
+
+**Into Blender:** download `layout.glb`, then File → Import → glTF 2.0. Sizes are in metres. Doors and windows aren't cut out of the walls in this file.
+
+Sweeps made before this version need **Re-convert** once to show the grey readings. The walls show either way.
+
 ## 3. The turntable ring
 
 Printable marker ring (18 markers) that lets the server work out the camera position from every photo.
@@ -383,6 +402,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.57.0 | Web page: a **Layout** page for sweeps shows the room as a plan with no pictures. Drag corners, type real lengths, add doors and windows, then build `room.bimcraft`, `room.ifc` and a Blender `layout.glb`. |
 | 0.56.0 | Sweeps: a **green line on the rings** shows where the camera points now, with a dot on the ring you are at, so you can steer into anything empty. "Everything is covered" is gone: it appeared with up to 30% of the ceiling or floor empty. The voice and text now take you to the nearest empty section ("Ceiling gap to your right: turn 40° and tip the phone up"), and a section needs the camera closer to it to count. The web page shows a spinner while the server builds a scan or makes the 360 picture. 360 pictures now use up to 200 photos and keep the best one for every direction: a sweep with big grey areas went from 46% to 80% covered. Press **Re-convert** on older sweeps. |
 | 0.55.3 | Measure: the level shows tilt with more bars, and "tap to pin" is gone from under the crosshair. The badge below it now only says which way to turn to face a wall, works when the phone leans, and stays away when the crosshair isn't on one flat wall (a floor just below it made it say 43° off). |
 | 0.55.2 | Measure and the marking screen: a **level like a phone camera's**, from the phone's gravity sensor: a long line shows if it leans, marks inside a circle show if it is tipped up or down. It turns green when the phone is level, and says how far it is off ("Roll 3° · Tilt up 5°"). Pointing at the floor or ceiling, it says how far off straight down or up you are. |

@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Room layout</title>
+<link rel="icon" href="/icons/photo-192.png">
+<style>
+  :root { --bg:#f6f7f8; --card:#fff; --ink:#15191c; --mute:#66707a; --line:#d9dee2; --acc:#0f9d8f; --read:#9aa4ad; --read2:#d3d8dc; --warn:#c0392b; --door:#c0641a; --win:#2478c8; --sel:#e0226e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111416; --card:#1b1f22; --ink:#eef1f3; --mute:#9aa4ad; --line:#2d3338; --read:#6c767e; --read2:#343b40; } }
+  :root[data-theme="dark"] { --bg:#111416; --card:#1b1f22; --ink:#eef1f3; --mute:#9aa4ad; --line:#2d3338; --read:#6c767e; --read2:#343b40; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,sans-serif; display:flex; flex-direction:column; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); }
+  h1 { font-size:16px; margin:0 10px 0 0; }
+  a { color:var(--acc); }
+  button, .dl { font:inherit; padding:6px 11px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink); cursor:pointer; text-decoration:none; }
+  button:hover, .dl:hover { border-color:var(--acc); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button.main { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+  .gap { flex:1; }
+  main { flex:1; min-height:0; display:flex; }
+  #wrap { flex:1; min-width:0; position:relative; }
+  svg { position:absolute; inset:0; width:100%; height:100%; touch-action:none; user-select:none; display:block; }
+  aside { width:310px; flex:none; border-left:1px solid var(--line); background:var(--card); padding:14px 16px; overflow:auto; }
+  aside h2 { font-size:13px; margin:18px 0 6px; }
+  aside h2:first-child { margin-top:0; }
+  input[type=number] { font:inherit; width:90px; padding:5px 7px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0; }
+  .mute { color:var(--mute); }
+  ol { margin:6px 0; padding-left:20px; } li { margin:4px 0; }
+  #tip { position:absolute; left:12px; top:12px; right:12px; pointer-events:none; }
+  #tip span { display:inline-block; background:var(--card); border:1px solid var(--line); border-radius:7px; padding:5px 10px; }
+  #prob { color:var(--warn); font-weight:600; }
+  #files { display:flex; flex-wrap:wrap; gap:6px; }
+  table { width:100%; border-collapse:collapse; } td { padding:2px 4px; cursor:pointer; } td:last-child { text-align:right; font-weight:600; }
+  tr.sel td { color:var(--sel); }
+  @media (max-width:760px) { main { flex-direction:column; } #wrap { min-height:60vh; } aside { width:auto; border-left:0; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="name">Layout</h1>
+  <a id="back" href="/">Back to the scan</a>
+  <span class="gap"></span>
+  <button id="tSelect" class="on">Move</button>
+  <button id="tMeasure">Set a length</button>
+  <button id="tDoor">Add door</button>
+  <button id="tWindow">Add window</button>
+  <span style="width:8px"></span>
+  <button id="undo" disabled>Undo</button>
+  <button id="tidy" title="Takes out very short walls and corners that are nearly straight, then straightens walls that are nearly along the axes">Tidy</button>
+  <button id="reset">Back to the scan's walls</button>
+  <button id="fit">Fit</button>
+</header>
+<main>
+  <div id="wrap"><svg id="svg"></svg><div id="tip"><span id="tipText"></span></div></div>
+  <aside>
+    <div id="panel"></div>
+    <h2>Room</h2>
+    <div class="row"><label for="height">Height</label> <input id="height" type="number" step="0.01" min="1" max="10"> m</div>
+    <div class="mute" id="stats"></div>
+    <div id="prob"></div>
+    <div class="row"><label><input type="checkbox" id="showTop" checked> Readings at the walls</label></div>
+    <div class="row"><label><input type="checkbox" id="showAll"> Furniture and lower readings</label></div>
+    <h2>Walls</h2>
+    <table id="walls"></table>
+    <h2>Make the files</h2>
+    <button class="main" id="export">Build BIMCraft and Blender files</button>
+    <div id="exportMsg" class="mute" style="margin:6px 0"></div>
+    <div id="files"></div>
+    <h2>Open it in BIMCraft</h2>
+    <ol>
+      <li>Correct the plan here. It saves by itself.</li>
+      <li>Press <b>Build BIMCraft and Blender files</b>.</li>
+      <li>Download <b>room.bimcraft</b>.</li>
+      <li>In a terminal: <code>bimcraft ~/Downloads/room.bimcraft</code></li>
+    </ol>
+    <h2>Open it in Blender</h2>
+    <ol>
+      <li>Download <b>layout.glb</b>.</li>
+      <li>File → Import → glTF 2.0, and pick it. Sizes are in metres. Doors and windows aren't cut out.</li>
+    </ol>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const id = new URLSearchParams(location.search).get("scan");
+const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
+let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
+let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null;
+
+const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
+const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
+const wallsOf = () => L.vertices.map((a, i) => ({ i, a, b: L.vertices[(i + 1) % L.vertices.length] }));
+const len = w => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+const fmt = m => m.toFixed(2) + " m";
+const area = v => Math.abs(v.reduce((s, a, i) => { const b = v[(i + 1) % v.length]; return s + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
+const clone = () => JSON.stringify({ v: L.vertices, o: L.openings, h: L.height_m });
+
+function remember() { history.push(clone()); if (history.length > 100) history.shift(); $("undo").disabled = false; }
+function changed() { draw(); clearTimeout(saveT); saveT = setTimeout(save, 400); }
+async function save() {
+  clearTimeout(saveT); saveT = null;
+  const r = await fetch(`/api/scans/${id}/layout`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(L) });
+  if (!r.ok) { $("prob").textContent = "Could not save: " + ((await r.json().catch(() => ({}))).detail || r.status); return false; }
+  const j = await r.json(); $("prob").textContent = j.problem || ""; return !j.problem;
+}
+
+function el(name, attrs, parent = svg, text) {
+  const e = document.createElementNS(NS, name);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  parent.appendChild(e); return e;
+}
+function nearestOnWall(p) {
+  let best = null;
+  for (const w of wallsOf()) {
+    const dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], t = Math.max(0, Math.min(1, ((p[0] - w.a[0]) * dx + (p[1] - w.a[1]) * dy) / (dx * dx + dy * dy || 1e-9)));
+    const q = [w.a[0] + t * dx, w.a[1] + t * dy], d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+    if (!best || d < best.d) best = { w, q, d, t };
+  }
+  return best;
+}
+function draw() {
+  svg.replaceChildren();
+  const css = getComputedStyle(document.documentElement), c = n => css.getPropertyValue(n).trim();
+  const W = svg.clientWidth, H = svg.clientHeight;
+  // a one metre grid
+  const a = toPlan(0, H), b = toPlan(W, 0);
+  for (let x = Math.ceil(a[0]); x <= b[0]; x++) { const s = toScreen([x, 0])[0]; el("line", { x1: s, x2: s, y1: 0, y2: H, stroke: c("--line"), "stroke-width": x % 5 ? .5 : 1 }); }
+  for (let y = Math.ceil(a[1]); y <= b[1]; y++) { const s = toScreen([0, y])[1]; el("line", { y1: s, y2: s, x1: 0, x2: W, stroke: c("--line"), "stroke-width": y % 5 ? .5 : 1 }); }
+  // the readings, one path per layer: thousands of cells
+  const cell = Math.max(1.5, .05 * view.s);
+  const dots = (list, colour) => { if (!list.length) return; let d = ""; for (const p of list) { const s = toScreen(p); d += `M${(s[0] - cell / 2).toFixed(1)} ${(s[1] - cell / 2).toFixed(1)}h${cell.toFixed(1)}v${cell.toFixed(1)}h-${cell.toFixed(1)}z`; } el("path", { d, fill: colour }); };
+  if ($("showAll").checked) dots(pts.all, c("--read2"));
+  if ($("showTop").checked) dots(pts.top, c("--read"));
+  // the walls
+  for (const w of wallsOf()) {
+    const p = toScreen(w.a), q = toScreen(w.b), on = sel?.wall === w.i;
+    el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: on ? c("--sel") : c("--ink"), "stroke-width": on ? 5 : 3.5, "stroke-linecap": "round" });
+    el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: "transparent", "stroke-width": 18, "data-wall": w.i, style: "cursor:pointer" });
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2, l = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (l > 42) {
+      const t = fmt(len(w)), bw = t.length * 7.6 + 10;
+      const g = el("g", { "data-wall": w.i, style: "cursor:pointer" });
+      el("rect", { x: mx - bw / 2, y: my - 10, width: bw, height: 20, rx: 5, fill: c("--card"), stroke: on ? c("--sel") : c("--line"), "data-wall": w.i }, g);
+      el("text", { x: mx, y: my + 4.5, "text-anchor": "middle", "font-size": 13, "font-weight": 600, fill: on ? c("--sel") : c("--ink"), "data-wall": w.i }, g, t);
+    }
+  }
+  // doors and windows sit on their nearest wall
+  L.openings.forEach((o, k) => {
+    const n = nearestOnWall(o.at), s = toScreen(n.q), colour = o.kind === "door" ? c("--door") : c("--win"), on = sel?.opening === k;
+    const dx = n.w.b[0] - n.w.a[0], dy = n.w.b[1] - n.w.a[1], ll = Math.hypot(dx, dy) || 1, half = (o.kind === "door" ? .45 : .6) * view.s;
+    el("line", { x1: s[0] - dx / ll * half, y1: s[1] + dy / ll * half, x2: s[0] + dx / ll * half, y2: s[1] - dy / ll * half, stroke: on ? c("--sel") : colour, "stroke-width": 8, "data-opening": k, style: "cursor:pointer" });
+  });
+  // the corners
+  L.vertices.forEach((v, i) => {
+    const s = toScreen(v), on = sel?.corner === i;
+    el("circle", { cx: s[0], cy: s[1], r: on ? 8 : 6, fill: on ? c("--sel") : c("--card"), stroke: on ? c("--sel") : c("--ink"), "stroke-width": 2, "data-corner": i, style: "cursor:move" });
+  });
+  // a length being set
+  measure.forEach((m, i) => { const s = toScreen(m.p); el("circle", { cx: s[0], cy: s[1], r: 6, fill: c("--acc") }); if (i) { const r = toScreen(measure[0].p); el("line", { x1: r[0], y1: r[1], x2: s[0], y2: s[1], stroke: c("--acc"), "stroke-width": 2.5, "stroke-dasharray": "6 4" }); } });
+  $("stats").textContent = `${L.vertices.length} corners · floor area ${area(L.vertices).toFixed(1)} m²`;
+  $("walls").replaceChildren(...wallsOf().map(w => { const r = document.createElement("tr"); if (sel?.wall === w.i) r.className = "sel"; r.innerHTML = `<td>Wall ${w.i + 1}</td><td>${fmt(len(w))}</td>`; r.onclick = () => { setTool("select"); select({ wall: w.i }); }; return r; }));
+  panel();
+}
+function select(s) { sel = s; draw(); if (s?.wall != null) { $("wallLen")?.focus(); $("wallLen")?.select(); } }
+
+// A typed length stretches the room: everything past the far end moves along the line, so walls that cross it get longer and the rest keep their shape.
+function stretch(a, b, to, from = null) {
+  const d = Math.hypot(b[0] - a[0], b[1] - a[1]); if (d < .01) return;
+  const u = [(b[0] - a[0]) / d, (b[1] - a[1]) / d], delta = to - d, proj = p => (p[0] - a[0]) * u[0] + (p[1] - a[1]) * u[1];
+  const line = from ?? d / 2;
+  const move = p => proj(p) >= line ? [p[0] + u[0] * delta, p[1] + u[1] * delta] : p;
+  L.vertices = L.vertices.map(move);
+  L.openings = L.openings.map(o => ({ ...o, at: move(o.at) }));
+}
+function panel() {
+  const P = $("panel");
+  if (document.activeElement && P.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // don't remove what is being typed in
+  P.replaceChildren();
+  const head = t => { const h = document.createElement("h2"); h.textContent = t; P.append(h); };
+  const askLength = (label, value, apply) => {
+    const r = document.createElement("div"); r.className = "row";
+    r.innerHTML = `<label for="wallLen">${label}</label> <input id="wallLen" type="number" step="0.001" min="0.05" value="${value.toFixed(3)}"> m <button id="applyLen" class="main">Set</button>`;
+    P.append(r);
+    const go = () => { const v = parseFloat($("wallLen").value); if (!(v > .04)) return; $("wallLen").blur(); remember(); apply(v); changed(); };
+    r.querySelector("#applyLen").onclick = go;
+    r.querySelector("#wallLen").onkeydown = e => { if (e.key === "Enter") go(); e.stopPropagation(); };
+  };
+  if (measure.length === 2) {
+    const [a, b] = measure, d = Math.hypot(b.p[0] - a.p[0], b.p[1] - a.p[1]);
+    head("Real length between the two points");
+    askLength("Tape says", d, v => { stretch(a.p, b.p, v, b.corner ? d - .05 : null); measure = []; });
+    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past the second point moves to match."; P.append(n);
+  } else if (sel?.wall != null && L.vertices.length) {
+    const w = wallsOf()[sel.wall]; if (!w) return;
+    head(`Wall ${w.i + 1}`);
+    askLength("Real length", len(w), v => stretch(w.a, w.b, v, len(w) - .05));
+    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past this wall's end moves to match. Double-click a wall to add a corner."; P.append(n);
+  } else if (sel?.corner != null) {
+    head(`Corner ${sel.corner + 1}`);
+    const b = document.createElement("button"); b.textContent = "Delete this corner"; b.onclick = removeSelected; P.append(b);
+  } else if (sel?.opening != null) {
+    head(L.openings[sel.opening].kind === "door" ? "Door" : "Window");
+    const b = document.createElement("button"); b.textContent = "Delete it"; b.onclick = removeSelected; P.append(b);
+  }
+  tip();
+}
+function tip() {
+  $("tipText").textContent = {
+    select: "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
+    measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : "Type the real length on the right",
+    door: "Click a wall where the door is", window: "Click a wall where the window is",
+  }[tool];
+}
+function removeSelected() {
+  if (sel?.corner != null && L.vertices.length > 3) { remember(); L.vertices.splice(sel.corner, 1); sel = null; changed(); }
+  else if (sel?.opening != null) { remember(); L.openings.splice(sel.opening, 1); sel = null; changed(); }
+}
+function setTool(t) {
+  tool = t; measure = [];
+  for (const [b, k] of [["tSelect", "select"], ["tMeasure", "measure"], ["tDoor", "door"], ["tWindow", "window"]]) $(b).classList.toggle("on", k === t);
+  if (t !== "select") sel = null;
+  draw();
+}
+function fit() {
+  const v = L.vertices.length ? L.vertices : pts.top; if (!v.length) return;
+  const xs = v.map(p => p[0]), ys = v.map(p => p[1]), W = svg.clientWidth, H = svg.clientHeight;
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  view.s = Math.min((W - 120) / Math.max(x1 - x0, 1), (H - 130) / Math.max(y1 - y0, 1));
+  view.x = W / 2 - (x0 + x1) / 2 * view.s; view.y = H / 2 + (y0 + y1) / 2 * view.s + 16;
+  draw();
+}
+// Tidy: drop the corners that make very short walls or hardly turn, then lay walls near an axis exactly along it.
+function tidy() {
+  remember();
+  let v = L.vertices.map(p => [...p]);
+  const prune = () => {
+    let again = true;
+    while (again && v.length > 3) {
+      again = false;
+      for (let i = 0; i < v.length; i++) {
+        const p = v[(i + v.length - 1) % v.length], q = v[i], r = v[(i + 1) % v.length];
+        const a = Math.hypot(q[0] - p[0], q[1] - p[1]), b = Math.hypot(r[0] - q[0], r[1] - q[1]);
+        const cos = ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (a * b || 1);
+        if (Math.min(a, b) < .25 || cos > Math.cos(8 * Math.PI / 180)) { v.splice(i, 1); again = true; break; }
+      }
+    }
+  };
+  prune();
+  const n = v.length, tol = Math.tan(10 * Math.PI / 180);
+  for (let i = 0; i < n; i++) {
+    const a = v[i], b = v[(i + 1) % n], dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]);
+    if (dy < dx * tol) a[1] = b[1] = (a[1] + b[1]) / 2;
+    else if (dx < dy * tol) a[0] = b[0] = (a[0] + b[0]) / 2;
+  }
+  prune();      // straightening can leave corners in a line
+  L.vertices = v.map(p => [+p[0].toFixed(3), +p[1].toFixed(3)]); sel = null; changed();
+}
+
+svg.addEventListener("mousedown", e => e.preventDefault());   // a click on the plan must not take the focus off the length box it just opened
+svg.addEventListener("pointerdown", e => {
+  const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, t = e.target.dataset, p = toPlan(x, y);
+  if (document.activeElement?.tagName === "INPUT") document.activeElement.blur();
+  if (tool === "measure") {
+    if (measure.length === 2) measure = [];
+    const c = t.corner != null ? L.vertices[+t.corner] : null;
+    const n = nearestOnWall(p);
+    measure.push(c ? { p: [...c], corner: true } : { p: n && n.d * view.s < 14 ? n.q : p, corner: false });
+    draw(); if (measure.length === 2) { $("wallLen")?.focus(); $("wallLen")?.select(); } return;
+  }
+  if (tool === "door" || tool === "window") {
+    const n = nearestOnWall(p);
+    if (n && n.d * view.s < 30) { remember(); L.openings.push({ kind: tool, at: n.q }); setTool("select"); changed(); }
+    return;
+  }
+  if (t.corner != null) { remember(); drag = { corner: +t.corner, moved: false }; sel = { corner: +t.corner }; svg.setPointerCapture(e.pointerId); draw(); return; }
+  if (t.opening != null) { select({ opening: +t.opening }); return; }
+  if (t.wall != null) { select({ wall: +t.wall }); return; }
+  sel = null; drag = { pan: [x - view.x, y - view.y] }; svg.setPointerCapture(e.pointerId); draw();
+});
+svg.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (drag.pan) { view.x = x - drag.pan[0]; view.y = y - drag.pan[1]; draw(); return; }
+  const p = toPlan(x, y); L.vertices[drag.corner] = [+p[0].toFixed(3), +p[1].toFixed(3)]; drag.moved = true; draw();
+});
+svg.addEventListener("pointerup", () => { if (drag?.corner != null) { if (drag.moved) changed(); else history.pop(), $("undo").disabled = !history.length; } drag = null; });
+svg.addEventListener("dblclick", e => {
+  if (tool !== "select" || e.target.dataset.wall == null) return;
+  const r = svg.getBoundingClientRect(), p = toPlan(e.clientX - r.left, e.clientY - r.top), n = nearestOnWall(p);
+  remember(); L.vertices.splice(n.w.i + 1, 0, [+n.q[0].toFixed(3), +n.q[1].toFixed(3)]); sel = { corner: n.w.i + 1 }; changed();
+});
+svg.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, p = toPlan(x, y);
+  view.s = Math.max(15, Math.min(800, view.s * Math.exp(-e.deltaY * .0015)));
+  view.x = x - p[0] * view.s; view.y = y + p[1] * view.s; draw();
+}, { passive: false });
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "Delete" || e.key === "Backspace") removeSelected();
+  if (e.key === "Escape") setTool("select");
+  if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); $("undo").click(); }
+});
+window.addEventListener("resize", draw);
+$("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
+$("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
+$("fit").onclick = fit; $("tidy").onclick = tidy;
+$("showTop").onchange = draw; $("showAll").onchange = draw;
+$("undo").onclick = () => { const h = history.pop(); if (!h) return; const s = JSON.parse(h); L.vertices = s.v; L.openings = s.o; L.height_m = s.h; $("height").value = s.h; $("undo").disabled = !history.length; sel = null; changed(); };
+$("height").onchange = () => { const h = parseFloat($("height").value); if (h >= 1 && h <= 10) { remember(); L.height_m = h; changed(); } };
+$("reset").onclick = async () => { remember(); await fetch(`/api/scans/${id}/layout`, { method: "DELETE" }); clearTimeout(saveT); const j = await (await fetch(`/api/scans/${id}/layout`)).json(); L.vertices = j.vertices; L.openings = j.openings || []; L.height_m = j.height_m; L.turn_deg = j.turn_deg; $("height").value = j.height_m; sel = null; changed(); fit(); };
+$("export").onclick = async () => {
+  const b = $("export"), m = $("exportMsg"); b.disabled = true; m.textContent = "Building…"; $("files").replaceChildren();
+  try {
+    await save();
+    const r = await fetch(`/api/scans/${id}/layout/export`, { method: "POST" }), j = await r.json();
+    if (!r.ok) { m.textContent = "BIMCraft could not build it: " + j.detail; return; }
+    m.textContent = "Ready:";
+    for (const f of j.files) { const a = document.createElement("a"); a.className = "dl"; a.href = `/api/scans/${id}/${f}`; a.download = f; a.textContent = f; $("files").append(a); }
+  } catch (e) { m.textContent = "Could not build: " + e; } finally { b.disabled = false; }
+};
+(async () => {
+  $("back").href = `/?scan=${id}`;
+  const r = await fetch(`/api/scans/${id}/layout`);
+  if (!r.ok) { $("tipText").textContent = "This scan has no layout. Only sweeps have one so far."; return; }
+  const j = await r.json();
+  pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], height_m: j.height_m, turn_deg: j.turn_deg || 0 };
+  $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
+  fit(); tip();
+})();
+</script>
+</body>
+</html>

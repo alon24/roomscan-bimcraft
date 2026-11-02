@@ -25,13 +25,14 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
+from . import layout as layout_mod
 from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage, lidartarget
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/scans in Docker
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
-             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json"}
+             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json", "layout.glb", "layout.json", "layout_points.json"}
 PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json|model\.usdz|features\.json)$")  # derived from model.stl: stale once it changes
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a model uploaded by hand, kept as it came
@@ -412,6 +413,43 @@ async def scan_marks(scan_id: str, body: dict):
     room_file.write_text(json.dumps(room))
     return {"height_m": room.get("height_m"), "marks": room.get("marks"), "wall_marks": room.get("wall_marks"),
             "width_m": room.get("width_m"), "length_m": room.get("length_m")}
+
+
+@app.get("/api/scans/{scan_id}/layout")
+def get_layout(scan_id: str):
+    """The room's plan to correct: its corners, height and the readings seen from above."""
+    d = _dir(scan_id)
+    if not (d / "room.json").exists():
+        raise HTTPException(404, "only a sweep has a layout so far")
+    lay = layout_mod.load(d)
+    return {**lay, "points": layout_mod.points(d, lay.get("turn_deg", 0.0)), "name": _meta(d).get("name", "")}
+
+
+@app.put("/api/scans/{scan_id}/layout")
+def put_layout(scan_id: str, body: dict):
+    d = _dir(scan_id)
+    try:
+        lay = layout_mod.validate(body)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, str(e))
+    (d / "layout.json").write_text(json.dumps(lay))
+    return {"ok": True, "problem": layout_mod.problem(lay)}
+
+
+@app.delete("/api/scans/{scan_id}/layout")
+def reset_layout(scan_id: str):
+    (_dir(scan_id) / "layout.json").unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.post("/api/scans/{scan_id}/layout/export")
+def export_layout(scan_id: str):
+    """BIMCraft, IFC, plan picture and Blender files from the saved layout."""
+    d = _dir(scan_id)
+    ok, log = layout_mod.export(d, layout_mod.load(d), _meta(d).get("name", "Room"))
+    if not ok:
+        raise HTTPException(422, log)
+    return {"files": ["room.bimcraft", "room.ifc", "plan.png", "layout.glb"]}
 
 
 @app.post("/api/scans/{scan_id}/convert")

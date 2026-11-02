@@ -17,7 +17,7 @@ from scipy import ndimage as ndi
 from scipy import sparse
 from scipy.sparse import linalg as sparse_linalg
 
-from . import frames, meshscan
+from . import frames, layout, meshscan
 from .photos import _mat
 
 RANGE = (0.15, 6.0)           # metres of LiDAR depth we trust
@@ -792,6 +792,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     outline = room_outline(points_of(D, centre)[0], centre, room["ceiling"]["wall_m"])
     if outline:
         room["outline"] = outline
+    layout.save_points(d, points_of(D, centre)[0], centre, room["floor"]["wall_m"], room["ceiling"]["wall_m"])
     fixed = {p["file"]: p["transform"] for p in photos}     # the corrected positions, for the colours too
     pano = panorama.ensure(d, width=panorama.WIDTH, centre=centre, depth=D2, force=True, photos=[{**p, "transform": fixed[p["file"]]} for p in panorama.usable_photos(d, set(fixed))])
     img = pano["_image"]
