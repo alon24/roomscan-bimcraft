@@ -25,8 +25,9 @@ def _lock(d: Path) -> threading.Lock:
     return _locks.setdefault(str(d), threading.Lock())
 
 
+MAX_FRAMES = 200   # photos used for one panorama
 WIDTH = 6144   # pixels round the full circle: about what a 1280-2000 px photo holds; at 3072 the 360 view looked soft on screen
-METHOD = 5   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
+METHOD = 6   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
 
 
 def key_for(d: Path, width: int) -> str:
@@ -39,7 +40,7 @@ def usable_photos(d: Path, files: set | None = None) -> list[dict]:
             and (files is None or p["file"] in files)]
 
 
-def select_frames(d: Path, photos: list[dict], max_frames: int = 70) -> list[dict]:
+def select_frames(d: Path, photos: list[dict], max_frames: int = MAX_FRAMES) -> list[dict]:
     """Keep the sharpest one or two frames for every 12 degree patch of view direction, at most `max_frames` in all: a 0.3 s sweep makes
     hundreds of near-identical frames, and blur from a moving phone would soften the panorama."""
     rows = []
@@ -54,10 +55,12 @@ def select_frames(d: Path, photos: list[dict], max_frames: int = 70) -> list[dic
     keep, by = [], {}
     for cell, sharp, ph in rows:
         by.setdefault(cell, []).append((sharp, ph))
-    for cell, lst in by.items():
+    for lst in by.values():
         lst.sort(key=lambda x: -x[0])
-        keep += lst[:2]
-    keep.sort(key=lambda x: -x[0])
+    # every direction's best photo first, then their second best. Taking the sharpest overall left whole directions with no photo (46% of a
+    # sweep covered from 70 of 315 photos, 80% from 200)
+    for rank in (0, 1):
+        keep += sorted((lst[rank] for lst in by.values() if len(lst) > rank), key=lambda x: -x[0])
     return [ph for _, ph in keep[:max_frames]]
 
 
@@ -144,7 +147,7 @@ def frame_quality(chosen: list[dict], centre: np.ndarray, near: float = 0.2) -> 
 
 
 def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | None, width: int = WIDTH,
-           max_frames: int = 70, sharpen: float = 3.0) -> tuple[np.ndarray, float, int]:
+           max_frames: int = MAX_FRAMES, sharpen: float = 3.0) -> tuple[np.ndarray, float, int]:
     """The panorama image (uint8 H x W x 3), the share of directions covered, and how many frames were used.
     Where photos overlap, each pixel's weight is (edge feather x frame quality) ** `sharpen`: the best photo for a spot nearly
     wins outright instead of being averaged with blurrier or off-centre ones (averaging is what made doubled edges), while
