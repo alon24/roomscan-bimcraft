@@ -351,8 +351,9 @@ function panel() {
     head(door ? "Door" : "Window");
     const row = document.createElement("div"); row.className = "row";
     const pick = document.createElement("select");
-    pick.append(...[["door", "Door"], ["window", "Window"]].map(([v, t]) => Object.assign(document.createElement("option"), { value: v, textContent: t, selected: v === o.kind })));
+    pick.append(...[["door", "Door"], ["window", "Window"], ["wall", "It's a wall: nothing here"]].map(([v, t]) => Object.assign(document.createElement("option"), { value: v, textContent: t, selected: v === o.kind })));
     pick.onchange = () => {
+      if (pick.value === "wall") return notAnOpening(sel.opening);
       remember(); o.kind = pick.value; o.marked = true;
       if (o.kind === "door") { o.sill = 0; o.head = Math.max(o.head || 0, 2.1); o.height_known = false; }
       else if (!o.sill) { o.sill = .9; o.head = 2.1; o.height_known = false; }
@@ -391,7 +392,22 @@ function tip() {
 }
 function removeSelected() {
   if (sel?.corner != null && L.vertices.length > 3) { remember(); L.vertices.splice(sel.corner, 1); L.open.splice(sel.corner, 1); sel = null; changed(); }
-  else if (sel?.opening != null) { remember(); L.openings.splice(sel.opening, 1); sel = null; changed(); }
+  else if (sel?.opening != null && L.openings[sel.opening]) notAnOpening(sel.opening);
+}
+// Takes the shape away, and makes the door or window clicks that made it plain wall clicks, or making the plan again would bring it back.
+async function notAnOpening(k) {
+  const o = L.openings[k], b = openingBox(o), clicks = walk.filter(w => {
+    if (w.kind !== o.kind) return false;
+    const p = worldToPlan(w.x, w.z), dx = p[0] - b.fr.a[0], dy = p[1] - b.fr.a[1], s = dx * b.fr.ux + dy * b.fr.uy;
+    return s > b.s0 - .4 && s < b.s1 + .4 && Math.abs(dx * b.fr.uy - dy * b.fr.ux) < 1;
+  });
+  remember(); L.openings.splice(k, 1); sel = null; changed();
+  for (const w of clicks) {
+    const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, kind: "wall" }) });
+    if (r.ok) Object.assign(w, await r.json());
+  }
+  renderWalk(); draw();
+  if (clicks.length) $("walkMsg").textContent = `Point${clicks.length > 1 ? "s" : ""} ${clicks.map(w => walk.indexOf(w) + 1).join(", ")} now say${clicks.length > 1 ? "" : "s"} On a wall.`;
 }
 function setTool(t) {
   tool = t; measure = [];
@@ -640,7 +656,7 @@ function mkMode(kind) {
   mkDraw = kind; mkStart = null;
   $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
   $("mkSvg").style.cursor = kind ? "crosshair" : "default";
-  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind ? `Click one corner of the ${kind}, then the opposite corner.` : "Click a point, door or window to select it. Drag a point or an edge to where it really is.";
+  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind ? `Click one corner of the ${kind}, then the opposite corner.` : "Press Add a point to add one. Click a point, door or window to select it, and drag it to where it really is.";
   mkRender();
 }
 function mkRender() {
