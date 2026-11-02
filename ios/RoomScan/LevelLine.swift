@@ -17,34 +17,41 @@ struct PhoneLevel: Equatable {
     var isSteep: Bool { abs(pitch) > 60 }      // pointing at the floor or the ceiling: there is no horizon to show
 }
 
-/// A fixed mark in the middle of the screen and the real horizon: when the line lies on the mark, the phone is level. Green when it is.
+/// A level like a phone camera's. The long line is the horizon's roll: it lies flat across the screen when the phone isn't leaning. Inside the
+/// circle, the ladder of marks moves with the tilt: when its middle mark is on the fixed dash, the phone isn't tipped up or down. Green when both are right.
 struct LevelLine: View {
     let level: PhoneLevel?
-    private let pointsPerDegree: CGFloat = 8
+    private let radius: CGFloat = 40
+    private let pointsPerDegree: CGFloat = 4
 
     var body: some View {
         GeometryReader { geo in
             if let level {
                 let colour = level.isLevel ? Color.green : Color.yellow
-                let cx = geo.size.width / 2, cy = geo.size.height / 2
+                let centre = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
                 ZStack {
                     if !level.isSteep {
-                        // the fixed mark: two short lines either side of the crosshair
-                        Path { p in
-                            p.move(to: CGPoint(x: cx - 120, y: cy)); p.addLine(to: CGPoint(x: cx - 50, y: cy))
-                            p.move(to: CGPoint(x: cx + 50, y: cy)); p.addLine(to: CGPoint(x: cx + 120, y: cy))
+                        Circle().stroke(.white.opacity(0.9), lineWidth: 1.5).frame(width: radius * 2, height: radius * 2).position(centre)
+                        ZStack {
+                            ForEach([-10, -5, 0, 5, 10], id: \.self) { deg in
+                                Rectangle().fill(.white).frame(width: deg == 0 ? 36 : (abs(deg) == 10 ? 30 : 18), height: 1.5)
+                                    .offset(y: CGFloat(deg) * pointsPerDegree)
+                            }
                         }
-                        .stroke(.white.opacity(0.9), lineWidth: 2)
-                        // the horizon: below the middle when the camera points above it
-                        Rectangle().fill(colour).frame(width: geo.size.width * 0.8, height: 2).shadow(radius: 1)
-                            .rotationEffect(.degrees(level.roll))
-                            .position(x: cx, y: cy + max(-160, min(160, CGFloat(level.pitch) * pointsPerDegree)))
+                        .frame(width: radius * 2, height: radius * 2)
+                        .offset(y: max(-radius, min(radius, CGFloat(level.pitch) * pointsPerDegree)))
+                        .frame(width: radius * 2, height: radius * 2)
+                        .clipShape(Circle())
+                        .position(centre)
+                        Rectangle().fill(colour).frame(width: 14, height: 4).position(centre)        // the fixed dash
+                        Rectangle().fill(colour).frame(width: geo.size.width * 0.55, height: 2.5).shadow(radius: 1)
+                            .rotationEffect(.degrees(level.roll)).position(centre)
                     }
                     Text(words(level)).font(.caption.bold().monospacedDigit())
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .foregroundStyle(.white)
                         .background((level.isLevel ? Color.green : Color.black).opacity(0.6), in: Capsule())
-                        .position(x: cx, y: cy - 58)
+                        .position(x: centre.x, y: centre.y - radius - 18)
                 }
             }
         }
