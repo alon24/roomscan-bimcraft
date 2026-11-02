@@ -231,7 +231,7 @@ Limits: LiDAR reaches about 5 m (a bigger room shows walls as "not seen"); glass
 
 *The 360° photo view from where you stood (0.48): every screen pixel looks up the panorama, so the picture is the photo itself.*
 
-- **If you moved during the sweep**, the server builds it from the spot where most frames were taken (within 50 cm) and leaves the
+- **If you moved during the sweep**, the server builds it from the spot where most frames were taken (within 1 m) and leaves the
   others out; the scan log says how many. Frames that mostly see something within 80 cm (you) are left out too.
 - **Floor, ceiling and walls are the biggest flat surfaces**, not the ones with the most points: a desk top, your lap or a wardrobe front
   near the phone used to win (one real sweep read a 1.6 m high room; it now reads 2.4 m, and three sweeps of that room agree within 10 cm on
@@ -382,6 +382,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.54.0 | Sweeps: you can move about 1 m without being told off (was 25 cm), since the server corrects the frames against each other. The rings fill only when a photo is really kept. Walls are now found as the farthest surface that reaches the ceiling, so furniture, curtains and rooms seen through a door count less: on a living room measured with a tape at 5.95 m, 5.53 m became 5.71 m, and two desk-room sweeps that read about 2.25 m long now read about 2.8 m, like the third. Press **Re-convert** on older sweeps. |
 | 0.53.3 | Sharper 360° pictures: twice the resolution, and sweeps now film at 1920 px. The page also stopped redrawing the picture without the corrected frame positions, which caused ghosting. Your floor and ceiling points only replace the height when they agree within 3 cm: on the first real run the sweep had the true 2.57 m and the points 2.50 m. Press **Re-convert** on older sweeps. |
 | 0.53.2 | Add more to a sweep: the rings show what the old scan really has depth for (grey) and what is missing (red), and an arrow and a voice take you to the nearest gap. |
 | 0.53.1 | Add more to a sweep leads you back to where you stood: arrow, distance, voice and a ring on the floor. The LiDAR print's 3MF is now the one saved from Snapmaker Orca after a good print. |

@@ -22,9 +22,10 @@ from .photos import _mat
 
 RANGE = (0.15, 6.0)           # metres of LiDAR depth we trust
 SWEEP_SPREAD_M = 0.35         # all cameras within this of their middle: a sweep from one spot
-SPOT_M = 0.5                  # a sweep is built from the cameras within this of the spot most of them were at; the rest were taken elsewhere
+SPOT_M = 1.0                  # a sweep is built from the cameras within this of the spot most of them were at; the rest were taken elsewhere
 NEAR_M = 0.3                  # depth nearer than this to the phone in a sweep is your hand, not the room
 SELF_SHARE = 0.4              # a sweep frame with this share of its depth nearer than 0.8 m looks at you (face, lap, legs), not the room
+TOP_BAND, TOP_CELLS = 0.4, 6  # a wall is seen within this far under the ceiling (m), over at least this many 20 cm cells
 SPHERE = (720, 360)           # spherical depth image: 0.5 degree cells (width, height)
 
 
@@ -214,6 +215,26 @@ def _area_mode(off: np.ndarray, uv: np.ndarray, step: float = 0.05, tol: float =
     return float(np.median(off[np.abs(off - far) < tol]))
 
 
+def _wall_to_ceiling(off: np.ndarray, side: np.ndarray, up: np.ndarray, ceiling: float | None, step: float = 0.05, tol: float = 0.04, cell: float = 0.2) -> float | None:
+    """The farthest surface facing the middle that reaches the ceiling: a real wall does; furniture and curtains in front of it don't, and a
+    room seen through a doorway stops at the door's top. Biggest-area alone was fooled by those on a real room (TV wall 5.53 m, tape 5.95 m)."""
+    if ceiling is None or len(off) < 150:
+        return None
+    top = (up > ceiling - TOP_BAND) & (up < ceiling + 0.1)
+    if top.sum() < 30:
+        return None
+    key = (np.floor(side / cell).astype(np.int64) + 100000) * 200003 + np.floor(up / cell).astype(np.int64)
+    best = None
+    for c in np.arange(math.floor(off[top].min() / step) * step, off[top].max() + step, step):
+        near = np.abs(off - c) < tol
+        if (near & top).sum() < 30:
+            continue
+        cells, cnt = np.unique(key[near & top], return_counts=True)
+        if (cnt >= 2).sum() >= TOP_CELLS:
+            best = float(c)
+    return float(np.median(off[np.abs(off - best) < tol])) if best is not None else None
+
+
 def _normals(P: np.ndarray, dirs: np.ndarray, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Surface normal (h, w, 3) of every cell of the spherical depth image, turned to face the middle, and where it is known."""
     rel = P - centre
@@ -262,6 +283,8 @@ def measure(D: np.ndarray, centre: np.ndarray, heading_az: float = 0.0, snap: bo
 
     horiz = np.hypot(dirs[..., 0], dirs[..., 2]) + 1e-9
     planes, out = [], {"walls": {}}
+    up_flat = valid & (el > 35) & nok & (-nrm[..., 1] > 0.85)      # the ceiling first: the walls are told apart by reaching it
+    ceiling = _area_mode(rel[up_flat][:, 1], rel[up_flat][:, [0, 2]]) if up_flat.sum() >= 150 else None
     for k, axis in axes.items():
         cos_az = (dirs[..., 0] * axis[0] + dirs[..., 2] * axis[2]) / horiz
         sel = valid & (np.abs(el) < 30) & (cos_az > math.cos(math.radians(22)))
@@ -275,7 +298,8 @@ def measure(D: np.ndarray, centre: np.ndarray, heading_az: float = 0.0, snap: bo
         if len(s) >= 150:            # that way was seen at all; else stray points at the edge of the sweep made up a wall (0.21 m, seen)
             off = rel[facing] @ axis
             keep = off >= info["nearest_m"] - 0.05      # a wall is behind nearly everything seen that way, never in front of it
-            wall = _area_mode(off[keep], np.c_[rel[facing] @ side, rel[facing][:, 1]][keep]) if keep.sum() >= 150 else None
+            wall = _wall_to_ceiling(off[keep], (rel[facing] @ side)[keep], rel[facing][:, 1][keep], ceiling) if keep.sum() >= 150 else None
+            wall = wall if wall is not None else (_area_mode(off[keep], np.c_[rel[facing] @ side, rel[facing][:, 1]][keep]) if keep.sum() >= 150 else None)
             wall = wall if wall is not None else _mode(s)
         if wall is not None:
             info["wall_m"] = round(wall, 3)

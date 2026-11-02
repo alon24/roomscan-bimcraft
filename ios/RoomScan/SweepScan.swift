@@ -11,8 +11,10 @@ final class SweepCoverage: ObservableObject {
     static let reach = 25.0                            // a cell counts as seen when the camera points within this many degrees of its centre
     /// Where the phone may be. From real sweeps: 20 cm typical / 50 cm worst drift and 44 cm of height change gave doubled edges,
     /// because a photo taken off the centre sees round things the one-spot model cannot hold.
-    static let driftOk = 0.10, driftBad = 0.25          // metres from the start, sideways
-    static let liftOk = 0.08, liftBad = 0.18            // metres up or down from the start height
+    /// Since the server lines the frames up itself (sweep.refine_positions) moving about is fine: measurements held with frames up to 1 m
+    /// from the spot. Turning with the phone at arm's length swings it through about that anyway.
+    static let driftOk = 0.50, driftBad = 1.00          // metres from the start, sideways
+    static let liftOk = 0.30, liftBad = 0.60            // metres up or down from the start height
     /// Turn speed: at 20 deg/s a 10 ms exposure smears about 4 px; aim for half that.
     static let speedOk = 13.0, speedBad = 20.0          // degrees per second
     static let poleAt = 70.0                            // "straight up / down" counts above this tilt
@@ -137,7 +139,7 @@ final class SweepCoverage: ObservableObject {
         var y = Double(atan2(fn.x, -fn.z)) * 180 / .pi
         if y < 0 { y += 360 }
         yaw = y
-        for band in 0..<3 {
+        for band in 0..<3 where keepFrames {     // a ring fills only when a photo of it can be kept: paused means nothing was taken
             let p = Self.bandPitch[band] * .pi / 180
             for i in 0..<Self.sectors where !cells[band * Self.sectors + i] {
                 let a = (Double(i) + 0.5) * 360 / Double(Self.sectors) * .pi / 180
