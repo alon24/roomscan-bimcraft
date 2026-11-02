@@ -16,6 +16,7 @@ final class MarkHeightModel: NSObject, ObservableObject {
     @Published var ceilingSeen = Set<Int64>()
     @Published var you: (x: Float, z: Float, heading: Float)?
     @Published var note = ""
+    @Published var level: PhoneLevel?
 
     static let cell: Float = 0.2
     static let nearEnough = 2.0              // metres: further than this the point is less exact
@@ -64,6 +65,7 @@ final class MarkHeightModel: NSObject, ObservableObject {
         guard let frame = sceneView.session.currentFrame else { return }
         reading = centre(frame)
         let t = frame.camera.transform
+        level = PhoneLevel(t)
         let fwd = -simd_float3(t.columns.2.x, t.columns.2.y, t.columns.2.z)
         you = (t.columns.3.x, t.columns.3.z, atan2(fwd.x, -fwd.z))
         ticks += 1
@@ -234,6 +236,7 @@ struct MarkHeightView: View {
                 ARSceneRepresentable(view: model.sceneView)
                 Image(systemName: "plus").font(.system(size: 34, weight: .light)).foregroundStyle(.white).shadow(radius: 2)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                LevelLine(level: model.level)
                 MarkPlan(model: model).frame(width: 150, height: 150).padding(10)
             }
             VStack(spacing: 8) {

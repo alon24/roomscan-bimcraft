@@ -41,6 +41,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     @Published var distance: Double?     // smoothed camera-to-target, metres
     @Published var steady = false
+    @Published var level: PhoneLevel?    // how the phone is held, from gravity
     @Published var levelTurn: Double?    // degrees off square to the surface at the crosshair: + = right of the view is farther
     @Published var levelTilt: Double?    // + = bottom of the view is farther
     static let squareWithin = 2.0        // degrees: at 4 m this is under 3 mm of error
@@ -267,6 +268,7 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         let t = frame.camera.transform
+        level = PhoneLevel(t)
         camPos = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         poor = d == nil && frame.sceneDepth != nil
         guard let depth = d else { distance = nil; steady = false; return }
@@ -588,6 +590,7 @@ struct MeasureView: View {
                         ZStack {
                             PinLayer(model: model, size: geo.size, zoom: zoom)
                             Crosshair(colour: status.1).position(x: geo.size.width / 2, y: geo.size.height / 2)
+                            LevelLine(level: model.level)
                             LevelBadge(turn: model.levelTurn, tilt: model.levelTilt, distance: model.distance)
                                 .position(x: geo.size.width / 2, y: geo.size.height / 2 + 62)
                             Text("tap to pin").font(.caption2.bold()).padding(.horizontal, 6).padding(.vertical, 1)
