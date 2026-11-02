@@ -94,7 +94,7 @@ To carry it, print the **carry case** (`prints/lidar-case/3mf/`: `lidar-case-tra
 tab out to open. Details: [docs/lidar-case.md](docs/lidar-case.md).
 
 <img src="prints/lidar-case/images/case_open.jpg" width="420">
-1. Lay it flat on a table. **Measure** > **Calibrate** > **With the print (guided)**. Optionally type what a ruler says across it.
+1. Lay it flat on a table. **Measure** > **Calibrate** > **With the print (guided)**. Optionally type what your calipers read over the printed ruler (about 101 mm); the app works out the scale.
 2. Point the crosshair at its middle and tap **This is the middle**: a teal ring sits on it and the app now knows your distance
    and tilt to the print all the time.
 3. Follow the top line ("Move back 20 cm", "Move out to the side and lower the phone", "Hold still…"). A grid shows the 11
@@ -381,6 +381,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.50.3 | Calibrate with the print: type the caliper reading straight into **Ruler reading** (no sum to do), the app shows the print's scale and warns if the number looks wrong; an **OK** button (or scrolling) closes the keyboard. |
 | 0.50.2 | **The print 3MFs now really carry their colours.** The old files opened in Snapmaker Orca as one merged part on filament 1 (an all-white print, markers unreadable) and off the bed centre. Rewritten in Orca's own format: one object, a part per colour on its filament, U1 settings inside, centred. Both SolidCraft designs rebuilt from parameters and master sketches: print 65 → 18 timeline items and 7 → 4 bodies, case 56 → 31 items and 32 → 3 bodies. Same shape, checked. |
 | 0.50.1 | **Carry case for the LiDAR print** (`prints/lidar-case/`, spec in `docs/lidar-case.md`): a tray for the plate and a lid that is the print's negative (a socket for every pad and wedge, 0.5 mm clearance), closed by four snap tabs that click into the tray. 3MFs for the U1 (lid upside down, label inlaid in black), served at `/prints/`; Blender pictures closed, open, cut in half and of the tab. |
 | 0.50.0 | **LiDAR print v2** (`prints/lidar-target/3mf/lidar-target-v2-4colour.3mf`): 4 colours on the U1, parts already on filaments 1-4 (white, black, blue, red); two more markers on the raised pads, so the camera's position comes from corners at three heights (much steadier at 80-120 cm); blue and red patches, and the result now lists the LiDAR error per colour (the correction is fitted on white); a 100 mm ruler to check the print with calipers. App: print instructions updated. v1 was never printed and is gone. |

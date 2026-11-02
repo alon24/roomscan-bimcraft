@@ -215,11 +215,13 @@ struct PrintCalibrationView: View {
     @ObservedObject private var cal = CalibrationStore.shared
     @State private var rulerText = ""
     @State private var zoom: CGFloat = 1
+    @FocusState private var rulerFocused: Bool
 
-    private var printScale: Double {
-        guard let v = Double(rulerText.replacingOccurrences(of: ",", with: ".")), v > 180, v < 220 else { return 1 }
-        return v / 200
-    }
+    private static let rulerMM = 101.0      // outer edge to outer edge of the printed ruler
+
+    private var rulerReading: Double? { Double(rulerText.replacingOccurrences(of: ",", with: ".")) }
+    private var rulerOK: Bool { rulerReading.map { $0 > 91 && $0 < 111 } ?? false }
+    private var printScale: Double { rulerOK ? rulerReading! / Self.rulerMM : 1 }
 
     var body: some View {
         Form {
@@ -227,9 +229,24 @@ struct PrintCalibrationView: View {
                 Text("""
                 Print lidar-target-v2 (4 colours, parts already on filaments 1-4: \(ServerAddress.url)/prints/lidar-target-v2-4colour.3mf), matte, ironing off. \
                 Check it: the six black squares print crisp, the plate lies flat (a sheet of paper must not slide under it), and nothing is glossy. \
-                Calipers over the ruler, outer edge to outer edge: 101.0 mm. If not, type 200 × your reading ÷ 101 below.
+                Measure the ruler with calipers, from the outer edge of the first long tick to the outer edge of the last, and type what they read. It should be close to 101.0 mm.
                 """).font(.callout)
-                TextField("Plate size from the ruler, mm (200.0), optional", text: $rulerText).keyboardType(.decimalPad)
+                HStack {
+                    Text("Ruler reading")
+                    TextField("101.0", text: $rulerText)
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing).focused($rulerFocused)
+                    Text("mm").foregroundStyle(.secondary)
+                    if rulerFocused {
+                        Button("OK") { rulerFocused = false }.buttonStyle(.borderedProminent)
+                    }
+                }
+                if !rulerText.isEmpty {
+                    if rulerOK {
+                        Text(String(format: "The print is %.2f%% of its size. Used in the calculation.", printScale * 100)).font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("That doesn't look like the ruler (about 101 mm), so it won't be used.").font(.caption).foregroundStyle(.orange)
+                    }
+                }
             }
             Section("2. Scan it") {
                 ZStack {
@@ -258,6 +275,7 @@ struct PrintCalibrationView: View {
                 if let r = model.result { PrintResult(result: r, cal: cal) }
             }
         }
+        .scrollDismissesKeyboard(.immediately)
         .navigationTitle("Calibrate with the print")
         .onAppear { model.reset(); model.start() }
         .onDisappear { model.stop() }

@@ -35,8 +35,8 @@ Files (in `prints/lidar-target/`, see [prints/README.md](../prints/README.md); t
    - the text reads **THIS SIDE UP - LIDAR TARGET v2 - 200 mm** and **APP: MEASURE > CALIBRATE > WITH THE PRINT**;
    - it lies flat: put it on a table, a sheet of paper must not slide under any edge;
    - measure the **ruler** under the bottom text with calipers: from the outer edge of the first long tick to the outer edge of
-     the last is **101.0 mm** (the ticks are 1 mm wide, 10 mm apart, centre to centre 100 mm). Type `200 x your reading / 101`
-     into the app's "ruler across the plate" field if it is off (PLA shrinks a few tenths of a percent).
+     the last is **101.0 mm** (the ticks are 1 mm wide, 10 mm apart, centre to centre 100 mm). Type what the calipers read into
+     the app's **Ruler reading** field: it works out the print's scale itself (PLA shrinks a few tenths of a percent).
 
 ## 2. Using it (the app does the guiding)
 
