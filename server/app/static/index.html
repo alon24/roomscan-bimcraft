@@ -166,6 +166,9 @@
   /* ---- dialogs: one look for all of them */
   dialog { border:1px solid var(--line); border-radius:14px; background:var(--surface); color:var(--fg); box-shadow:var(--shadow-lg); padding:0; }
   dialog[open] { animation:pop .22s var(--ease); }
+  #viewBusy { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:rgba(245,246,245,.72); color:#333; font-size:14px; text-align:center; padding:16px; pointer-events:none; }
+  #viewBusy i { width:34px; height:34px; border:3px solid rgba(0,0,0,.15); border-top-color:#0d989e; border-radius:50%; animation:spin .9s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
   @keyframes pop { from { opacity:0; transform:scale(.97) translateY(6px); } }
   dialog::backdrop { background:rgb(5 10 9 / .55); backdrop-filter:blur(3px); }
   dialog h3 { margin:0; }
@@ -634,7 +637,17 @@ let pinned = false, liveRoom = null, offer = null;
 function openScan(id) { pinned = true; offerLive(null); return show(id); }
 function offerLive(o) { offer = o; $("liveOffer").hidden = !o; }
 
+// A spinner over the 3D view while the server works or a big file comes down. Kept in #view, put back if the view was emptied.
+function setBusy(text) {
+  let b = $("viewBusy");
+  if (!b) { b = document.createElement("div"); b.id = "viewBusy"; b.innerHTML = "<i></i><span></span>"; }
+  if (!b.isConnected) $("view").appendChild(b);
+  b.querySelector("span").textContent = text;
+}
+function clearBusy() { $("viewBusy")?.remove(); }
+
 async function show(id) {
+  clearBusy();
   current = id; live = false;   // a later live frame must take the page over again, not be drawn into this scan's view
   const gen = ++showGen, stale = () => gen !== showGen;
   const res = await fetch(`/api/scans/${id}`);
@@ -669,7 +682,7 @@ async function show(id) {
   }
   const re = document.createElement("button");
   re.className = "btn"; re.textContent = "Re-convert";
-  re.onclick = async () => { re.disabled = true; await fetch(`/api/scans/${id}/convert`, { method: "POST" }); await show(id); loadList(); };
+  re.onclick = async () => { re.disabled = true; setBusy("The server is rebuilding this scan. A sweep takes up to a minute or two…"); await fetch(`/api/scans/${id}/convert`, { method: "POST" }); await show(id); loadList(); };
   if (isObj) {
     const sc = document.createElement("input");
     sc.type = "number"; sc.step = "any"; sc.min = "0.001"; sc.value = meta.scale ?? 1; sc.title = "Scale factor";
@@ -712,6 +725,8 @@ async function show(id) {
   loadList();
   setupQuality(id, meta);
   if (isMesh) {
+    if (meta.status === "building") setBusy("The server is building this scan. It opens by itself when it's ready.");
+    else if (meta.status === "ok") setBusy("Loading the model…");
     const poses = await loadPhotos(meta);
     if (stale()) return;
     if (meta.status === "ok") {
@@ -753,6 +768,7 @@ async function show(id) {
         // A sweep is seen from one spot, so the 360 panorama itself is the sharpest colour for it (one photo pixel per screen pixel from the middle)
         const panoView = room && meshBuf ? await (async () => {
           try {
+            setBusy("Making the 360° picture. The first time takes up to a minute…");
             const pr = await fetch(`/api/scans/${id}/panorama.json`); if (!pr.ok) return null;
             const pj = await pr.json();
             const tex = await new Promise((ok, no) => new THREE.TextureLoader().load(`/api/scans/${id}/panorama.jpg?width=${pj.width}`, ok, undefined, no));
@@ -790,9 +806,11 @@ async function show(id) {
         };
         box.hidden = !((views.points ? 1 : 0) + (views.surface ? 1 : 0) + (texturable ? 1 : 0) > 1 || room);
         pick(first);
+        clearBusy();
         if (room && room.depth_coverage > 0.05) V.inside(room.centre, room.heading_deg || 0);   // a swept room opens as seen from where you stood
       }
       catch (e) { $("log").textContent += "\n3D preview failed: " + e; }
+      if (!stale()) clearBusy();
     }
     return;
   }
