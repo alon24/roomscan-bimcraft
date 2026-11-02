@@ -971,13 +971,13 @@ def _panorama(scan_id: str, width: int) -> dict:
 
 
 @app.get("/api/scans/{scan_id}/panorama.json")
-def panorama_info(scan_id: str, width: int = 3072):
+def panorama_info(scan_id: str, width: int = panorama_mod.WIDTH):
     """Coverage, centre and size of the 360 panorama (built from the scan's photos the first time, then kept)."""
     return {k: v for k, v in _panorama(scan_id, width).items() if not k.startswith("_")}
 
 
 @app.get("/api/scans/{scan_id}/panorama.jpg")
-def panorama_jpg(scan_id: str, width: int = 3072, download: bool = False):
+def panorama_jpg(scan_id: str, width: int = panorama_mod.WIDTH, download: bool = False):
     """The room as one 360 degree picture (equirectangular JPEG), stitched from the scan's photos with their poses."""
     _panorama(scan_id, width)
     d = _dir(scan_id)

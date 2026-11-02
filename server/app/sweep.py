@@ -393,6 +393,10 @@ def rings_seen(d: Path, R: np.ndarray, centre: np.ndarray) -> dict | None:
     return {"rings": cells, "seen_up": pole(1), "seen_down": pole(-1)}
 
 
+MARKS_TIGHT = 0.03    # marks replace the sweep's height only if each kind agrees within this. Walking round, ARKit's height wandered by 7 cm on a real
+                      # session (five floor points 10.7 cm apart), and the marks gave 2.50 m where the sweep had the true 2.57 m.
+
+
 def apply_marks(room: dict, d: Path) -> dict:
     """The height from points you marked on the phone (marks.json), over the one worked out from the sweep. Each marking session is in its
     own ARKit world, so a height comes only from floor and ceiling marks of the same session; the median over sessions is used. No marks:
@@ -412,14 +416,15 @@ def apply_marks(room: dict, d: Path) -> dict:
             heights.append(float(np.median(cy) - np.median(fy)))
             spreads += [float(np.ptp(v)) for v in (fy, cy) if len(v) > 1]
     if heights:
-        h = float(np.median(heights))
-        room["height_auto_m"], room["ceiling_auto_m"] = room.get("height_m"), room["ceiling"]["wall_m"]
-        room["height_m"] = round(h, 3)
-        if room["floor"].get("wall_m"):
-            room["ceiling"]["wall_m"] = round(h - room["floor"]["wall_m"], 3)
-        room["marks"] = {"floor": floors, "ceiling": ceilings, "spread_cm": round(max(spreads, default=0) * 100, 1)}
+        h, spread = float(np.median(heights)), max(spreads, default=0.0)
+        room["marks"] = {"floor": floors, "ceiling": ceilings, "spread_cm": round(spread * 100, 1), "height_m": round(h, 3), "used": spread <= MARKS_TIGHT}
+        if spread <= MARKS_TIGHT:
+            room["height_auto_m"], room["ceiling_auto_m"] = room.get("height_m"), room["ceiling"]["wall_m"]
+            room["height_m"] = round(h, 3)
+            if room["floor"].get("wall_m"):
+                room["ceiling"]["wall_m"] = round(h - room["floor"]["wall_m"], 3)
     elif floors or ceilings:
-        room["marks"] = {"floor": floors, "ceiling": ceilings, "spread_cm": None}
+        room["marks"] = {"floor": floors, "ceiling": ceilings, "spread_cm": None, "height_m": None, "used": False}
     return room
 
 
@@ -581,7 +586,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
     heading = _heading(photos[0])
     room, D2 = measure(D, centre, heading)
     fixed = {p["file"]: p["transform"] for p in photos}     # the corrected positions, for the colours too
-    pano = panorama.ensure(d, width=1536, centre=centre, depth=D2, force=True, photos=[{**p, "transform": fixed[p["file"]]} for p in panorama.usable_photos(d, set(fixed))])
+    pano = panorama.ensure(d, width=panorama.WIDTH, centre=centre, depth=D2, force=True, photos=[{**p, "transform": fixed[p["file"]]} for p in panorama.usable_photos(d, set(fixed))])
     img = pano["_image"]
     ph, pw = img.shape[:2]
     h, w = D2.shape

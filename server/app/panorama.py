@@ -25,7 +25,8 @@ def _lock(d: Path) -> threading.Lock:
     return _locks.setdefault(str(d), threading.Lock())
 
 
-METHOD = 4   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
+WIDTH = 6144   # pixels round the full circle: about what a 1280-2000 px photo holds; at 3072 the 360 view looked soft on screen
+METHOD = 5   # bump when the picture would come out different: cached panoramas are then rebuilt on the next request
 
 
 def key_for(d: Path, width: int) -> str:
@@ -142,7 +143,7 @@ def frame_quality(chosen: list[dict], centre: np.ndarray, near: float = 0.2) -> 
     return (rel ** 1.5 * np.exp(-(off / near) ** 2) + 1e-4).astype(np.float32)
 
 
-def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | None, width: int = 3072,
+def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | None, width: int = WIDTH,
            max_frames: int = 70, sharpen: float = 3.0) -> tuple[np.ndarray, float, int]:
     """The panorama image (uint8 H x W x 3), the share of directions covered, and how many frames were used.
     Where photos overlap, each pixel's weight is (edge feather x frame quality) ** `sharpen`: the best photo for a spot nearly
@@ -196,7 +197,7 @@ def render(d: Path, photos: list[dict], centre: np.ndarray, depth: np.ndarray | 
     return np.clip(out, 0, 255).astype(np.uint8).reshape(H, W, 3), float(seen.mean()), used
 
 
-def ensure(d: Path, width: int = 3072, centre: np.ndarray | None = None, depth: np.ndarray | None = None, force: bool = False,
+def ensure(d: Path, width: int = WIDTH, centre: np.ndarray | None = None, depth: np.ndarray | None = None, force: bool = False,
            photos: list[dict] | None = None) -> dict:
     """Build (or reuse) panorama.jpg and panorama.json for this scan. Returns the json; a freshly built one also carries `_image`.
     Without `photos`, the frames taken at the spot where most of them were and not pointed at you (sweep.sweep_frames)."""

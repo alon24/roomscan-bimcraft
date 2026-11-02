@@ -150,7 +150,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
                        name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo, addTo: addTo)
         }
-        if ring.enabled { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
+        if ring.enabled || sweepMode { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read; a sweep's 360 picture is made of these
         ringActive = ring.capturing
         overlayTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.refreshOverlay() }
         lastCount = 0; stalled = 0; pointCount = 0; dots = []

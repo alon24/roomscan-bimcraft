@@ -215,3 +215,12 @@ def test_the_dial_shows_what_the_scan_has_in_the_phones_own_directions(tmp_path,
     other = sweep.rings_seen(tmp_path, turned, np.zeros(3))
     assert other["rings"][0] != same["rings"][0] or other["rings"][6] != same["rings"][6]
     assert sum(other["rings"][:24]) == pytest.approx(sum(same["rings"][:24]), abs=2)
+
+
+def test_marks_that_disagree_do_not_replace_the_height(tmp_path):
+    import json
+    room = {"height_m": 2.57, "floor": {"wall_m": 1.5}, "ceiling": {"wall_m": 1.07}}
+    marks = [{"kind": "floor", "x": 0, "y": y, "z": 0} for y in (-1.39, -1.29)] + [{"kind": "ceiling", "x": 0, "y": 1.12, "z": 0}]
+    (tmp_path / "marks.json").write_text(json.dumps({"sessions": {"a": marks}}))
+    sweep.apply_marks(room, tmp_path)
+    assert room["height_m"] == 2.57 and room["marks"]["used"] is False and room["marks"]["height_m"] == pytest.approx(2.46, abs=0.01)

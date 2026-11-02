@@ -154,7 +154,10 @@ final class MarkHeightModel: NSObject, ObservableObject {
             let (data, r) = try await URLSession.shared.data(for: req)
             guard (r as? HTTPURLResponse)?.statusCode == 200 else { note = "The server refused it."; return }
             let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            if let h = (j?["height_m"] as? NSNumber)?.doubleValue {
+            if let m = j?["marks"] as? [String: Any], let mine = (m["height_m"] as? NSNumber)?.doubleValue, m["used"] as? Bool == false,
+               let h = (j?["height_m"] as? NSNumber)?.doubleValue {
+                note = String(format: "Saved. Your points say %.2f m but are %@ cm apart, so the scan keeps its own %.2f m. Points close together in one area agree better.", mine, (m["spread_cm"] as? NSNumber)?.stringValue ?? "?", h)
+            } else if let h = (j?["height_m"] as? NSNumber)?.doubleValue {
                 note = String(format: "Saved: the room is now %.2f m high.", h)
             } else {
                 note = "Saved."
