@@ -26,6 +26,7 @@ Files (in `prints/lidar-target/`, see [prints/README.md](../prints/README.md); t
    those two parts to white: only the colour test is lost.
 2. **Matte matters most**: turn **ironing off** (it makes the top shiny) and do not use silk or glossy filament. Reflections throw
    both the LiDAR and the marker reading.
+   This file was saved from Snapmaker Orca after a good print on the U1: 0.20mm High Quality profile, 2 walls, 15% infill, no ironing.
 3. Settings: 0.4 mm nozzle, **0.2 mm layers** (every coloured part is exactly the last 2 layers of its surface), 3 walls,
    15% infill, no supports (nothing overhangs: the wedges slope outward from a vertical inner face), no brim. The U1 changes
    tools, so the extra colours cost no purge tower.
