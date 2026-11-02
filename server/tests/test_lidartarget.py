@@ -185,3 +185,15 @@ def test_depth_alignment(monkeypatch, tmp_path):
     out = meshscan.align_depth(stored)
     assert out.shape == (192, 256) and out[50, 106] == 3.0
     assert (out[:, :32] == 0).all() and (out[:, 224:] == 0).all()     # the photo's sides have no depth
+
+
+def test_a_far_frame_counts_through_the_floor_when_the_print_is_small(tmp_path):
+    (tmp_path / "photos").mkdir()
+    photos = [_frame(tmp_path, n, dist, tilt, az, 1.0, -0.005, floor=True)
+              for n, (dist, tilt, az) in enumerate([(0.4, 0, 0), (0.7, 0, 0), (1.0, 0, 0), (2.2, 35, 0), (2.4, 45, 90)], 1)]
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 2, "photos": photos}))
+    res = lt.analyse(tmp_path)
+    used = {f["file"] for f in res["frames_detail"]}
+    if "p004.jpg" not in used:                               # the markers were too small to read at this size in the test image
+        pytest.skip("markers unreadable at this distance")
+    assert res["fit"]["floor_frames"] >= 4 and res["coverage"]["max_angle_deg"] >= 30

@@ -49,7 +49,7 @@ TILTS = (0, 30, 55)
 FRAMES_PER_STATION = 3
 FLOOR_RING = 500.0            # floor pixels are used out to this far from the print's middle, mm
 FLOOR_SPREAD, FLOOR_AGREE = 0.012, 0.010    # a frame's floor is used if flat to this (m, robust spread) and within this of the plate
-ANGLE_KNOTS = (0, 15, 30, 45, 60)           # the angle correction is piecewise linear between these, 0 at 0 degrees
+ANGLE_KNOTS = (0, 15, 30, 45)               # the angle correction is piecewise linear between these, 0 at 0 degrees
 MIN_RANGE_M, MIN_ANGLE = 0.4, 30.0          # what the photos must span for the scale and the angle part to mean anything
 GOOD_RMS = 0.010
 DIST_TOL, TILT_TOL = 0.15, 7.0      # within 15% of the distance and 7 degrees of the tilt counts as at the station
@@ -210,9 +210,7 @@ def frame_samples(d: Path, ph: dict, scale: float = 1.0) -> dict | None:
     face = face.reshape(dh, dw)
     same = (ndi.maximum_filter(face, 5) == face) & (ndi.minimum_filter(face, 5) == face) & (face >= 0)   # away from every edge
     meas = dm.astype(np.float64)
-    ok = same.ravel() & (meas.ravel() > 0.1) & np.isfinite(tz)
-    if ok.sum() < 50:
-        return None
+    ok = same.ravel() & (meas.ravel() > 0.1) & np.isfinite(tz)     # far away the print covers few pixels: the floor carries that frame
     unit = rays[ok] / np.linalg.norm(rays[ok], axis=1, keepdims=True)
     inc = np.degrees(np.arccos(np.clip(-(unit * normal[ok]).sum(1), -1, 1)))
     centre_dir = (R.T @ np.array([0.0, 0.0, 1.0]))        # the camera's forward axis in the plate's frame
@@ -312,11 +310,12 @@ def analyse(d: Path, print_scale: float = 1.0, max_points: int = 4000) -> dict:
         s["floor_true"], s["floor_meas"], s["floor_incidence"] = thin([s["floor_true"], s["floor_meas"], s["floor_incidence"]], max_points)
         # this frame's floor counts only if it is flat and level with the print (not a rug, a table's edge, furniture)
         s["floor_ok"] = False
-        if len(s["floor_true"]) >= 100 and s["plate_top"].sum() >= 10:
+        if len(s["floor_true"]) >= 100:
             e = s["floor_meas"] - s["floor_true"]
             spread = float(np.median(np.abs(e - np.median(e)))) * 1.4826
             top = s["meas"][s["plate_top"]] - s["true"][s["plate_top"]]
-            s["floor_ok"] = spread < FLOOR_SPREAD and abs(float(np.median(e)) - float(np.median(top))) < FLOOR_AGREE
+            level = len(top) < 10 or abs(float(np.median(e)) - float(np.median(top))) < FLOOR_AGREE
+            s["floor_ok"] = spread < FLOOR_SPREAD and level
         s["station"] = station_of(s["distance_m"], s["tilt_deg"])
         per.append(s)
     res = {"version": VERSION, "frames": len(photos), "frames_used": len(per), "print_scale": print_scale, "messages": notes}
@@ -325,6 +324,7 @@ def analyse(d: Path, print_scale: float = 1.0, max_points: int = 4000) -> dict:
         notes.append(fix)
         (d / "result.json").write_text(json.dumps(res, indent=1))
         return res
+    per = [s for s in per if s["floor_ok"] or len(s["true"]) >= 50]
     if len(per) < 3:
         return stop(f"The camera could read the print in only {len(per)} of {len(photos)} photos.",
                     "Try again in brighter, even light with the whole print on screen, and move a little more slowly.")

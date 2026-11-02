@@ -378,6 +378,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.51.1 (server) | Print calibration: photos from far away now count through the floor round the print, even when the print itself covers few LiDAR pixels (the step-back photos were being thrown out). The angle correction stops at 45°: above that two sessions disagreed. |
 | 0.51.0 | **LiDAR depth lined up with the photo.** The stored depth map turns out to be turned 90° from the photo, in every scan: straight at a flat surface it doesn't show, at an angle it wrecks the geometry. Sweeps and every other depth-based result now use it the right way round (frames that disagreed by 19-26 cm now disagree by 3-5 cm); press **Re-convert** on older scans to rebuild them. **New print calibration**: stand up, step back, another side, about a minute, no angles to hit, voice guidance, one plain answer and a **Try again**. It fits on the plate and the floor round it and now corrects for the angle too. |
 | 0.50.4 | Calibrate with the print: the screen stays on the whole time, and the instructions say to lay the print on the floor. |
 | 0.50.3 | Calibrate with the print: type the caliper reading straight into **Ruler reading** (no sum to do), the app shows the print's scale and warns if the number looks wrong; an **OK** button (or scrolling) closes the keyboard. |
