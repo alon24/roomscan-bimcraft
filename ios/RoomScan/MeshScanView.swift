@@ -41,6 +41,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     let live = LiveLink()            // optional two-way link to the server (docs/live-guide.md)
     var liveWanted = false           // room scans: the Room tab asks for it
     var addTo: String?               // these frames go into this scan on the server, not a new one
+    var joinPlan: String?            // a sweep taken from a plan: the server fits it onto that plan
     private var spotNode: SCNNode?
     private var wallNodes: [UUID: SCNNode] = [:]
     @Published var builtID: String?  // the scan the last upload made or added to
@@ -358,6 +359,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             info["sweep turn speed deg/s"] = sweep.medianSpeed.rounded()
             info["sweep straight up/down"] = "\(sweep.upDone ? "up" : "-") \(sweep.downDone ? "down" : "-")"
         }
+        if let joinPlan { info["join_plan"] = joinPlan }
         return info
     }
 
@@ -803,6 +805,7 @@ struct MeshScanView: View {
     var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
     var liveGuide = false       // Room tab: use the two-way link to the server when it can be reached
     var addTo: String? = nil    // Models tab, "Add more": new frames join this scan
+    var joinPlan: String? = nil // Room tab, "Sketch": this sweep goes onto that plan
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var zoom: CGFloat = 1
@@ -907,7 +910,7 @@ struct MeshScanView: View {
             .padding()
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
-        .onAppear { model.sweepMode = sweepMode; model.addTo = addTo; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
+        .onAppear { model.sweepMode = sweepMode; model.addTo = addTo; model.joinPlan = joinPlan; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
         .onDisappear { CameraOwner.release(model) }      // stops it only if it still has the camera (another tab may have taken it)
     }
 }

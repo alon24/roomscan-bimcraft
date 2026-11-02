@@ -85,6 +85,10 @@
       <div class="row"><label><input type="checkbox" id="xray" checked> See the plan through the scan</label></div>
       <div class="v3"><button id="vAbove">From above</button><button id="vPhone">From the phone's spot</button></div>
     </div>
+    <h2>Scans in this plan</h2>
+    <div id="joinList"></div>
+    <div class="row"><select id="joinPick" style="flex:1;min-width:0"></select> <button id="joinAdd">Add</button></div>
+    <div id="joinMsg" class="mute"></div>
     <h2>Walls</h2>
     <table id="walls"></table>
     <h2>Make the files</h2>
@@ -110,7 +114,7 @@ const $ = id => document.getElementById(id);
 const id = new URLSearchParams(location.search).get("scan");
 const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
 let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
-let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = null, pano = null, scanSeen = false, is3d = false, scene = null;
+let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = [], scanSeen = false, is3d = false, scene = null, joined = [], photos = new Map();
 
 const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
 const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
@@ -154,9 +158,9 @@ function draw() {
   for (let x = Math.ceil(a[0]); x <= b[0]; x++) { const s = toScreen([x, 0])[0]; el("line", { x1: s, x2: s, y1: 0, y2: H, stroke: c("--line"), "stroke-width": x % 5 ? .5 : 1 }); }
   for (let y = Math.ceil(a[1]); y <= b[1]; y++) { const s = toScreen([0, y])[1]; el("line", { y1: s, y2: s, x1: 0, x2: W, stroke: c("--line"), "stroke-width": y % 5 ? .5 : 1 }); }
   // the scan from above, under everything else
-  if ($("showScan").checked && scan) {
-    const tl = toScreen([scan.x0, scan.y1]), br = toScreen([scan.x1, scan.y0]);
-    el("image", { href: scan.url, x: tl[0], y: tl[1], width: br[0] - tl[0], height: br[1] - tl[1], preserveAspectRatio: "none", opacity: $("scanFade").value });
+  if ($("showScan").checked) for (const o of scan) {
+    const tl = toScreen([o.x0, o.y1]), br = toScreen([o.x1, o.y0]);
+    el("image", { href: o.url, x: tl[0], y: tl[1], width: br[0] - tl[0], height: br[1] - tl[1], preserveAspectRatio: "none", opacity: $("scanFade").value });
   }
   // the readings, one path per layer: thousands of cells
   const cell = Math.max(1.5, .05 * view.s);
@@ -204,9 +208,9 @@ function planToWorld(p) {
   return [p[0] * c - p[1] * s, -(p[0] * s + p[1] * c)];
 }
 // The selected wall, corner, door or window marked on the 360 picture, in the direction it lies from where the phone stood.
-function azOf(p) {
+function azOf(p, pano) {       // in the sweep's own picture, which may be turned in this drawing
   const [wx, wz] = planToWorld(p);
-  return Math.atan2(wx - pano.centre[0], -(wz - pano.centre[2])) * 180 / Math.PI;
+  return Math.atan2(wx - pano.centre[0], -(wz - pano.centre[2])) * 180 / Math.PI + pano.deg;
 }
 function photo() {
   let marks = [], note = "";
@@ -214,13 +218,14 @@ function photo() {
   else if (sel?.wall != null && wallsOf()[sel.wall]) { const w = wallsOf()[sel.wall]; marks = [w.a, w.b]; note = "The green lines are this wall's two ends. They should sit on its real corners."; }
   else if (sel?.corner != null && L.vertices[sel.corner]) { marks = [L.vertices[sel.corner]]; note = "The green line is this corner. Drag it onto the real corner."; }
   else if (sel?.opening != null && L.openings[sel.opening]) { marks = [nearestOnWall(L.openings[sel.opening].at).q]; note = "The green line is the middle of it."; }
+  const pano = marks.length ? pictureFor(marks[0]) : null;
   const ready = pano?.img?.complete && pano.img.naturalWidth;
   $("photoBox").hidden = !(marks.length && ready);
   if ($("photoBox").hidden) return;
   $("photoNote").textContent = note;
   const cv = $("photo"), W = cv.clientWidth, H = cv.clientHeight, dpr = devicePixelRatio || 1;
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
-  const g = cv.getContext("2d"), first = azOf(marks[0]), rel = marks.map(p => ((azOf(p) - first + 540) % 360) - 180);
+  const g = cv.getContext("2d"), first = azOf(marks[0], pano), rel = marks.map(p => ((azOf(p, pano) - first + 540) % 360) - 180);
   const lo = Math.min(...rel), hi = Math.max(...rel), mid = first + (lo + hi) / 2;
   const span = Math.min(330, Math.max(80, hi - lo + 30)), iw = pano.img.naturalWidth, ih = pano.img.naturalHeight;
   const vert = Math.min(180, span * H / W), sw = span / 360 * iw, sh = vert / 180 * ih, sy = (ih - sh) / 2;
@@ -302,7 +307,7 @@ function setTool(t) {
 function fit() {
   const v = L.vertices.length ? L.vertices : pts.top; if (!v.length) return;
   const xs = v.map(p => p[0]), ys = v.map(p => p[1]), W = svg.clientWidth, H = svg.clientHeight;
-  if (scan && $("showScan").checked) { xs.push(scan.x0, scan.x1); ys.push(scan.y0, scan.y1); }
+  if ($("showScan").checked) for (const o of scan) { xs.push(o.x0, o.x1); ys.push(o.y0, o.y1); }
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   view.s = Math.min(W * .9 / Math.max(x1 - x0, 1), H * .84 / Math.max(y1 - y0, 1));
   view.x = W / 2 - (x0 + x1) / 2 * view.s; view.y = H / 2 + (y0 + y1) / 2 * view.s + 16;
@@ -391,39 +396,75 @@ $("v3d").onclick = () => set3d(!is3d);
 $("scanCut").onchange = loadScan;
 async function loadScan() {
   if (is3d) { clip3d(); return; }
-  const cutV = $("scanCut").value, q = cutV && cutV !== "off" ? `?cut=${cutV}` : "";
+  const cutV = $("scanCut").value, cut = cutV && cutV !== "off" ? `cut=${cutV}` : "";
   $("tipText").textContent = "Loading the scan…";
-  try {
-    const r = await fetch(`/api/scans/${id}/layout/overlay.json${q}`);
-    if (!r.ok) { scan = null; $("showScan").closest(".row").hidden = true; draw(); return; }
-    const m = await r.json();
-    scan = { ...m, url: `/api/scans/${id}/layout/overlay.png${q}` };
-  } catch { scan = null; }
+  const one = async j => {
+    const q = [cut, j ? `join=${j}` : ""].filter(Boolean).join("&"), qs = q ? `?${q}` : "";
+    const r = await fetch(`/api/scans/${id}/layout/overlay.json${qs}`).catch(() => null);
+    return r?.ok ? { ...(await r.json()), url: `/api/scans/${id}/layout/overlay.png${qs}` } : null;
+  };
+  scan = (await Promise.all([one(null), ...joined.map(j => one(j.scan))])).filter(Boolean);
   const first = !scanSeen; scanSeen = true;
   if (first) fit(); else draw();
 }
-async function loadPano() {
-  try {
-    const r = await fetch(`/api/scans/${id}/panorama.json`); if (!r.ok) return;
-    const j = await r.json(), img = new Image();
-    img.onload = () => draw();
-    img.src = `/api/scans/${id}/panorama.jpg?width=${j.width}`;
-    pano = { centre: j.centre, img };
-  } catch {}
+// The 360 pictures that can be looked into: this scan's and each joined sweep's, with where that phone stood and how the sweep is turned in this drawing.
+function pictureSources() {
+  const out = scene.phone ? [{ scan: id, centre: scene.phone, deg: 0 }] : [];
+  for (const j of joined) if (j.phone) out.push({ scan: j.scan, centre: j.phone, deg: j.deg });
+  return out;
 }
-$("undo").onclick = () => { const h = history.pop(); if (!h) return; const s = JSON.parse(h); L.vertices = s.v; L.openings = s.o; L.height_m = s.h; L.open = s.g; $("height").value = s.h; $("undo").disabled = !history.length; sel = null; changed(); };
-$("height").onchange = () => { const h = parseFloat($("height").value); if (h >= 1 && h <= 10) { remember(); L.height_m = h; changed(); } };
-$("reset").onclick = async () => { remember(); await fetch(`/api/scans/${id}/layout`, { method: "DELETE" }); clearTimeout(saveT); const j = await (await fetch(`/api/scans/${id}/layout`)).json(); L.vertices = j.vertices; L.openings = j.openings || []; L.open = j.open; L.height_m = j.height_m; L.turn_deg = j.turn_deg; $("height").value = j.height_m; sel = null; changed(); fit(); };
-$("export").onclick = async () => {
-  const b = $("export"), m = $("exportMsg"); b.disabled = true; m.textContent = "Building…"; $("files").replaceChildren();
-  try {
-    await save();
-    const r = await fetch(`/api/scans/${id}/layout/export`, { method: "POST" }), j = await r.json();
-    if (!r.ok) { m.textContent = "BIMCraft could not build it: " + j.detail; return; }
-    m.textContent = "Ready:";
-    for (const f of j.files) { const a = document.createElement("a"); a.className = "dl"; a.href = `/api/scans/${id}/${f}`; a.download = f; a.textContent = f; $("files").append(a); }
-  } catch (e) { m.textContent = "Could not build: " + e; } finally { b.disabled = false; }
+function pictureFor(p) {
+  const [x, z] = planToWorld(p);
+  const near = pictureSources().sort((a, b) => Math.hypot(a.centre[0] - x, a.centre[2] - z) - Math.hypot(b.centre[0] - x, b.centre[2] - z))[0];
+  if (!near) return null;
+  let e = photos.get(near.scan);
+  if (!e) {
+    e = { img: new Image() }; photos.set(near.scan, e);
+    fetch(`/api/scans/${near.scan}/panorama.json`).then(r => r.ok ? r.json() : null).then(j => { if (j) { e.img.onload = draw; e.img.src = `/api/scans/${near.scan}/panorama.jpg?width=${j.width}`; } }).catch(() => {});
+  }
+  return { ...near, img: e.img };
+}
+function renderJoins() {
+  $("joinList").replaceChildren(...joined.map(j => {
+    const d = document.createElement("div"); d.style.margin = "6px 0";
+    const note = j.apart ? "It doesn't overlap this plan, so check where it landed." : j.sure ? `Fits: ${Math.round(j.share * 100)}% of its walls agree.` : `${Math.round(j.share * 100)}% of its walls agree. Check it: another fit is close.`;
+    d.innerHTML = `<b></b><div class="mute"></div><div class="row"></div>`;
+    d.children[0].textContent = j.name; d.children[1].textContent = note;
+    const next = document.createElement("button"); next.textContent = `Next fit (${j.pick + 1} of ${j.fits})`; next.disabled = j.fits < 2;
+    next.onclick = async () => { await fetch(`/api/scans/${id}/layout/join/${j.scan}/next`, { method: "POST" }); await reload(); };
+    const rm = document.createElement("button"); rm.textContent = "Take out";
+    rm.onclick = async () => { await fetch(`/api/scans/${id}/layout/join/${j.scan}`, { method: "DELETE" }); await reload(); };
+    d.children[2].append(next, rm); return d;
+  }));
+  if (!joined.length) { const n = document.createElement("div"); n.className = "mute"; n.textContent = "Only this scan so far. Add a sweep from another spot, such as the kitchen, and it is fitted on from the walls both saw."; $("joinList").append(n); }
+}
+async function fillJoinPick() {
+  const all = await (await fetch("/api/scans")).json().catch(() => []);
+  const taken = new Set(joined.map(j => j.scan));
+  const list = all.filter(x => x.id !== id && !taken.has(x.id) && x.status === "ok" && x.kind === "mesh" && x.phone?.sweep);
+  $("joinPick").replaceChildren(...list.map(x => Object.assign(document.createElement("option"), { value: x.id, textContent: x.name })));
+  $("joinAdd").disabled = !list.length;
+}
+$("joinAdd").onclick = async () => {
+  const other = $("joinPick").value; if (!other) return;
+  $("joinAdd").disabled = true; $("joinMsg").textContent = "Fitting…";
+  if (saveT) await save();
+  const r = await fetch(`/api/scans/${id}/layout/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scan: other }) });
+  const j = await r.json().catch(() => ({}));
+  $("joinMsg").textContent = r.ok ? "" : (j.detail || "Could not fit it.");
+  if (r.ok) await reload(); else $("joinAdd").disabled = false;
 };
+// after joining: the outline, the readings and the pictures can all have changed
+async function reload() {
+  const j = await (await fetch(`/api/scans/${id}/layout`)).json();
+  pts = j.points || pts; joined = j.joins || []; history = []; $("undo").disabled = true; sel = null;
+  Object.assign(L, { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 });
+  scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
+  $("height").value = L.height_m; renderJoins(); fillJoinPick();
+  scanSeen = false;
+  if (is3d) { await loadMesh(); clip3d(); draw(); } else await loadScan();
+}
+
 // ---- 3D: the plan standing in the scan, turned round together ----
 let T = null, G = null;      // three.js and everything of the view
 async function set3d(on) {
@@ -441,7 +482,7 @@ function init3d() {
   box.appendChild(renderer.domElement);
   const world = new T.Scene(); world.background = new T.Color(getComputedStyle(document.body).backgroundColor);
   const camera = new T.PerspectiveCamera(50, 1, 0.02, 200), overlay = new T.Group(); world.add(overlay);
-  G = { renderer, world, camera, overlay, mesh: null, target: new T.Vector3(), az: 0, el: .8, r: 10, labels: new Map(), hits: [], dirty: true };
+  G = { renderer, world, camera, overlay, meshes: new Map(), target: new T.Vector3(), az: 0, el: .8, r: 10, labels: new Map(), hits: [], dirty: true };
   const dom = renderer.domElement, ray = new T.Raycaster();
   const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); return ray.intersectObjects(G.hits, false)[0]; };
   let act = null;
@@ -494,29 +535,43 @@ function view3d(kind) {
   const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs), 2);
   const south = planToWorld([0, -1]);       // the view starts from the plan's bottom edge, so it reads the same way round as the plan
   G.az = Math.atan2(south[0], south[1]);
-  if (kind === "phone") { G.target.set(scene.phone[0], scene.phone[1], scene.phone[2]); G.r = .05; G.el = 0; G.az += Math.PI; return place3d(); }
+  const spot = pictureSources()[0]?.centre;
+  if (kind === "phone" && !spot) kind = "start";
+  if (kind === "phone") { G.target.set(spot[0], spot[1], spot[2]); G.r = .05; G.el = 0; G.az += Math.PI; return place3d(); }
   G.target.set((Math.min(...xs) + Math.max(...xs)) / 2, scene.floor + .8, (Math.min(...zs) + Math.max(...zs)) / 2);
   G.r = size * 1.25; G.el = kind === "above" ? 1.54 : .85; place3d();
 }
-async function loadMesh() {
-  if (G.mesh) return;
-  $("tipText").textContent = "Loading the scan…";
-  const rep = await (await fetch(`/api/scans/${id}/report.json`)).json();
-  const buf = await (await fetch(`/api/scans/${id}/mesh.bin`)).arrayBuffer(), n = rep.vertices, colourBytes = Math.ceil(n * 3 / 4) * 4;
+async function meshOf(scanId, matrix) {
+  const rr = await fetch(`/api/scans/${scanId}/report.json`); if (!rr.ok) return null;
+  const rep = await rr.json(); if (!rep.faces) return null;
+  const buf = await (await fetch(`/api/scans/${scanId}/mesh.bin`)).arrayBuffer(), n = rep.vertices, colourBytes = Math.ceil(n * 3 / 4) * 4;
   const g = new T.BufferGeometry();
   g.setAttribute("position", new T.BufferAttribute(new Float32Array(buf, 0, n * 3), 3));
   const rgb = new Uint8Array(buf, n * 12, n * 3), lin = new Float32Array(n * 3);
   for (let i = 0; i < lin.length; i++) lin[i] = Math.pow(rgb[i] / 255, 2.2);
   g.setAttribute("color", new T.BufferAttribute(lin, 3));
   g.setIndex(new T.BufferAttribute(new Uint32Array(buf, n * 12 + colourBytes, rep.faces * 3), 1));
-  G.mesh = new T.Mesh(g, new T.MeshBasicMaterial({ vertexColors: true, side: T.DoubleSide }));
-  G.world.add(G.mesh); tip();
+  const m = new T.Mesh(g, new T.MeshBasicMaterial({ vertexColors: true, side: T.DoubleSide }));
+  if (matrix) { m.matrixAutoUpdate = false; m.matrix.fromArray(matrix); m.matrixWorldNeedsUpdate = true; }
+  return m;
+}
+// Each scan is loaded once; a join only moves it. Scans taken out are removed.
+async function loadMesh() {
+  $("tipText").textContent = "Loading the scan…";
+  const wanted = [{ scan: id, matrix: null }, ...joined.map(j => ({ scan: j.scan, matrix: j.matrix }))], keep = new Set(wanted.map(w => w.scan));
+  for (const [k, m] of G.meshes) if (!keep.has(k)) { G.world.remove(m); m.geometry.dispose(); m.material.dispose(); G.meshes.delete(k); }
+  for (const w of wanted) {
+    let m = G.meshes.get(w.scan);
+    if (m === undefined) { m = await meshOf(w.scan, w.matrix).catch(() => null); if (m) { G.world.add(m); G.meshes.set(w.scan, m); } }
+    else if (m && w.matrix) { m.matrix.fromArray(w.matrix); m.matrixWorldNeedsUpdate = true; }
+  }
+  tip();
 }
 function clip3d() {
-  if (!G?.mesh) return;
+  if (!G) return;
   const v = $("scanCut").value, y = v === "off" ? null : scene.floor + (v ? parseFloat(v) : (scene.ceiling != null ? scene.ceiling - scene.floor : L.height_m) - .08);
-  G.mesh.material.clippingPlanes = y == null ? [] : [new T.Plane(new T.Vector3(0, -1, 0), y)];
-  G.mesh.material.needsUpdate = true; G.dirty = true;
+  for (const m of G.meshes.values()) { m.material.clippingPlanes = y == null ? [] : [new T.Plane(new T.Vector3(0, -1, 0), y)]; m.material.needsUpdate = true; }
+  G.dirty = true;
 }
 function label3d(text, colour) {
   const key = text + colour; let tex = G.labels.get(key);
@@ -535,9 +590,9 @@ function build3d() {
   const xray = $("xray").checked, ov = G.overlay;
   ov.traverse(o => { if (o !== ov) { o.geometry?.dispose(); o.material?.dispose(); } });
   ov.clear(); G.hits = [];
-  if (G.mesh) {
-    G.mesh.visible = $("showScan").checked;
-    const a = parseFloat($("scanFade").value); G.mesh.material.transparent = a < 1; G.mesh.material.opacity = a; G.mesh.material.needsUpdate = true;
+  for (const m of G.meshes.values()) {
+    m.visible = $("showScan").checked;
+    const a = parseFloat($("scanFade").value); m.material.transparent = a < 1; m.material.opacity = a; m.material.needsUpdate = true;
   }
   const y0 = scene.floor, y1 = scene.floor + L.height_m, up = new T.Vector3(0, 1, 0);
   const mat = (colour, o = {}) => new T.MeshBasicMaterial({ color: colour, depthTest: !xray, ...o });
@@ -570,10 +625,14 @@ function build3d() {
   const ceilY = scene.ceiling ?? y1, cl = label3d(`Ceiling I chose: ${(ceilY - y0).toFixed(2)} m up`, "#2478c8"); cl.position.copy(at(mid, ceilY)).lerp(at(L.vertices[0], ceilY), .35); ov.add(cl);
   const shape = (y, colour) => { const pts = L.vertices.map(p => at(p, y)); return new T.Line(new T.BufferGeometry().setFromPoints([...pts, pts[0]]), new T.LineBasicMaterial({ color: colour, depthTest: !xray })); };
   if (Math.abs(ceilY - y1) > .01) ov.add(shape(ceilY, 0x2478c8));
-  const P = new T.Vector3(...scene.phone), ph = new T.Mesh(new T.SphereGeometry(.09, 16, 12), mat(0xf2c200)); ph.position.copy(P); ph.renderOrder = 25; ov.add(ph);
-  const pole = bar(new T.Vector3(P.x, y0, P.z), P, .008, 0xf2c200);
-  G.phoneBits = [ph, pole]; showPhone();
-  const pl = label3d("Phone stood here", "#8a6d00"); pl.position.copy(P).add(new T.Vector3(0, .2, 0)); ov.add(pl);
+  G.phoneBits = [];
+  pictureSources().forEach(src => {
+    const P = new T.Vector3(...src.centre), ph = new T.Mesh(new T.SphereGeometry(.09, 16, 12), mat(0xf2c200)); ph.position.copy(P); ph.renderOrder = 25; ov.add(ph);
+    const pole = bar(new T.Vector3(P.x, y0, P.z), P, .008, 0xf2c200);
+    G.phoneBits.push(ph, pole);
+    const pl = label3d("Phone stood here", "#8a6d00"); pl.position.copy(P).add(new T.Vector3(0, .2, 0)); ov.add(pl);
+  });
+  showPhone();
   // the readings the walls came from, in the band they were read
   if ($("showTop").checked && pts.top.length) {
     const yb = (scene.ceiling ?? y1) - .35, arr = new Float32Array(pts.top.length * 3);
@@ -592,7 +651,8 @@ function build3d() {
   pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 };
   scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
-  fit(); tip(); loadScan(); loadPano();
+  joined = j.joins || []; renderJoins(); fillJoinPick();
+  fit(); tip(); loadScan();
 })();
 </script>
 </body>

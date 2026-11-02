@@ -338,3 +338,47 @@ def test_layout_open_stretch_gets_no_wall(tmp_path):
         ok, log = layout.export(tmp_path, lay, "Open")
         assert ok, log
     assert layout.problem({"vertices": v, "open": [True] * 4}) is not None
+
+
+def test_join_finds_a_known_turn_and_shift():
+    import numpy as np
+    from app import join
+    rng = np.random.default_rng(3)
+    # an L-shaped room's walls, so only one fit is right
+    walls = [((0, 0), (6, 0)), ((6, 0), (6, 3)), ((6, 3), (3, 3)), ((3, 3), (3, 5)), ((3, 5), (0, 5)), ((0, 5), (0, 0))]
+    pts = np.vstack([np.linspace(a, b, int(np.hypot(b[0] - a[0], b[1] - a[1]) / 0.05)) for a, b in walls])
+    dst = pts + rng.normal(0, 0.01, pts.shape)
+    src = join._turn(pts[rng.random(len(pts)) < 0.7], 73.0) + [1.5, -2.0]
+    f = join.fit(src, dst)[0]
+    assert min((f["deg"] + 73) % 360, (-f["deg"] - 73) % 360) < 0.5
+    back = join.plan_point(src, f)
+    assert np.median(np.abs(back - pts[np.argmin(((pts[None] - back[:, None]) ** 2).sum(-1), axis=1)])) < 0.03
+    assert join.sure(join.fit(src, dst))
+
+
+def test_join_matrix_is_the_same_as_the_plan_point():
+    import numpy as np
+    from app import join
+    f = {"deg": 33.0, "tx": 1.0, "ty": -2.0}
+    p = [0.7, 1.1, -0.4]
+    w = join.world_point(p, f, 0.25)
+    q = join.plan_point([p[0], -p[2]], f)[0]
+    assert abs(w[0] - q[0]) < 1e-9 and abs(-w[2] - q[1]) < 1e-9 and abs(w[1] - 1.35) < 1e-9
+
+
+def test_walked_plan_saves_and_takes_a_join(tmp_path):
+    import numpy as np
+    from app import layout
+    corners = [[0, 0], [5, 0], [5, 4], [0, 4]]
+    xs = np.arange(0, 5, 0.05)
+    zs = np.arange(0, 4, 0.05)
+    wall = [[x, 2.0, z] for x in xs for z in (0, 4)] + [[x, 2.0, z] for z in zs for x in (0, 5)]
+    d = tmp_path / "plan"
+    d.mkdir()
+    lay = layout.from_walk(d, {"corners": corners, "open": [False, True, False, False], "floor_y": -0.2, "ceiling_y": 2.4, "cloud": list(np.array(wall).ravel())})
+    assert lay["height_m"] == 2.6 and lay["open"][1] and len(layout.points(d)["top"]) > 100
+    assert layout.load(d)["floor_y"] == -0.2
+    # a nonsense plan is refused
+    import pytest
+    with pytest.raises(ValueError):
+        layout.from_walk(d, {"corners": [[0, 0]], "floor_y": 0, "ceiling_y": 2.5})

@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
+from . import join as join_mod
 from . import layout as layout_mod
 from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage, lidartarget
 
@@ -32,7 +33,7 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "scans"  # /app/data/sc
 STATIC = Path(__file__).parent / "static"
 ARTIFACTS = {"scan.json", "scan.usdz", "scan.ply", "colored.ply", "mesh.bin", "points.bin", "tri_photo.bin", "texturing.json", "footprint.json", "settings.json", "script.txt", "room.bimcraft", "room.ifc", "plan.png", "meta.json",
              "model.stl", "model.3mf", "preview.json", "textured.json", "texture.jpg", "report.json", "photos.json", "photo_index.json",
-             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json", "layout.glb", "layout.json", "layout_points.json"}
+             "model_parts.3mf", "colours.json", "dowels.stl", "model.usdz", "features.json", "room.json", "panorama.json", "layout.glb", "layout.json", "layout_points.json", "joined.json"}
 PRINT_FILE = re.compile(r"^(model_part\d+\.stl|dowels\.stl|model_parts\.3mf|colours\.json|model\.usdz|features\.json)$")  # derived from model.stl: stale once it changes
 MAX_IMPORT_BYTES = 2 * 1024**3  # uncompressed, for the whole zip
 SOURCE_FILE = re.compile(r"^source\.(stl|3mf|obj|ply|glb|gltf|off)$")   # a model uploaded by hand, kept as it came
@@ -138,10 +139,24 @@ def _sweep(d: Path, meta: dict) -> tuple[bool, str]:
     return ok, log
 
 
+def _join_to_plan(d: Path, meta: dict) -> None:
+    """A sweep taken from a plan on the phone goes straight onto that plan."""
+    plan = (meta.get("phone") or {}).get("join_plan")
+    if not plan or meta.get("status") != "ok" or not (DATA / str(plan) / "layout.json").exists():
+        return
+    try:
+        layout_mod.add_join(DATA / str(plan), d)
+    except (ValueError, OSError) as e:
+        meta["log"] = (meta.get("log") or "") + f"\nCould not fit this onto the plan: {e}"
+        _save_meta(d, meta)
+
+
 def _convert(d: Path) -> dict:
     _clear_print_prep(d)
     meta = _meta(d)
     log: list[str] = []
+    if meta.get("kind") == "plan":       # nothing to work out: it is what was walked
+        return meta
     if meta.get("kind") == "mesh":
         if meta.get("ring"):  # printed marker ring: every frame knows where the ring is
             ok, out = ring_scan_mod.fuse(d, meta.get("scale", 1.0))
@@ -174,6 +189,7 @@ def _convert(d: Path) -> dict:
         meta["converted_at"] = time.time()
         meta["settings"] = _settings(d, meta)
         _save_meta(d, meta)
+        _join_to_plan(d, meta)
         return meta
     if meta.get("kind") == "object":
         scale = meta.get("scale", 1.0)
@@ -415,46 +431,131 @@ async def scan_marks(scan_id: str, body: dict):
             "width_m": room.get("width_m"), "length_m": room.get("length_m")}
 
 
-@app.get("/api/scans/{scan_id}/layout")
-def get_layout(scan_id: str):
-    """The room's plan to correct: its corners, height and the readings seen from above."""
-    d = _dir(scan_id)
-    if not (d / "room.json").exists():
-        raise HTTPException(404, "only a sweep has a layout so far")
-    lay = layout_mod.load(d)
-    room = sweep_mod.apply_marks(json.loads((d / "room.json").read_text()), d)
-    floor_m, ceil_m = room["floor"].get("wall_m"), room["ceiling"].get("wall_m")
-    centre = room["centre"]
-    return {**lay, "points": layout_mod.points(d, lay.get("turn_deg", 0.0)), "name": _meta(d).get("name", ""), "phone": centre,
-            "floor_y": centre[1] - floor_m if floor_m is not None else centre[1] - 1.4,
-            "ceiling_y": centre[1] + ceil_m if ceil_m is not None else None}
-
-
-def _layout_overlay(scan_id: str, cut: float | None):
-    d = _dir(scan_id)
+def _layout_scene(d: Path, lay: dict) -> dict:
+    """Floor, ceiling and phone spot of the scan that holds this layout. A plan walked on the phone keeps its own floor and ceiling, and has no spot."""
     room_file = d / "room.json"
     if not room_file.exists():
-        raise HTTPException(404, "only a sweep has a layout so far")
-    room, lay = json.loads(room_file.read_text()), layout_mod.load(d)
-    floor_m = room["floor"].get("wall_m")
-    if floor_m is None:
-        raise HTTPException(404, "this sweep did not find the floor")
-    # the plain view takes off only the ceiling; the plan's height can have been edited, the scan's has not
-    cut_m = cut if cut is not None else (room.get("height_m") or 2.5) - 0.08
-    made = layout_mod.overlay(d, lay.get("turn_deg", 0.0), room["centre"][1] - floor_m, max(0.1, min(cut_m, 10.0)))
+        return {"floor_y": lay.get("floor_y", 0.0), "ceiling_y": lay.get("ceiling_y"), "phone": None}
+    room = sweep_mod.apply_marks(json.loads(room_file.read_text()), d)
+    floor_m, ceil_m = room["floor"].get("wall_m"), room["ceiling"].get("wall_m")
+    centre = room["centre"]
+    return {"floor_y": centre[1] - floor_m if floor_m is not None else centre[1] - 1.4, "ceiling_y": centre[1] + ceil_m if ceil_m is not None else None, "phone": centre}
+
+
+def _has_layout(d: Path) -> bool:
+    return (d / "room.json").exists() or (d / "layout.json").exists()
+
+
+def _join_view(d: Path, j: dict) -> dict:
+    """A join as the page needs it: the fit in use, its matrix, and where that sweep's phone stood in this drawing."""
+    src = DATA / j["scan"]
+    f = j["fits"][j["pick"]]
+    centre = json.loads((src / "room.json").read_text())["centre"] if (src / "room.json").exists() else None
+    return {"scan": j["scan"], "name": _meta(src).get("name", j["scan"]) if src.exists() else j["scan"], "pick": j["pick"], "fits": len(j["fits"]), "share": f["share"], "agree": f["agree"],
+            "sure": j.get("sure", False), "apart": j.get("apart", False), "deg": f["deg"], "dy": j["dy"], "matrix": join_mod.matrix(f, j["dy"]),
+            "phone": join_mod.world_point(centre, f, j["dy"]) if centre else None}
+
+
+@app.get("/api/scans/{scan_id}/layout")
+def get_layout(scan_id: str):
+    """The room's plan to correct: its corners, height, the readings seen from above, and the scans joined to it."""
+    d = _dir(scan_id)
+    if not _has_layout(d):
+        raise HTTPException(404, "only a sweep or a walked plan has a layout")
+    lay = layout_mod.load(d)
+    js = [j for j in layout_mod.joins(d) if (DATA / j["scan"]).exists()]
+    pts = layout_mod.seen_cells(d, lay)
+    return {**lay, "points": pts, "name": _meta(d).get("name", ""), "kind": _meta(d).get("kind"), **_layout_scene(d, lay), "joins": [_join_view(d, j) for j in js]}
+
+
+@app.post("/api/plans")
+def new_plan(body: dict):
+    """A plan walked on the phone becomes a scan of its own, with no pictures yet."""
+    sid = uuid.uuid4().hex[:12]
+    d = DATA / sid
+    d.mkdir(parents=True)
+    try:
+        layout_mod.from_walk(d, body)
+    except (ValueError, TypeError) as e:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(422, str(e))
+    name = str(body.get("name") or "").strip()[:200] or "Plan " + time.strftime("%d/%m/%Y, %H:%M")
+    info = body.get("info") if isinstance(body.get("info"), dict) else {}
+    _save_meta(d, {"id": sid, "name": name, "kind": "plan", "scale": 1.0, "photo_count": 0, "project": str(body.get("project") or "").strip(), "created_at": time.time(),
+                   "status": "ok", "log": "", "phone": {**info, "scan type": "Plan walked on the phone"}})
+    return {"id": sid, "url": f"/layout.html?scan={sid}"}
+
+
+@app.post("/api/scans/{scan_id}/layout/join")
+def join_scan(scan_id: str, body: dict):
+    """Fit another sweep onto this scan or plan."""
+    d, src = _dir(scan_id), _dir(str(body.get("scan") or ""))
+    if d == src:
+        raise HTTPException(422, "a scan can't be joined to itself")
+    try:
+        entry = layout_mod.add_join(d, src)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _join_view(d, entry)
+
+
+@app.post("/api/scans/{scan_id}/layout/join/{other}/next")
+def join_next(scan_id: str, other: str):
+    """The next fit, when a nearly square room fitted the wrong way round."""
+    d = _dir(scan_id)
+    js = layout_mod.joins(d)
+    for j in js:
+        if j["scan"] == other:
+            j["pick"] = (j["pick"] + 1) % len(j["fits"])
+            if "before" in j:
+                entry = {"apart": False}
+                (d / "layout.json").write_text(json.dumps(j["before"]))
+                layout_mod._grow(d, j["before"], layout_mod.load(_dir(other)), j["fits"][j["pick"]], entry)
+                j["apart"] = entry["apart"]
+            layout_mod._save_joins(d, js)
+            return _join_view(d, j)
+    raise HTTPException(404, "that scan isn't joined here")
+
+
+@app.delete("/api/scans/{scan_id}/layout/join/{other}")
+def join_remove(scan_id: str, other: str):
+    d = _dir(scan_id)
+    js = layout_mod.joins(d)
+    for j in js:
+        if j["scan"] == other and "before" in j:
+            (d / "layout.json").write_text(json.dumps(j["before"]))
+    layout_mod._save_joins(d, [j for j in js if j["scan"] != other])
+    return {"ok": True}
+
+
+def _layout_overlay(scan_id: str, cut: float | None, other: str | None = None):
+    d = _dir(scan_id)
+    if not _has_layout(d):
+        raise HTTPException(404, "only a sweep or a walked plan has a layout")
+    lay = layout_mod.load(d)
+    scene = _layout_scene(d, lay)
+    height = (scene["ceiling_y"] - scene["floor_y"]) if scene["ceiling_y"] is not None else lay["height_m"]
+    cut_m = max(0.1, min(cut if cut is not None else height - 0.08, 10.0))     # the plain view takes off only the ceiling
+    if other:
+        j = next((j for j in layout_mod.joins(d) if j["scan"] == other), None)
+        if not j:
+            raise HTTPException(404, "that scan isn't joined here")
+        made = layout_mod.overlay(_dir(other), lay.get("turn_deg", 0.0), scene["floor_y"], cut_m, j["fits"][j["pick"]], j["dy"])
+    else:
+        made = layout_mod.overlay(d, lay.get("turn_deg", 0.0), scene["floor_y"], cut_m)
     if not made:
-        raise HTTPException(404, "this sweep has no coloured surface")
+        raise HTTPException(404, "this scan has no coloured surface")
     return made
 
 
 @app.get("/api/scans/{scan_id}/layout/overlay.json")
-def layout_overlay_json(scan_id: str, cut: float | None = None):
-    return _layout_overlay(scan_id, cut)[1]
+def layout_overlay_json(scan_id: str, cut: float | None = None, join: str | None = None):
+    return _layout_overlay(scan_id, cut, join)[1]
 
 
 @app.get("/api/scans/{scan_id}/layout/overlay.png")
-def layout_overlay_png(scan_id: str, cut: float | None = None):
-    return FileResponse(_layout_overlay(scan_id, cut)[0], media_type="image/png")
+def layout_overlay_png(scan_id: str, cut: float | None = None, join: str | None = None):
+    return FileResponse(_layout_overlay(scan_id, cut, join)[0], media_type="image/png")
 
 
 @app.put("/api/scans/{scan_id}/layout")
@@ -464,6 +565,8 @@ def put_layout(scan_id: str, body: dict):
         lay = layout_mod.validate(body)
     except (ValueError, TypeError) as e:
         raise HTTPException(422, str(e))
+    old = layout_mod.load(d)
+    lay.update({k: old[k] for k in ("floor_y", "ceiling_y") if k in old})        # a walked plan's own floor and ceiling
     (d / "layout.json").write_text(json.dumps(lay))
     return {"ok": True, "problem": layout_mod.problem(lay)}
 

@@ -10,15 +10,18 @@ struct RoomTab: View {
                 Text("Floor plan").tag(0)
                 Text("3D room").tag(1)
                 Text("From one spot").tag(2)
+                Text("Sketch").tag(3)
             }
             .pickerStyle(.segmented).padding(.horizontal).padding(.top, 6)
             Text(kind == 0
                  ? "Walls, doors and windows, measured by Apple RoomPlan. Gives a floor plan and a BIM model (.bimcraft, .ifc)."
                  : kind == 1
                  ? "A coloured 3D copy of the room and everything in it, from the LiDAR and the photos. To look at and measure."
+                 : kind == 3
+                 ? "Walk the room and tap each corner, at the floor or the ceiling. The plan draws itself as you go, and 360 photos can go onto it after."
                  : "Stand in one place and turn the phone round (a small or cluttered room). Gives a 360° picture and a measured model of the room.")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal)
-            if kind == 0 { ScanView() } else if kind == 1 { MeshScanView(liveGuide: true) } else { MeshScanView(sweepMode: true, liveGuide: true) }
+            if kind == 0 { ScanView() } else if kind == 3 { SketchPlanView() } else if kind == 1 { MeshScanView(liveGuide: true) } else { MeshScanView(sweepMode: true, liveGuide: true) }
         }
     }
 }

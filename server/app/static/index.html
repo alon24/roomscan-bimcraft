@@ -704,6 +704,12 @@ async function show(id) {
     const v = await ask("Move to home", [{ key: "project", label: "Home (empty = none)", value: meta.project ?? "", list: true }], "Move");
     if (v) { await api(`/api/scans/${id}`, { method: "PATCH", body: JSON.stringify(v) }); show(id); }
   });
+  if (meta.kind === "plan") {       // walked on the phone: all of it lives on the Layout page
+    actions.replaceChildren();
+    mk("Open the plan", () => { location.href = `/layout.html?scan=${id}`; }, "primary");
+    $("log").textContent = "A plan walked on the phone. Open it to see and correct it, add sweeps to it, and build the BIMCraft and Blender files.";
+    return;
+  }
   if (isMesh && (meta.photo_count || 0) >= 2) mk("Panorama", () => openPano(id));
   mk("Save as zip", () => { location.href = `/api/scans/${id}/bundle.zip`; });
   if (meta.kind !== "room") {

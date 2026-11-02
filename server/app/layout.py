@@ -10,11 +10,12 @@ import numpy as np
 import trimesh
 from shapely.geometry import Polygon
 
-from . import convert
+from . import convert, join as join_mod
 
 WALL_THICK = 0.1           # metres, for the Blender model
 WALL_TYPE = "Generic - 200mm"
 WALL_CENTRE = 0.1          # metres from the room's face to the middle of that wall
+MERGE_TIDY = 0.12          # metres an outline may move to lose small steps when two are joined
 OPEN_PAST = 0.4            # metres past a line that count as seeing through it
 OPEN_WIDE = 0.1            # metres either side of the sight line
 OPEN_SHARE = 0.5           # the share of a stretch that must be seen through
@@ -83,10 +84,19 @@ def load(d: Path) -> dict:
     else:
         return {"vertices": [], "openings": [], "open": [], "height_m": 2.5, "turn_deg": 0.0, "edited": False}
     if len(lay.get("open") or []) != len(lay["vertices"]):       # worked out from the readings until someone says otherwise
-        p = points(d, lay.get("turn_deg", 0.0))
+        p = seen_cells(d, lay)
         cells = np.array(p["top"] + p["all"], float).reshape(-1, 2)
-        spot = _rotate([room["centre"][0], -room["centre"][2]], lay.get("turn_deg", 0.0)) if room else [0.0, 0.0]
-        lay["open"] = open_edges(lay["vertices"], cells, np.array(spot))
+        turn = lay.get("turn_deg", 0.0)
+        spots = [room["centre"]] if room else []
+        for j in joins(d):       # stretch is open if the phone saw through it from any spot
+            other = d.parent / j["scan"] / "room.json"
+            if other.exists():
+                spots.append(join_mod.world_point(json.loads(other.read_text())["centre"], j["fits"][j["pick"]], j["dy"]))
+        flags = [False] * len(lay["vertices"])
+        for c in spots:
+            found = open_edges(lay["vertices"], cells, np.array(_rotate([c[0], -c[2]], turn)))
+            flags = [x or y for x, y in zip(flags, found)]
+        lay["open"] = flags
     return lay
 
 
@@ -131,10 +141,12 @@ def points(d: Path, turn_deg: float = 0.0) -> dict:
     return {k: [_rotate(p, turn_deg) for p in v] for k, v in json.loads(f.read_text()).items()}
 
 
-def overlay(d: Path, turn_deg: float, floor_y: float, cut_m: float) -> tuple[Path, dict] | None:
+def overlay(d: Path, turn_deg: float, floor_y: float, cut_m: float, fit: dict | None = None, dy: float = 0.0) -> tuple[Path, dict] | None:
     """The scan seen from above in its real colours, everything higher than `cut_m` over the floor taken off. Returns the PNG and its extent in plan
     metres. Built when first asked for."""
     tag = f"{round(cut_m * 100)}"
+    if fit:           # this scan as it lies in another's plan
+        tag += f"_{fit['deg']:.2f}_{fit['tx']:.3f}_{fit['ty']:.3f}_{dy:.3f}_{turn_deg:.2f}".replace("-", "m")
     src, png, meta = d / "colored.ply", d / f"layout_overlay_{tag}.png", d / f"layout_overlay_{tag}.json"
     if not src.exists():
         return None
@@ -145,6 +157,9 @@ def overlay(d: Path, turn_deg: float, floor_y: float, cut_m: float) -> tuple[Pat
     mesh = trimesh.load(src, process=False)
     V, F = np.asarray(mesh.vertices, float), np.asarray(mesh.faces)
     C = np.asarray(mesh.visual.vertex_colors)[:, :3]
+    if fit:
+        M = np.array(join_mod.matrix(fit, dy)).reshape(4, 4, order="F")
+        V = V @ M[:3, :3].T + M[:3, 3]
     cut = floor_y + cut_m
     c, s = math.cos(math.radians(turn_deg)), math.sin(math.radians(turn_deg))
     x, y = V[:, 0] * c + V[:, 2] * s, V[:, 0] * s - V[:, 2] * c           # world to plan: (x, -z) turned by turn_deg
@@ -166,6 +181,103 @@ def overlay(d: Path, turn_deg: float, floor_y: float, cut_m: float) -> tuple[Pat
     m = {"x0": round(x0, 3), "y0": round(y1 - h * OVERLAY_CELL, 3), "x1": round(x0 + w * OVERLAY_CELL, 3), "y1": round(y1, 3), "turn_deg": turn_deg}
     meta.write_text(json.dumps(m))
     return png, m
+
+
+def from_walk(d: Path, body: dict) -> dict:
+    """A plan walked on the phone: its corners in the phone's world as [x, z], the floor and ceiling heights, and a flat list of what the LiDAR saw [x, y, z, ...]."""
+    verts, gaps, fy, cy = body.get("corners"), body.get("open"), body.get("floor_y"), body.get("ceiling_y")
+    if not isinstance(verts, list) or len(verts) < 3 or not isinstance(fy, (int, float)) or not isinstance(cy, (int, float)) or not 1.0 <= cy - fy <= 10.0:
+        raise ValueError("a plan needs at least 3 corners, a floor and a ceiling")
+    plan = [[float(x), -float(z)] for x, z in verts]
+    walls = [{"a": [a[0], -a[1]], "b": [b[0], -b[1]]} for a, b in zip(plan, plan[1:] + plan[:1])]
+    turn = _turn(walls)
+    lay = {"vertices": [_rotate(p, turn) for p in plan], "openings": [], "open": [bool(g) for g in gaps] if isinstance(gaps, list) and len(gaps) == len(plan) else [False] * len(plan),
+           "height_m": round(float(cy - fy), 3), "turn_deg": round(turn, 3), "floor_y": float(fy), "ceiling_y": float(cy), "edited": True}
+    cloud = np.array(body.get("cloud") or [], float)
+    cloud = cloud[: len(cloud) // 3 * 3].reshape(-1, 3)
+    cloud = cloud[np.isfinite(cloud).all(axis=1)]
+    def cells(mask: np.ndarray) -> list[list[float]]:
+        q = cloud[mask][:, [0, 2]] * [1, -1]
+        return [[round(float(a), 3), round(float(b), 3)] for a, b in (np.unique(np.floor(q / CELL), axis=0) + 0.5) * CELL] if mask.any() else []
+    y = cloud[:, 1]
+    top = (y > cy - 0.65) & (y < cy - 0.08)
+    low = (y > fy + 0.1) & (y <= cy - 0.65)
+    (d / "layout_points.json").write_text(json.dumps({"top": cells(top), "all": cells(low)}))
+    (d / "layout.json").write_text(json.dumps(lay))
+    return lay
+
+
+def _floor_of(d: Path, lay: dict) -> float | None:
+    room = d / "room.json"
+    if room.exists():
+        r = json.loads(room.read_text())
+        return r["centre"][1] - r["floor"]["wall_m"] if r["floor"].get("wall_m") is not None else None
+    return lay.get("floor_y")
+
+
+def joins(d: Path) -> list[dict]:
+    f = d / "joined.json"
+    return json.loads(f.read_text()) if f.exists() else []
+
+
+def _save_joins(d: Path, js: list[dict]) -> None:
+    (d / "joined.json").write_text(json.dumps(js))
+
+
+def seen_cells(d: Path, lay: dict) -> dict:
+    """The readings of this scan and of every scan joined to it, in the drawing's plan."""
+    turn = lay.get("turn_deg", 0.0)
+    out = points(d, turn)
+    for j in joins(d):
+        raw = points(d.parent / j["scan"])
+        f = j["fits"][j["pick"]]
+        for k in ("top", "all"):
+            if raw[k]:
+                out[k] = out[k] + [_rotate(list(p), turn) for p in join_mod.plan_point(raw[k], f).tolist()]
+    return out
+
+
+def _merged(lay: dict, other: list[list[float]]) -> list[list[float]] | None:
+    """The outline round both: where two scans overlap, the walls between them go."""
+    a, b = Polygon(lay["vertices"]).buffer(0), Polygon(other).buffer(0)
+    if not a.intersects(b):
+        return None
+    u = a.union(b)
+    if u.geom_type != "Polygon":
+        u = max(u.geoms, key=lambda g: g.area)
+    # two scans of one wall never agree to the centimetre: without this their outlines weave round each other in tiny steps
+    return [[round(x, 3), round(y, 3)] for x, y in list(u.simplify(MERGE_TIDY).exterior.coords)[:-1]]
+
+
+def add_join(d: Path, src: Path) -> dict:
+    """Fit the sweep `src` onto the scan in `d`. On a sweep the two outlines become one; a plan someone walked stays as drawn. Returns the join."""
+    a, b = points(src), points(d)
+    src_cells, dst_cells = np.array(a["top"], float).reshape(-1, 2), np.array(b["top"], float).reshape(-1, 2)
+    if len(src_cells) < 100 or len(dst_cells) < 100:
+        raise ValueError("One of the two has too few wall readings to fit. Press Re-convert on the sweep once, then try again.")
+    lay, other = load(d), load(src)
+    fits = join_mod.fit(src_cells, dst_cells)
+    fy, oy = _floor_of(d, lay), _floor_of(src, other)
+    entry = {"scan": src.name, "fits": fits, "pick": 0, "sure": join_mod.sure(fits), "dy": round(fy - oy, 4) if fy is not None and oy is not None else 0.0}
+    if "floor_y" not in lay and lay.get("edited") is not None and (d / "room.json").exists():
+        entry["before"] = lay
+        _grow(d, lay, other, fits[0], entry)
+    js = [j for j in joins(d) if j["scan"] != src.name] + [entry]
+    _save_joins(d, js)
+    return entry
+
+
+def _grow(d: Path, lay: dict, other: dict, f: dict, entry: dict) -> None:
+    turn = lay.get("turn_deg", 0.0)
+    theirs = [_rotate(p, -other.get("turn_deg", 0.0)) for p in other["vertices"]]
+    mine = [_rotate(list(p), turn) for p in join_mod.plan_point(theirs, f).tolist()]
+    v = _merged(lay, mine)
+    if not v:
+        entry["apart"] = True
+        return
+    grown = {**lay, "vertices": v, "open": []}
+    (d / "layout.json").write_text(json.dumps(grown))
+    entry["merged"] = True
 
 
 def _area(v: list[list[float]]) -> float:

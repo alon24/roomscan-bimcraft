@@ -252,6 +252,19 @@ Taken automatically in the iOS Simulator on every build (no camera or LiDAR ther
 
 ---
 
+### Sketch: walk the room and draw its plan
+
+Room tab → **Sketch**. The phone keeps its place as you walk, so the plan draws itself on the screen.
+
+1. Walk to a corner. Aim the cross at it, at the floor or at the ceiling if furniture is in the way, from under 2.5 m away, and tap **Corner**. A post appears in the room, and the phone says the length from the last corner.
+2. Tip the phone down and up once, so it finds the floor and ceiling. The height appears on the screen.
+3. If the next stretch has no wall, as into a kitchen, tap **Next: wall** so it says **Next: no wall**, then tap **Corner** where the wall starts again.
+4. Follow the room round. **Undo** takes back a corner.
+5. At the end, tap **Close room** if the last corner joins the first with a wall, then **Save plan**. If you don't close it, the way back to the first corner is saved as open.
+6. **Add 360 photos from one spot** takes a normal sweep, and the server fits it onto the plan by itself. You can do this from several spots.
+
+The plan opens on the server's Layout page to correct it and build the BIMCraft and Blender files.
+
 ## 2. The web page (the server)
 
 Open `http://<server>:8010` in any browser.
@@ -360,6 +373,10 @@ Open a sweep on the web page and press **Layout**. You get the room from above w
 
 Sweeps made before this version need **Re-convert** once to show the grey readings. The walls show either way.
 
+### Joining scans into one plan
+
+On the Layout page, **Scans in this plan** adds another sweep, for example one taken in the kitchen. The server fits it on from the walls both saw, shows how much agrees, and joins the two outlines. Both scans then appear in the plan view, in 3D and in the photo panel, which uses the sweep nearest the spot you clicked. A nearly square room can fit the wrong way round, so check it and press **Next fit** if needed. **Take out** removes the sweep again.
+
 ## 3. The turntable ring
 
 Printable marker ring (18 markers) that lets the server work out the camera position from every photo.
@@ -408,6 +425,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.60.0 | New **Sketch** on the phone: walk the room, tap each corner, and the plan draws itself live; 360 photos then go onto it by themselves. Layout page: join other sweeps into one plan. |
 | 0.59.0 | Layout page: a **3D** view with the layout standing inside the scan, to turn round and see every corner, wall, floor and ceiling chosen. Rooms no longer have to be closed: stretches with no wall are found from the readings, can be changed by hand, and get no wall in BIMCraft and Blender. |
 | 0.58.0 | Layout page: the real scan lies under the plan, seen from above, and you can take off everything above a chosen height. Click a wall or corner to see it in the 360 picture, with green lines where the plan puts it. |
 | 0.57.0 | Web page: a **Layout** page for sweeps shows the room as a plan with no pictures. Drag corners, type real lengths, add doors and windows, then build `room.bimcraft`, `room.ifc` and a Blender `layout.glb`. |
