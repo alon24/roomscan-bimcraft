@@ -2,10 +2,11 @@ import SwiftUI
 import ARKit
 import SceneKit
 
-/// Point the crosshair at the floor or the ceiling, from close by, and press the button: a point floats there, and the height comes from
-/// the points you marked. The little plan in the corner fills in as the LiDAR sees the room, so what is missing shows as a gap.
+/// Point the crosshair at the floor, the ceiling or a wall and press the button: a point floats there, and the height and wall sizes come
+/// from the points you marked, if they agree. The phone's own position wanders as you walk, so walls are best marked from one spot, each on
+/// bare wall above the furniture. The little plan in the corner fills in as the LiDAR sees the room, so what is missing shows as a gap.
 final class MarkHeightModel: NSObject, ObservableObject {
-    struct Mark: Identifiable { let id = UUID(); let kind: String; let p: simd_float3; let node: SCNNode }
+    struct Mark: Identifiable { let id = UUID(); let kind: String; let p: simd_float3; let node: SCNNode; var facing: SIMD2<Float>? = nil }
 
     let sceneView = ARSCNView(frame: .zero)
     @Published var marks: [Mark] = []
@@ -99,6 +100,33 @@ final class MarkHeightModel: NSObject, ObservableObject {
         if !c.isSubset(of: ceilingSeen) { ceilingSeen.formUnion(c) }
     }
 
+    /// The way the flat surface at the crosshair faces, level and towards the phone, from the depth round it. Nil if it isn't an upright, flat surface.
+    private func wallFacing(_ frame: ARFrame) -> SIMD2<Float>? {
+        guard let map = frame.sceneDepth?.depthMap else { return nil }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map), m = (w - h) / 2
+        let k = frame.camera.intrinsics, res = frame.camera.imageResolution, s = Float(w) / Float(res.width)
+        let fx = k[0][0] * s, fy = k[1][1] * s, cx = k[2][0] * s, cy = k[2][1] * Float(h) / Float(res.height)
+        let t = frame.camera.transform
+        func point(_ r: Int, _ col: Int) -> simd_float3? {
+            let d = base.advanced(by: r * rb).assumingMemoryBound(to: Float32.self)[col]
+            guard d.isFinite, d > 0.2 else { return nil }
+            let x = Float(r + m) + 0.5, y = Float(w - m - 1 - col) + 0.5
+            let p = t * SIMD4<Float>((x - cx) * d / fx, -(y - cy) * d / fy, -d, 1)
+            return simd_float3(p.x, p.y, p.z)
+        }
+        let r0 = h / 2, c0 = w / 2, step = 12
+        guard let a = point(r0 - step, c0), let b = point(r0 + step, c0), let c = point(r0, c0 - step), let d = point(r0, c0 + step), let mid = point(r0, c0) else { return nil }
+        guard simd_length((a + b) / 2 - mid) < 0.02, simd_length((c + d) / 2 - mid) < 0.02 else { return nil }      // not flat there: an edge, a plant, a corner
+        var n = simd_normalize(simd_cross(b - a, d - c))
+        let cam = simd_float3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        if simd_dot(n, cam - mid) < 0 { n = -n }
+        guard abs(n.y) < 0.25 else { return nil }                                                                    // not upright
+        return simd_normalize(SIMD2(n.x, n.z))
+    }
+
     func mark(_ kind: String) {
         guard let frame = sceneView.session.currentFrame, case .normal = frame.camera.trackingState else { note = "Move slowly, the phone is finding its place."; return }
         guard let raw = centre(frame) else { note = "No reading there. Move closer, or aim at a matte part."; return }
@@ -106,13 +134,25 @@ final class MarkHeightModel: NSObject, ObservableObject {
         let t = frame.camera.transform
         let fwd = simd_normalize(-simd_float3(t.columns.2.x, t.columns.2.y, t.columns.2.z))
         let p = simd_float3(t.columns.3.x, t.columns.3.y, t.columns.3.z) + fwd * d
+        var facing: SIMD2<Float>?
+        if kind == "wall" {
+            facing = wallFacing(frame)
+            guard facing != nil else { note = "That isn't a flat, upright wall. Aim at bare wall, away from corners, furniture and curtains."; return }
+        }
         let node = Self.pointNode(kind: kind, number: count(kind) + 1)
         node.simdPosition = p
         sceneView.scene.rootNode.addChildNode(node)
-        marks.append(Mark(kind: kind, p: p, node: node))
-        note = raw > Self.nearEnough ? "That was over 2 m away: closer is more exact." : ""
+        if let facing {          // the wall itself, see-through, on the camera picture
+            let panel = SCNNode(geometry: SCNPlane(width: 2.0, height: 2.4))
+            panel.geometry?.firstMaterial?.diffuse.contents = UIColor.systemGreen.withAlphaComponent(0.25)
+            panel.geometry?.firstMaterial?.isDoubleSided = true
+            panel.eulerAngles.y = atan2(facing.x, facing.y)
+            node.addChildNode(panel)
+        }
+        marks.append(Mark(kind: kind, p: p, node: node, facing: facing))
+        note = kind != "wall" && raw > Self.nearEnough ? "That was over 2 m away: closer is more exact." : ""
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        Voice.say(kind == "floor" ? "Floor point" : "Ceiling point", every: 0)
+        Voice.say(kind == "floor" ? "Floor point" : kind == "ceiling" ? "Ceiling point" : "Wall point", every: 0)
     }
 
     func undo() {
@@ -122,20 +162,20 @@ final class MarkHeightModel: NSObject, ObservableObject {
 
     /// A dot on the surface, and a label floating beside it, always facing you.
     private static func pointNode(kind: String, number: Int) -> SCNNode {
-        let colour: UIColor = kind == "floor" ? .systemBlue : .systemOrange
+        let colour: UIColor = kind == "floor" ? .systemBlue : kind == "ceiling" ? .systemOrange : .systemGreen
         let root = SCNNode()
         let dot = SCNNode(geometry: SCNSphere(radius: 0.02))
         dot.geometry?.firstMaterial?.diffuse.contents = colour
         dot.geometry?.firstMaterial?.readsFromDepthBuffer = false
         dot.renderingOrder = 10
         root.addChildNode(dot)
-        let text = SCNText(string: "\(kind == "floor" ? "Floor" : "Ceiling") \(number)", extrusionDepth: 0)
+        let text = SCNText(string: "\(kind.capitalized) \(number)", extrusionDepth: 0)
         text.font = .systemFont(ofSize: 10, weight: .bold)
         text.firstMaterial?.diffuse.contents = colour
         text.firstMaterial?.readsFromDepthBuffer = false
         let label = SCNNode(geometry: text)
         label.scale = SCNVector3(0.005, 0.005, 0.005)
-        label.position = SCNVector3(0, kind == "floor" ? 0.08 : -0.12, 0)     // floats off the surface, towards the room
+        label.position = SCNVector3(0, kind == "ceiling" ? -0.12 : 0.08, 0)   // floats off the surface, towards the room
         label.constraints = [SCNBillboardConstraint()]
         label.renderingOrder = 10
         root.addChildNode(label)
@@ -144,7 +184,11 @@ final class MarkHeightModel: NSObject, ObservableObject {
 
     @MainActor func send(server: String) async {
         guard let url = URL(string: server)?.appendingPathComponent("api/scans/\(scanIDForSend)/marks") else { return }
-        let body: [String: Any] = ["session": session, "marks": marks.map { ["kind": $0.kind, "x": $0.p.x, "y": $0.p.y, "z": $0.p.z] as [String: Any] }]
+        let body: [String: Any] = ["session": session, "marks": marks.map { m -> [String: Any] in
+            var o: [String: Any] = ["kind": m.kind, "x": m.p.x, "y": m.p.y, "z": m.p.z]
+            if let f = m.facing { o["nx"] = f.x; o["nz"] = f.y }
+            return o
+        }]
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -154,6 +198,8 @@ final class MarkHeightModel: NSObject, ObservableObject {
             let (data, r) = try await URLSession.shared.data(for: req)
             guard (r as? HTTPURLResponse)?.statusCode == 200 else { note = "The server refused it."; return }
             let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let walls = Self.wallLine(j?["wall_marks"] as? [String: Any])
+            defer { if !walls.isEmpty { note += " " + walls } }
             if let m = j?["marks"] as? [String: Any], let mine = (m["height_m"] as? NSNumber)?.doubleValue, m["used"] as? Bool == false,
                let h = (j?["height_m"] as? NSNumber)?.doubleValue {
                 note = String(format: "Saved. Your points say %.2f m but are %@ cm apart, so the scan keeps its own %.2f m. Points close together in one area agree better.", mine, (m["spread_cm"] as? NSNumber)?.stringValue ?? "?", h)
@@ -167,6 +213,14 @@ final class MarkHeightModel: NSObject, ObservableObject {
         }
     }
     var scanIDForSend = ""
+
+    private static func wallLine(_ w: [String: Any]?) -> String {
+        guard let w else { return "" }
+        let sizes = ["width_m", "length_m"].compactMap { (w[$0] as? NSNumber)?.doubleValue }.map { String(format: "%.2f m", $0) }
+        if sizes.isEmpty { return "Mark two opposite walls to get a wall size." }
+        if w["used"] as? Bool == true { return "Wall sizes: " + sizes.joined(separator: " × ") + "." }
+        return "Your wall points are too far apart to use: aim at bare, flat wall from one spot."
+    }
 }
 
 struct MarkHeightView: View {
@@ -190,14 +244,18 @@ struct MarkHeightView: View {
                 } else {
                     Text("No reading at the crosshair").font(.caption).foregroundStyle(.orange)
                 }
-                HStack(spacing: 10) {
-                    Button { model.mark("floor") } label: { Text("Floor (\(model.count("floor")))").font(.title3.bold()).frame(maxWidth: .infinity) }
+                Text("Walls: stand near the middle, aim at bare wall above the furniture, on all four sides.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                HStack(spacing: 8) {
+                    Button { model.mark("floor") } label: { Text("Floor \(model.count("floor"))").font(.headline).frame(maxWidth: .infinity) }
                         .buttonStyle(.borderedProminent).tint(.blue).controlSize(.large)
-                    Button { model.mark("ceiling") } label: { Text("Ceiling (\(model.count("ceiling")))").font(.title3.bold()).frame(maxWidth: .infinity) }
+                    Button { model.mark("ceiling") } label: { Text("Ceiling \(model.count("ceiling"))").font(.headline).frame(maxWidth: .infinity) }
                         .buttonStyle(.borderedProminent).tint(.orange).controlSize(.large)
+                    Button { model.mark("wall") } label: { Text("Wall \(model.count("wall"))").font(.headline).frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
                 }
                 HStack {
                     Button("Undo") { model.undo() }.disabled(model.marks.isEmpty)
+                    VoiceToggle()
                     Spacer()
                     Button("Save to the scan") { model.scanIDForSend = scanID; Task { await model.send(server: serverURL) } }
                         .buttonStyle(.bordered).disabled(model.marks.isEmpty)
@@ -206,7 +264,7 @@ struct MarkHeightView: View {
             }
             .padding(12)
         }
-        .navigationTitle("Floor and ceiling points")
+        .navigationTitle("Mark points")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -214,7 +272,7 @@ struct MarkHeightView: View {
 
     private var heightLine: String {
         if let h = model.height { return String(format: "Height %.2f m", h) }
-        return "Move close and mark a floor and a ceiling point"
+        return "Mark floor, ceiling and wall points"
     }
 }
 
@@ -243,7 +301,7 @@ private struct MarkPlan: View {
             paint(model.ceilingSeen, .orange.opacity(0.45))
             for m in model.marks {
                 let p = pos(CGFloat(m.p.x), CGFloat(m.p.z))
-                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(m.kind == "floor" ? .blue : .orange))
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(m.kind == "floor" ? .blue : m.kind == "ceiling" ? .orange : .green))
                 ctx.stroke(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(.white), lineWidth: 1)
             }
             if let y = model.you {

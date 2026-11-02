@@ -25,6 +25,8 @@ SWEEP_SPREAD_M = 0.35         # all cameras within this of their middle: a sweep
 SPOT_M = 1.0                  # a sweep is built from the cameras within this of the spot most of them were at; the rest were taken elsewhere
 NEAR_M = 0.3                  # depth nearer than this to the phone in a sweep is your hand, not the room
 SELF_SHARE = 0.4              # a sweep frame with this share of its depth nearer than 0.8 m looks at you (face, lap, legs), not the room
+OUTLINE_TOL, OUTLINE_SAME, OUTLINE_LINE, OUTLINE_MIN, OUTLINE_JOIN = 0.08, 14.0, 0.14, 0.5, 0.9  # metres and degrees: bumps a wall may have, what is still one wall, shortest wall, how far two walls may run on to meet
+OUTLINE_LONG, OUTLINE_ROUNDED, OUTLINE_FAR = 1.5, 1.8, 3.5                                      # a long wall; most a far corner may be rounded off by; "far" from the phone
 TOP_BAND, TOP_CELLS = 0.4, 6  # a wall is seen within this far under the ceiling (m), over at least this many 20 cm cells
 SPHERE = (720, 360)           # spherical depth image: 0.5 degree cells (width, height)
 
@@ -235,6 +237,122 @@ def _wall_to_ceiling(off: np.ndarray, side: np.ndarray, up: np.ndarray, ceiling:
     return float(np.median(off[np.abs(off - best) < tol])) if best is not None else None
 
 
+def room_outline(P: np.ndarray, centre: np.ndarray, ceiling: float | None) -> dict | None:
+    """The room's real shape from the readings, not a box. Just under the ceiling there is little but walls: no furniture, and door tops are
+    lower. Round the circle, the distance there gives a plan; straight pieces of it are the walls, and where two meet is a corner. Returns walls
+    and corners in world metres (x, z); a gap means that stretch wasn't seen."""
+    if ceiling is None:
+        return None
+    rel = P - centre
+    with np.errstate(invalid="ignore"):
+        band = np.isfinite(rel[..., 0]) & (rel[..., 1] > ceiling - 0.65) & (rel[..., 1] < ceiling - 0.08)
+    X = rel[band][:, [0, 2]]
+    if len(X) < 200:
+        return None
+    az = np.degrees(np.arctan2(X[:, 0], -X[:, 1])) % 360
+    dist = np.hypot(X[:, 0], X[:, 1])
+    R = np.full(360, np.nan)
+    which = az.astype(int) % 360
+    for a in np.unique(which):
+        m = which == a
+        if m.sum() >= 4:
+            R[a] = np.percentile(dist[m], 75)
+    A = np.radians(np.arange(360) + 0.5)
+    XY = np.c_[R * np.sin(A), -R * np.cos(A)]
+    # one run per stretch seen; a full circle starts at the biggest jump, a corner, so no wall is cut in two
+    jumps = np.linalg.norm(np.roll(XY, -1, axis=0) - XY, axis=1)
+    start = int(np.nanargmax(jumps) + 1) % 360 if np.isfinite(jumps).any() else 0
+    runs, cur = [], []
+    for i in range(360):
+        a = (start + i) % 360
+        if np.isfinite(R[a]):
+            cur.append(a)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+
+    def split(p: np.ndarray) -> list[np.ndarray]:
+        if len(p) < 3:
+            return [p]
+        d = p[-1] - p[0]
+        e = np.abs(d[0] * (p - p[0])[:, 1] - d[1] * (p - p[0])[:, 0]) / (np.linalg.norm(d) + 1e-9)
+        i = int(np.argmax(e))
+        return split(p[:i + 1]) + split(p[i:]) if e[i] > OUTLINE_TOL else [p]
+
+    pieces = []                                  # lists of plan points, in order round the circle
+    for run in runs:
+        pieces += [q for q in split(XY[run]) if len(q) >= 3]
+    # pieces that line up are one wall with something in front of part of it
+    def fit(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        m = q.mean(0)
+        return m, np.linalg.svd(q - m, full_matrices=False)[2][0]
+    changed = True
+    while changed and len(pieces) > 1:
+        changed = False
+        for i in range(len(pieces) - 1):
+            m, u = fit(pieces[i])
+            m2, u2 = fit(pieces[i + 1])
+            if abs(float(u @ u2)) > math.cos(math.radians(OUTLINE_SAME)) and abs(float(np.cross(np.r_[u, 0], np.r_[m2 - m, 0])[2])) < OUTLINE_LINE:
+                pieces[i:i + 2] = [np.vstack(pieces[i:i + 2])]
+                changed = True
+                break
+    walls = []
+    for q in pieces:
+        m, u = fit(q)
+        t = (q - m) @ u
+        a, b = m + u * t.min(), m + u * t.max()
+        if np.linalg.norm(b - a) >= OUTLINE_MIN:
+            if (a - q[0]) @ (a - q[0]) > (b - q[0]) @ (b - q[0]):
+                a, b = b, a                      # keep the order round the circle
+            walls.append([a, b])
+    if not walls:
+        return None
+    # far away the LiDAR rounds a corner off into short pieces: where two long walls have only that between them, they meet (a real room: TV
+    # wall 5.62 m with the corner rounded, 5.85 m run on to the corner, tape 5.95 m)
+    i = 0
+    while i < len(walls) and len(walls) > 2:
+        j = (i + 1) % len(walls)
+        between = []
+        while len(between) < 3 and np.linalg.norm(walls[j][1] - walls[j][0]) < OUTLINE_LONG:
+            between.append(walls[j])
+            j = (j + 1) % len(walls)
+        a, b = walls[i], walls[j]
+        if between and j != i and np.linalg.norm(a[1] - a[0]) >= OUTLINE_LONG and sum(np.linalg.norm(w[1] - w[0]) for w in between) <= OUTLINE_ROUNDED \
+                and min(np.linalg.norm((w[0] + w[1]) / 2) for w in between) > OUTLINE_FAR:
+            d1, d2 = a[1] - a[0], b[1] - b[0]
+            cr = d1[0] * d2[1] - d1[1] * d2[0]
+            if abs(cr) > 1e-6:
+                s = ((b[0] - a[0])[0] * d2[1] - (b[0] - a[0])[1] * d2[0]) / cr
+                p = a[0] + d1 * s
+                if s > 1 and np.linalg.norm(p - a[1]) < OUTLINE_ROUNDED and np.linalg.norm(p - b[0]) < OUTLINE_ROUNDED:
+                    a[1], b[0] = p, p.copy()
+                    walls = [w for w in walls if not any(w is x for x in between)]
+                    i = 0
+                    continue
+        i += 1
+    corners = []
+    n = len(walls)
+    for i in range(n):
+        a, b = walls[i], walls[(i + 1) % n]
+        if n < 2 or (i == n - 1 and n < 3):
+            continue
+        d1, d2 = a[1] - a[0], b[1] - b[0]
+        cr = d1[0] * d2[1] - d1[1] * d2[0]
+        ang = math.degrees(math.acos(min(1.0, abs(float(d1 @ d2)) / (np.linalg.norm(d1) * np.linalg.norm(d2) + 1e-9))))
+        if abs(cr) < 1e-6 or ang < 25:
+            continue
+        s = ((b[0] - a[0])[0] * d2[1] - (b[0] - a[0])[1] * d2[0]) / cr
+        p = a[0] + d1 * s
+        if np.linalg.norm(p - a[1]) < OUTLINE_JOIN and np.linalg.norm(p - b[0]) < OUTLINE_JOIN:
+            a[1], b[0] = p, p.copy()             # the two walls run to where they really meet
+            corners.append({"x": round(float(p[0] + centre[0]), 3), "z": round(float(p[1] + centre[2]), 3), "angle_deg": round(ang)})
+    return {"walls": [{"a": [round(float(w[0][0] + centre[0]), 3), round(float(w[0][1] + centre[2]), 3)],
+                       "b": [round(float(w[1][0] + centre[0]), 3), round(float(w[1][1] + centre[2]), 3)],
+                       "length_m": round(float(np.linalg.norm(w[1] - w[0])), 2)} for w in walls], "corners": corners}
+
+
 def _normals(P: np.ndarray, dirs: np.ndarray, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Surface normal (h, w, 3) of every cell of the spherical depth image, turned to face the middle, and where it is known."""
     rel = P - centre
@@ -421,12 +539,74 @@ MARKS_TIGHT = 0.03    # marks replace the sweep's height only if each kind agree
                       # session (five floor points 10.7 cm apart), and the marks gave 2.50 m where the sweep had the true 2.57 m.
 
 
+WALL_TIGHT = 0.08     # wall marks on one side must agree within this (m), or they are not one flat wall
+WALL_SQUARE = 20.0    # degrees: a mark further than this off the room's square is an angled wall, left out
+
+
+def wall_sizes(marks: list[dict]) -> dict | None:
+    """Distances between opposite walls from one session's wall marks. Each mark has a point and the direction its wall faces. The session has
+    its own world, so its walls are found among themselves: the square from the facing directions, then one position per side."""
+    wm = [m for m in marks if m.get("kind") == "wall" and "nx" in m and "nz" in m]
+    if len(wm) < 2:
+        return None
+    ang = np.array([math.atan2(m["nz"], m["nx"]) for m in wm])
+    base = math.atan2(float(np.sin(4 * ang).sum()), float(np.cos(4 * ang).sum())) / 4
+    sides: dict[int, list[float]] = {}
+    for m, a in zip(wm, ang):
+        k = int(round((a - base) / (math.pi / 2))) % 4
+        off = math.degrees(abs(math.remainder(a - base, math.pi / 2)))
+        if off <= WALL_SQUARE:
+            axis = base + k * math.pi / 2
+            sides.setdefault(k, []).append(m["x"] * math.cos(axis) + m["z"] * math.sin(axis))     # how far along the way this wall faces
+    out, spread = [], 0.0
+    for k in (0, 1):
+        if k in sides and k + 2 in sides:
+            out.append(abs(float(np.median(sides[k])) + float(np.median(sides[k + 2]))))           # they face opposite ways: the positions add
+            spread = max(spread, float(np.ptp(sides[k])), float(np.ptp(sides[k + 2])))
+    return {"sizes": out, "spread": spread} if out else None
+
+
+def _apply_wall_marks(room: dict, sessions: dict) -> None:
+    """Wall marks over the sweep's wall sizes, when they agree. The session has its own world, so each size is matched to the sweep's width or length, whichever is nearer."""
+    if "width_auto_m" in room:
+        room["width_m"], room["length_m"] = room.pop("width_auto_m"), room.pop("length_auto_m")
+    room.pop("wall_marks", None)
+    found = [w for w in (wall_sizes(m) for m in sessions.values()) if w]
+    n = sum(1 for m in sessions.values() for x in m if x.get("kind") == "wall")
+    if not found:
+        if n:
+            room["wall_marks"] = {"marks": n, "used": False, "width_m": None, "length_m": None, "spread_cm": None}
+        return
+    best = min(found, key=lambda w: w["spread"])
+    auto_w, auto_l = room.get("width_m"), room.get("length_m")
+    sizes = best["sizes"]
+    width = length = None
+    if len(sizes) == 2:
+        straight = abs(sizes[0] - (auto_w or sizes[0])) + abs(sizes[1] - (auto_l or sizes[1]))
+        swapped = abs(sizes[1] - (auto_w or sizes[1])) + abs(sizes[0] - (auto_l or sizes[0]))
+        width, length = sizes if straight <= swapped else sizes[::-1]
+    elif auto_w is None or (auto_l is not None and abs(sizes[0] - auto_l) < abs(sizes[0] - auto_w)):
+        length = sizes[0]
+    else:
+        width = sizes[0]
+    used = best["spread"] <= WALL_TIGHT
+    room["wall_marks"] = {"marks": n, "used": used, "spread_cm": round(best["spread"] * 100, 1),
+                          "width_m": None if width is None else round(width, 3), "length_m": None if length is None else round(length, 3)}
+    if used:
+        room["width_auto_m"], room["length_auto_m"] = auto_w, auto_l
+        if width is not None:
+            room["width_m"] = round(width, 3)
+        if length is not None:
+            room["length_m"] = round(length, 3)
+
+
 def apply_marks(room: dict, d: Path) -> dict:
     """The height from points you marked on the phone (marks.json), over the one worked out from the sweep. Each marking session is in its
     own ARKit world, so a height comes only from floor and ceiling marks of the same session; the median over sessions is used. No marks:
     the sweep's own numbers come back."""
     f = d / "marks.json"
     sessions = json.loads(f.read_text()).get("sessions", {}) if f.exists() else {}
+    _apply_wall_marks(room, sessions)
     if "height_auto_m" in room:
         room["height_m"], room["ceiling"]["wall_m"] = room.pop("height_auto_m"), room.pop("ceiling_auto_m")
     room.pop("marks", None)
@@ -609,6 +789,9 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
         return False, "the depth frames covered almost none of the sphere"
     heading = _heading(photos[0])
     room, D2 = measure(D, centre, heading)
+    outline = room_outline(points_of(D, centre)[0], centre, room["ceiling"]["wall_m"])
+    if outline:
+        room["outline"] = outline
     fixed = {p["file"]: p["transform"] for p in photos}     # the corrected positions, for the colours too
     pano = panorama.ensure(d, width=panorama.WIDTH, centre=centre, depth=D2, force=True, photos=[{**p, "transform": fixed[p["file"]]} for p in panorama.usable_photos(d, set(fixed))])
     img = pano["_image"]

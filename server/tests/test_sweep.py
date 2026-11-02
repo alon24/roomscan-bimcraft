@@ -224,3 +224,60 @@ def test_marks_that_disagree_do_not_replace_the_height(tmp_path):
     (tmp_path / "marks.json").write_text(json.dumps({"sessions": {"a": marks}}))
     sweep.apply_marks(room, tmp_path)
     assert room["height_m"] == 2.57 and room["marks"]["used"] is False and room["marks"]["height_m"] == pytest.approx(2.46, abs=0.01)
+
+
+def _wall(x, z, nx, nz):
+    return {"kind": "wall", "x": x, "y": 0.0, "z": z, "nx": nx, "nz": nz}
+
+
+def test_wall_marks_give_the_distances_between_opposite_walls_at_any_turn():
+    import math
+    for turn in (0.0, 0.6):
+        c, s = math.cos(turn), math.sin(turn)
+        rot = lambda x, z: (c * x - s * z, s * x + c * z)
+        def mark(x, z, nx, nz):
+            return _wall(*rot(x, z), *rot(nx, nz))
+        marks = [mark(2.0, 0.5, -1, 0), mark(2.02, -0.5, -1, 0), mark(-3.95, 0.2, 1, 0),           # 5.96 across
+                 mark(0.3, 3.0, 0, -1), mark(0.1, -3.6, 0, 1)]                                     # 6.6 the other way
+        out = sweep.wall_sizes(marks)
+        assert sorted(round(v, 2) for v in out["sizes"]) == [5.96, 6.6] and out["spread"] == pytest.approx(0.02, abs=0.001)
+
+
+def test_wall_marks_are_used_when_they_agree_and_taken_back(tmp_path):
+    import json
+    room = {"width_m": 5.72, "length_m": 6.66, "height_m": 2.57, "floor": {"wall_m": 1.5}, "ceiling": {"wall_m": 1.07}}
+    write = lambda s: (tmp_path / "marks.json").write_text(json.dumps({"sessions": s}))
+    write({"a": [_wall(2.0, 0, -1, 0), _wall(-3.95, 0, 1, 0), _wall(0, 3.0, 0, -1), _wall(0, -3.6, 0, 1)]})
+    sweep.apply_marks(room, tmp_path)
+    assert room["width_m"] == pytest.approx(5.95) and room["length_m"] == pytest.approx(6.6) and room["wall_marks"]["used"]
+    write({"a": [_wall(2.0, 0, -1, 0), _wall(2.3, 1, -1, 0), _wall(-3.95, 0, 1, 0)]})          # 30 cm apart: not one flat wall
+    sweep.apply_marks(room, tmp_path)
+    assert room["width_m"] == 5.72 and not room["wall_marks"]["used"]
+    write({})
+    sweep.apply_marks(room, tmp_path)
+    assert room["width_m"] == 5.72 and room["length_m"] == 6.66 and "wall_marks" not in room
+
+
+def test_the_outline_finds_an_l_shaped_room_not_a_box():
+    """An L: 6 x 4 m with a 2 x 1.5 m corner missing. Walls are at their true lengths, with an inside corner the box could not show."""
+    w, h = 720, 360
+    dirs = sweep.dirs_grid(w, h)
+    x0, x1, z0, z1, notch_x, notch_z = -3.0, 3.0, -2.0, 2.0, 1.0, 0.5
+    t = np.full((h, w), np.inf)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for axis, plane in ((0, x0), (0, x1), (2, z0), (2, z1)):
+            s = plane / dirs[..., axis]
+            t = np.where((s > 0) & (s < t), s, t)
+        hit = dirs * t[..., None]
+        cut = (hit[..., 0] > notch_x) & (hit[..., 2] > notch_z)        # the missing corner: its two walls come forward
+        for axis, plane, other, lim in ((0, notch_x, 2, notch_z), (2, notch_z, 0, notch_x)):
+            s = plane / dirs[..., axis]
+            on = (s > 0) & cut & ((dirs[..., other] * s) >= lim)
+            t = np.where(on & (s < t), s, t)
+    P = dirs * t[..., None]
+    P[np.abs(P[..., 1]) > 1.3] = np.nan
+    o = sweep.room_outline(P, np.zeros(3), 1.25)
+    lengths = sorted(v["length_m"] for v in o["walls"])
+    assert len(lengths) == 6, lengths
+    assert lengths == pytest.approx([1.5, 2.0, 2.5, 4.0, 4.0, 6.0], abs=0.25)
+    assert all(abs(c["angle_deg"] - 90) < 6 for c in o["corners"])

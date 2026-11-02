@@ -278,6 +278,7 @@ struct SweepPanel: View {
                     chip("scope", String(format: "%.0f cm", sweep.moved * 100), sweep.driftLevel)
                     chip("arrow.up.and.down", String(format: "%+.0f cm", sweep.lift * 100), sweep.liftLevel)
                     chip("gauge.with.needle", String(format: "%.0f°/s", sweep.speed), sweep.speedLevel)
+                    VoiceToggle().controlSize(.mini)
                 }
                 Text("\(Int(sweep.pitch))° up · \(frames) photos · rings: walls, ceiling, floor").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }

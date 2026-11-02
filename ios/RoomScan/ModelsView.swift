@@ -116,7 +116,7 @@ struct ModelDetailView: View {
                     NavigationLink("Add more to this scan") { MeshScanView(sweepMode: isSweep, liveGuide: true, addTo: scan.id) }
                 }
                 if isSweep {
-                    NavigationLink("Mark floor and ceiling points") { MarkHeightView(scanID: scan.id) }
+                    NavigationLink("Mark floor, ceiling and wall points") { MarkHeightView(scanID: scan.id) }
                 }
                 NavigationLink("Open the full page (floor plan, frames, measure, downloads)") { WebPage(scanID: scan.id) }
             }

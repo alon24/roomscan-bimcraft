@@ -385,8 +385,9 @@ def _not_busy(d: Path) -> dict:
 
 @app.post("/api/scans/{scan_id}/marks")
 async def scan_marks(scan_id: str, body: dict):
-    """Floor and ceiling points marked on the phone: {"session": id, "marks": [{"kind": "floor"|"ceiling", "x", "y", "z"}]}. The room's
-    height comes from them straight away, and on every later conversion. An empty list removes that session."""
+    """Points marked on the phone: {"session": id, "marks": [{"kind": "floor"|"ceiling"|"wall", "x", "y", "z", and for a wall the direction
+    it faces, "nx", "nz"}]}. The room's height and wall sizes come from them when they agree, straight away and on every later conversion.
+    An empty list removes that session."""
     d = _dir(scan_id)
     room_file = d / "room.json"
     if not room_file.exists():
@@ -396,7 +397,8 @@ async def scan_marks(scan_id: str, body: dict):
     if not session or not isinstance(raw, list):
         raise HTTPException(422, "needs session and marks")
     try:
-        marks = [{"kind": m["kind"], "x": float(m["x"]), "y": float(m["y"]), "z": float(m["z"])} for m in raw if m.get("kind") in ("floor", "ceiling")]
+        marks = [{"kind": m["kind"], "x": float(m["x"]), "y": float(m["y"]), "z": float(m["z"]),
+                  **({"nx": float(m["nx"]), "nz": float(m["nz"])} if m["kind"] == "wall" else {})} for m in raw if m.get("kind") in ("floor", "ceiling", "wall")]
     except (KeyError, TypeError, ValueError, AttributeError):
         raise HTTPException(422, "each mark needs kind, x, y and z")
     f = d / "marks.json"
@@ -408,7 +410,8 @@ async def scan_marks(scan_id: str, body: dict):
     f.write_text(json.dumps(saved))
     room = sweep_mod.apply_marks(json.loads(room_file.read_text()), d)
     room_file.write_text(json.dumps(room))
-    return {"height_m": room.get("height_m"), "marks": room.get("marks")}
+    return {"height_m": room.get("height_m"), "marks": room.get("marks"), "wall_marks": room.get("wall_marks"),
+            "width_m": room.get("width_m"), "length_m": room.get("length_m")}
 
 
 @app.post("/api/scans/{scan_id}/convert")

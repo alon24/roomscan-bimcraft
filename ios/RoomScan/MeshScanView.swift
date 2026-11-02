@@ -42,6 +42,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     var liveWanted = false           // room scans: the Room tab asks for it
     var addTo: String?               // these frames go into this scan on the server, not a new one
     private var spotNode: SCNNode?
+    private var wallNodes: [UUID: SCNNode] = [:]
     @Published var builtID: String?  // the scan the last upload made or added to
     var sweepMode = false
     @Published var ringActive = false
@@ -67,6 +68,52 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         super.init()
         sceneView.delegate = self
         sceneView.automaticallyUpdatesLighting = true
+    }
+
+    /// The walls ARKit has found so far, as see-through panels on the camera picture with their width, so what is captured can be seen while filming.
+    private func showWalls(_ frame: ARFrame) {
+        for case let a as ARPlaneAnchor in frame.anchors where a.alignment == .vertical {
+            let width = CGFloat(a.planeExtent.width), height = CGFloat(a.planeExtent.height)
+            guard width > 0.4, height > 0.4 else { continue }
+            let node: SCNNode
+            if let n = wallNodes[a.identifier] {
+                node = n
+            } else {
+                node = SCNNode()
+                let plane = SCNNode(geometry: SCNPlane(width: width, height: height))
+                plane.name = "panel"
+                plane.geometry?.firstMaterial?.diffuse.contents = UIColor.systemGreen.withAlphaComponent(0.25)
+                plane.geometry?.firstMaterial?.isDoubleSided = true
+                plane.eulerAngles.x = -.pi / 2
+                node.addChildNode(plane)
+                let text = SCNNode(geometry: SCNText(string: "", extrusionDepth: 0))
+                text.name = "size"
+                text.scale = SCNVector3(0.006, 0.006, 0.006)
+                text.constraints = [SCNBillboardConstraint()]
+                text.renderingOrder = 10
+                node.addChildNode(text)
+                sceneView.scene.rootNode.addChildNode(node)
+                wallNodes[a.identifier] = node
+            }
+            node.simdTransform = a.transform
+            node.simdPosition = simd_make_float3(a.transform * SIMD4<Float>(a.center.x, a.center.y, a.center.z, 1))
+            if let panel = node.childNode(withName: "panel", recursively: false), let g = panel.geometry as? SCNPlane {
+                g.width = width
+                g.height = height
+                panel.eulerAngles.y = -a.planeExtent.rotationOnYAxis
+            }
+            if let label = node.childNode(withName: "size", recursively: false), let g = label.geometry as? SCNText {
+                g.font = .systemFont(ofSize: 10, weight: .bold)
+                g.firstMaterial?.diffuse.contents = UIColor.white
+                g.firstMaterial?.readsFromDepthBuffer = false
+                g.string = String(format: "%.1f m", width)
+            }
+        }
+    }
+
+    private func clearWalls() {
+        wallNodes.values.forEach { $0.removeFromParentNode() }
+        wallNodes = [:]
     }
 
     /// Adding to a sweep: a ring on the floor where it was taken, and a post rising from it, so it can be seen across the room.
@@ -146,6 +193,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         sweep.reset()
         sweep.waitingForSpot = sweepMode && addTo != nil
         spotNode?.removeFromParentNode(); spotNode = nil
+        clearWalls()
         if addTo != nil || (liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true)) {
             live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
                        name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo, addTo: addTo)
@@ -166,6 +214,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 }
             }
             if self.sweepMode, let f = self.sceneView.session.currentFrame { self.sweep.update(f) }
+            if self.sweepMode, let f = self.sceneView.session.currentFrame { self.showWalls(f) }
             self.live.pump(self.recorder, frame: self.sceneView.session.currentFrame)
         }
         ticks = 0
@@ -174,6 +223,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         lock.lock(); meshAnchors = [:]; lock.unlock()
         let cfg = ARWorldTrackingConfiguration()
         cfg.sceneReconstruction = .mesh
+        if sweepMode { cfg.planeDetection = [.vertical] }      // walls appear on the camera picture as they are found
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { cfg.frameSemantics.insert(.sceneDepth) }
         Reporter.log("mesh start: supportsMesh=\(Self.supported) supportsDepth=\(ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)) reconstruction=\(cfg.sceneReconstruction.rawValue)")
         run(cfg, options: [.resetTracking, .removeExistingAnchors])
@@ -849,7 +899,7 @@ struct MeshScanView: View {
                 }
                 .buttonStyle(CaptureButtonStyle())
                 if sweepMode, let id = model.builtID {
-                    NavigationLink("Mark floor and ceiling points") { MarkHeightView(scanID: id) }
+                    NavigationLink("Mark floor, ceiling and wall points") { MarkHeightView(scanID: id) }
                 }
                 Button("Report a problem") { Reporter.report(tab: "mesh", message: "Manual report", detail: model.status) }
                     .font(.caption)

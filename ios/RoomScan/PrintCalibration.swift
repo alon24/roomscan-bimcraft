@@ -302,6 +302,7 @@ struct PrintCalibrationView: View {
             if !model.note.isEmpty { Text(model.note).font(.callout).foregroundStyle(.orange) }
             HStack {
                 Button("Start over", role: .destructive) { model.reset() }
+                VoiceToggle()
                 Spacer()
                 Button(model.phase == .side ? "Finish" : "Next step") { model.goOn() }
                     .buttonStyle(.borderedProminent).disabled(!model.canGoOn)
