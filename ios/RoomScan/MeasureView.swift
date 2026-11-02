@@ -41,6 +41,10 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
 
     @Published var distance: Double?     // smoothed camera-to-target, metres
     @Published var steady = false
+    @Published var levelTurn: Double?    // degrees off square to the surface at the crosshair: + = right of the view is farther
+    @Published var levelTilt: Double?    // + = bottom of the view is farther
+    static let squareWithin = 2.0        // degrees: at 4 m this is under 3 mm of error
+    private var wasSquare = false
     @Published var span: Double?         // the one selected pin to the crosshair, metres
     @Published var frozen: Held?
     @Published var holding = false
@@ -216,9 +220,10 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         return Double(v.sorted()[v.count / 2])
     }
 
-    /// The angle between the line of sight and the surface at the crosshair, from how fast the depth changes round it. Depth pixels
-    /// are square at the depth map's focal length in either orientation (see align_depth on the server), so the turn does not matter.
-    private func surfaceAngle(_ frame: ARFrame) -> Double? {
+    /// How far the phone is off square to the surface at the crosshair, in degrees, from how fast the depth changes round it. Held upright, the
+    /// stored depth map's columns run left to right on the screen and its rows top to bottom (see align_depth on the server). `turn` + means the
+    /// right of the view is farther, so turn left; `tilt` + means the bottom of the view is farther, so tilt up.
+    private func squareness(_ frame: ARFrame) -> (turn: Double, tilt: Double)? {
         guard let map = frame.sceneDepth?.depthMap else { return nil }
         CVPixelBufferLockBaseAddress(map, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
@@ -229,8 +234,8 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         let z = at(cx, cy), l = at(cx - step, cy), r = at(cx + step, cy), u = at(cx, cy - step), d = at(cx, cy + step)
         guard z > 0.1, l > 0.1, r > 0.1, u > 0.1, d > 0.1 else { return nil }
         let f = Double(frame.camera.intrinsics[0][0]) * Double(max(w, h)) / Double(frame.camera.imageResolution.width)
-        let gx = (r - l) / Double(2 * step), gy = (d - u) / Double(2 * step)
-        return atan(sqrt(gx * gx + gy * gy) * f / z) * 180 / .pi
+        let deg = { (g: Double) in atan(g * f / z) * 180 / .pi }
+        return (deg((r - l) / Double(2 * step)), deg((d - u) / Double(2 * step)))
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -239,7 +244,18 @@ final class MeasureModel: NSObject, ObservableObject, ARSessionDelegate {
         if case .limited(.relocalizing) = frame.camera.trackingState { lost = true } else { lost = false }
         if lost != relocalizing { relocalizing = lost }
 
-        CalibrationStore.shared.surfaceAngle = surfaceAngle(frame)
+        if let q = squareness(frame) {
+            levelTurn = (levelTurn ?? q.turn) * 0.8 + q.turn * 0.2         // the depth is noisy: smoothed over about a third of a second
+            levelTilt = (levelTilt ?? q.tilt) * 0.8 + q.tilt * 0.2
+            let off = hypot(levelTurn ?? 0, levelTilt ?? 0)
+            CalibrationStore.shared.surfaceAngle = off
+            let isSquare = off < Self.squareWithin
+            if isSquare && !wasSquare { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+            wasSquare = isSquare
+        } else {
+            levelTurn = nil; levelTilt = nil; wasSquare = false
+            CalibrationStore.shared.surfaceAngle = nil
+        }
         var d = depth(frame, nx: 0.5, ny: 0.5)
         if d == nil {
             // No LiDAR: fall back to an ARKit raycast from the screen centre (less exact).
@@ -572,6 +588,8 @@ struct MeasureView: View {
                         ZStack {
                             PinLayer(model: model, size: geo.size, zoom: zoom)
                             Crosshair(colour: status.1).position(x: geo.size.width / 2, y: geo.size.height / 2)
+                            LevelBadge(turn: model.levelTurn, tilt: model.levelTilt, distance: model.distance)
+                                .position(x: geo.size.width / 2, y: geo.size.height / 2 + 62)
                             Text("tap to pin").font(.caption2.bold()).padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(.black.opacity(0.55), in: Capsule()).foregroundStyle(.white)
                                 .position(x: geo.size.width / 2, y: geo.size.height / 2 + 50)
@@ -798,6 +816,40 @@ private struct PinLayer: View {
                 }
             }
         }
+    }
+}
+
+/// Am I square to the wall? Off square, the phone reads a slanted distance, longer than the real one: 10 degrees off at 4 m is 6 cm.
+private struct LevelBadge: View {
+    let turn: Double?
+    let tilt: Double?
+    let distance: Double?
+
+    var body: some View {
+        if let turn, let tilt {
+            let off = hypot(turn, tilt)
+            VStack(spacing: 2) {
+                if off < MeasureModel.squareWithin {
+                    Label("Square to the surface", systemImage: "checkmark.circle.fill").font(.callout.bold())
+                } else {
+                    Text(advice(turn: turn, tilt: tilt)).font(.callout.bold())
+                    if let distance {
+                        Text(String(format: "%.0f° off · straight to it: %.2f m", off, distance * cos(off * .pi / 180))).font(.caption2.monospacedDigit())
+                    }
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .foregroundStyle(.white)
+            .background((off < MeasureModel.squareWithin ? Color.green : Color.orange).opacity(0.85), in: Capsule())
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func advice(turn: Double, tilt: Double) -> String {
+        var parts: [String] = []
+        if abs(turn) >= 1.5 { parts.append("Turn \(turn > 0 ? "left" : "right") \(Int(abs(turn).rounded()))°") }
+        if abs(tilt) >= 1.5 { parts.append("Tilt \(tilt > 0 ? "up" : "down") \(Int(abs(tilt).rounded()))°") }
+        return parts.joined(separator: " · ")
     }
 }
 
