@@ -90,6 +90,7 @@ struct ModelDetailView: View {
     @State private var arURL: URL?
     @State private var showAR = false
     @State private var arNote = ""
+    @State private var isSweep = false       // it has a measured room
 
     var body: some View {
         List {
@@ -111,6 +112,12 @@ struct ModelDetailView: View {
                 }
             }
             Section {
+                if scan.kind == "mesh" {
+                    NavigationLink("Add more to this scan") { MeshScanView(sweepMode: isSweep, liveGuide: true, addTo: scan.id) }
+                }
+                if isSweep {
+                    NavigationLink("Mark floor and ceiling points") { MarkHeightView(scanID: scan.id) }
+                }
                 NavigationLink("Open the full page (floor plan, frames, measure, downloads)") { WebPage(scanID: scan.id) }
             }
             if !details.isEmpty {
@@ -123,7 +130,11 @@ struct ModelDetailView: View {
             }
         }
         .navigationTitle(scan.name)
-        .task { await load() }
+        .task {
+            if let u = URL(string: serverURL)?.appendingPathComponent("api/scans/\(scan.id)/room.json"),
+               let (_, r) = try? await URLSession.shared.data(from: u) { isSweep = (r as? HTTPURLResponse)?.statusCode == 200 }
+            await load()
+        }
         .fullScreenCover(isPresented: $showAR) { if let arURL { ARPreview(url: arURL).ignoresSafeArea() } }
     }
 

@@ -1,7 +1,6 @@
 import SwiftUI
 import ARKit
 import SceneKit
-import AVFoundation
 import AudioToolbox
 
 /// LiDAR calibration with the printed target (docs/lidar-target.md). One motion, no angles to hit: tap Start with the phone over the
@@ -38,9 +37,6 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
     private var lastPose: simd_float4x4?
     private var lastShot: TimeInterval = 0
     private var backAzimuth: Double?          // direction of the first step back, degrees round the print
-    private let voice = AVSpeechSynthesizer()
-    private var lastSaid = ""
-    private var lastSaidAt = Date.distantPast
 
     var photoCount: Int { recorder.count }
     private static func filled(_ b: [Band]) -> Int { b.filter { $0.taken >= photosPerBand }.count }
@@ -64,7 +60,7 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.update() }
     }
 
-    func stop() { timer?.invalidate(); timer = nil; voice.stopSpeaking(at: .immediate); CameraOwner.release(self) }
+    func stop() { timer?.invalidate(); timer = nil; Voice.stop(); CameraOwner.release(self) }
 
     func reset() {
         TempFiles.remove(recorder.dir)
@@ -72,16 +68,14 @@ final class PrintCalibrationModel: NSObject, ObservableObject {
         recorder.maxSide = 1920              // the markers must be sharp enough to read
         recorder.maxPhotos = 60
         rise = Self.bands(Self.distanceEdges); back = Self.bands(Self.tiltEdges); side = Self.bands(Self.tiltEdges)
-        result = nil; note = ""; centre = nil; phase = .aim; backAzimuth = nil; lastPose = nil; lastSaid = ""
+        result = nil; note = ""; centre = nil; phase = .aim; backAzimuth = nil; lastPose = nil
         hint = "Lay the print on a bare, hard floor. Hold the phone flat over its middle, about 40 cm up, and tap Start."
         marker?.removeFromParentNode(); marker = nil
     }
 
     private func say(_ text: String, every seconds: TimeInterval = 4) {
         hint = text
-        guard text != lastSaid || Date().timeIntervalSince(lastSaidAt) > seconds, !voice.isSpeaking else { return }
-        lastSaid = text; lastSaidAt = Date()
-        voice.speak(AVSpeechUtterance(string: text))
+        Voice.say(text, every: seconds)
     }
 
     /// Where the crosshair meets the floor: a horizontal plane ARKit found, else the LiDAR depth straight ahead.

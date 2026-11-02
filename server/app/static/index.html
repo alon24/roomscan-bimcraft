@@ -1036,6 +1036,7 @@ function showRoomBox(room) {
   const seen = Math.round((room.depth_coverage ?? 0) * 100);
   b.innerHTML = `<b>Room size</b>` +
     `<div style="margin:8px 0 10px;font-size:1.05rem;line-height:1.6">${room.width_m ? `width <b>${room.width_m.toFixed(2)} m</b>` : "width not seen"} · ${room.length_m ? `length <b>${room.length_m.toFixed(2)} m</b>` : "length not seen"} · ${h ? `height <b>${h.toFixed(2)} m</b>` : "height not seen"}</div>` +
+    (room.marks?.floor && room.marks?.ceiling ? `<div class="hint" style="margin-bottom:8px">Height from your marks: ${room.marks.floor} floor and ${room.marks.ceiling} ceiling points${room.marks.spread_cm != null ? `, within ${room.marks.spread_cm} cm of each other` : ""}. The sweep alone said ${room.height_auto_m?.toFixed(2)} m.</div>` : "") +
     `<table style="border-collapse:collapse;font-size:13px;white-space:nowrap">` + ["front", "right", "back", "left"].map(row).join("") + `</table>` +
     `<div class="hint" style="margin-top:6px">Measured as a rectangle with square corners, so alcoves and doorways are not separate walls. ${seen}% of the directions around you were seen; front = where you first pointed the phone.` +
     (room.depth_coverage < 0.6 ? ` To see more, turn the whole way round and tip the phone up and down.` : "") + `</div>`;

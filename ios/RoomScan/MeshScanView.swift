@@ -40,6 +40,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     let sweep = SweepCoverage()      // "Sweep from one spot": where the camera has looked
     let live = LiveLink()            // optional two-way link to the server (docs/live-guide.md)
     var liveWanted = false           // room scans: the Room tab asks for it
+    var addTo: String?               // these frames go into this scan on the server, not a new one
+    @Published var builtID: String?  // the scan the last upload made or added to
     var sweepMode = false
     @Published var ringActive = false
     private var coverageTimer: Timer?
@@ -122,9 +124,9 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         ring.begin()
         sweep.reset()
-        if liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true) {
+        if addTo != nil || (liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true)) {
             live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
-                       name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo)
+                       name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo, addTo: addTo)
         }
         if ring.enabled { recorder?.maxSide = 1920 }       // the markers must be sharp enough to read
         ringActive = ring.capturing
@@ -401,6 +403,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
             status = "Finishing on the server…"
             do {
                 let id = try await live.complete(recorder: rec, info: scanInfo)
+                builtID = id
                 if var s = savedCopy {       // saved while the server was building: that copy is on the server now
                     s.uploadedID = id; s.uploadedAt = Date()
                     try? LocalStore.write(s)
@@ -412,6 +415,10 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
                 live.end()
                 return
             } catch {
+                if addTo != nil {        // an ordinary upload would make a separate scan, and abandoning would delete the one being added to
+                    status = "Could not reach the server to finish. Check the connection and tap Upload again."
+                    return
+                }
                 Reporter.log("live finish failed (\(error)), uploading from the phone instead")
                 live.abandon()
             }
@@ -715,12 +722,17 @@ struct MeshScanView: View {
     var ringScan = false        // Object tab: LiDAR with the printed marker ring; otherwise a room
     var sweepMode = false       // Room tab, "From one spot": turn on the spot, no walking
     var liveGuide = false       // Room tab: use the two-way link to the server when it can be reached
+    var addTo: String? = nil    // Models tab, "Add more": new frames join this scan
     @StateObject private var model = MeshScanModel()
     @AppStorage("serverURL") private var serverURL = ServerAddress.defaultURL
     @State private var zoom: CGFloat = 1
 
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
+        if addTo != nil && !model.scanning && model.plyURL == nil {
+            return sweepMode ? "Adding to this sweep: stand where you stood before (within 50 cm), tap Start scan and film what was missing. Frames from elsewhere are left out."
+                             : "Adding to this scan: start where something from the first scan is in view, tap Start scan and film what was missing."
+        }
         if sweepMode && !model.scanning && model.plyURL == nil {
             return "For a small or cluttered room: stand in the middle, tap Start scan and turn slowly on the spot until the outer ring fills (the walls), then tilt up for the ceiling and down for the floor. You get a 360° picture of the room and a model with its measurements. Keep your feet in one place."
         }
@@ -764,7 +776,6 @@ struct MeshScanView: View {
             }
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
-                    if model.modelScene == nil || model.scanning { ZoomControl(zoom: $zoom) }
                     if !model.scanning && model.plyURL == nil {
                         Button { model.setPreview(!model.previewOn) } label: {
                             Image(systemName: model.previewOn ? "video.fill" : "video.slash.fill").padding(8)
@@ -807,13 +818,16 @@ struct MeshScanView: View {
                     }
                 }
                 .buttonStyle(CaptureButtonStyle())
+                if sweepMode, let id = model.builtID {
+                    NavigationLink("Mark floor and ceiling points") { MarkHeightView(scanID: id) }
+                }
                 Button("Report a problem") { Reporter.report(tab: "mesh", message: "Manual report", detail: model.status) }
                     .font(.caption)
             }
             .padding()
         }
         .pinchZoom($zoom, enabled: model.modelScene == nil || model.scanning)
-        .onAppear { model.sweepMode = sweepMode; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
+        .onAppear { model.sweepMode = sweepMode; model.addTo = addTo; model.liveWanted = liveGuide; model.ring.enabled = ringScan; model.startPreview() }
         .onDisappear { CameraOwner.release(model) }      // stops it only if it still has the camera (another tab may have taken it)
     }
 }

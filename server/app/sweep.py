@@ -360,6 +360,36 @@ def backdrop(D: np.ndarray, centre: np.ndarray, colours: np.ndarray) -> trimesh.
     return depth_mesh(far, centre, colours, jump=50.0)
 
 
+def apply_marks(room: dict, d: Path) -> dict:
+    """The height from points you marked on the phone (marks.json), over the one worked out from the sweep. Each marking session is in its
+    own ARKit world, so a height comes only from floor and ceiling marks of the same session; the median over sessions is used. No marks:
+    the sweep's own numbers come back."""
+    f = d / "marks.json"
+    sessions = json.loads(f.read_text()).get("sessions", {}) if f.exists() else {}
+    if "height_auto_m" in room:
+        room["height_m"], room["ceiling"]["wall_m"] = room.pop("height_auto_m"), room.pop("ceiling_auto_m")
+    room.pop("marks", None)
+    heights, spreads, floors, ceilings = [], [], 0, 0
+    for marks in sessions.values():
+        fy = [m["y"] for m in marks if m.get("kind") == "floor"]
+        cy = [m["y"] for m in marks if m.get("kind") == "ceiling"]
+        floors += len(fy)
+        ceilings += len(cy)
+        if fy and cy:
+            heights.append(float(np.median(cy) - np.median(fy)))
+            spreads += [float(np.ptp(v)) for v in (fy, cy) if len(v) > 1]
+    if heights:
+        h = float(np.median(heights))
+        room["height_auto_m"], room["ceiling_auto_m"] = room.get("height_m"), room["ceiling"]["wall_m"]
+        room["height_m"] = round(h, 3)
+        if room["floor"].get("wall_m"):
+            room["ceiling"]["wall_m"] = round(h - room["floor"]["wall_m"], 3)
+        room["marks"] = {"floor": floors, "ceiling": ceilings, "spread_cm": round(max(spreads, default=0) * 100, 1)}
+    elif floors or ceilings:
+        room["marks"] = {"floor": floors, "ceiling": ceilings, "spread_cm": None}
+    return room
+
+
 MAX_PARTNERS = 40             # each frame is compared with at most this many others
 FEATURE_WEIGHT = 3.0
 
@@ -549,6 +579,7 @@ def convert_sweep(d: Path, scale: float = 1.0) -> tuple[bool, str]:
             if k in room:
                 room[k] = round(room[k] * scale, 3)
     room.update(position_fix_cm=round(moved * 100), frames_used=used, frames_elsewhere=len(everything) - len(photos), panorama_coverage=pano["coverage"], depth_coverage=round(cover, 3))
+    apply_marks(room, d)
     (d / "room.json").write_text(json.dumps(room, indent=1))
     rep = {"vertices": int(len(mesh.vertices)), "faces": int(len(mesh.faces)), "points": int(ok.sum()),
            "size_m": [round(float(x), 2) for x in mesh.extents], "coloured": pano["coverage"], "photos": len(photos)}

@@ -288,7 +288,6 @@ struct ScanView: View {
                 }
                 .pickerStyle(.segmented)
                 HelpCard(text: guide)
-                if mode == 0 { ZoomControl(zoom: $zoom) }
                 Spacer()
                 if mode == 1 {
                     SceneSummary(scene: model.live3D)

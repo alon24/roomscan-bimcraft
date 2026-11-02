@@ -172,3 +172,18 @@ def test_frames_whose_height_drifted_are_put_back(scan):
     gap_before = abs(np.mean([y(p) for p in bad[1::2]]) - np.mean([y(p) for p in bad[::2]]))
     gap_after = abs(np.mean([y(p) for p in fixed[1::2]]) - np.mean([y(p) for p in fixed[::2]]))
     assert gap_before > 0.1 and gap_after < gap_before / 2
+
+
+def test_marked_points_set_the_height_and_can_be_taken_back(tmp_path):
+    import json
+    room = {"height_m": 2.76, "floor": {"wall_m": 1.5}, "ceiling": {"wall_m": 1.26}}
+    write = lambda s: (tmp_path / "marks.json").write_text(json.dumps({"sessions": s}))
+    def m(kind, y):
+        return {"kind": kind, "x": 0, "y": y, "z": 0}
+    write({"a": [m("floor", -1.5), m("floor", -1.52), m("floor", -1.5), m("ceiling", 1.07), m("ceiling", 1.05)], "b": [m("ceiling", 9.0)]})   # b: its own world, no floor
+    sweep.apply_marks(room, tmp_path)
+    assert room["height_m"] == pytest.approx(2.56, abs=0.001) and room["height_auto_m"] == 2.76
+    assert room["ceiling"]["wall_m"] == pytest.approx(1.06, abs=0.001) and room["marks"]["ceiling"] == 3
+    write({})
+    sweep.apply_marks(room, tmp_path)
+    assert room["height_m"] == 2.76 and room["ceiling"]["wall_m"] == 1.26 and "marks" not in room

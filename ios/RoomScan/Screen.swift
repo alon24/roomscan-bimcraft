@@ -9,7 +9,7 @@ enum Screen {
 
     static func awake(_ on: Bool) {
         wanted = on
-        UIApplication.shared.isIdleTimerDisabled = on
+        UIApplication.shared.isIdleTimerDisabled = true      // never asleep while the app is open: this is only about brightness
         if on { brighten() } else { restore() }
         if observers.isEmpty {
             let nc = NotificationCenter.default

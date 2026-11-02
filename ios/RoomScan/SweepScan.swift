@@ -41,6 +41,7 @@ final class SweepCoverage: ObservableObject {
     private var last: (t: TimeInterval, f: SIMD3<Float>)?
     private var speeds: [Double] = []
     private var lastWarn: String?
+    private var lastSpoken = ""
 
     var driftLevel: Level { moved > Self.driftBad ? .bad : moved > Self.driftOk ? .warn : .good }
     var liftLevel: Level { abs(lift) > Self.liftBad ? .bad : abs(lift) > Self.liftOk ? .warn : .good }
@@ -55,7 +56,7 @@ final class SweepCoverage: ObservableObject {
         cells = [Bool](repeating: false, count: 72)
         hint = Self.startHint
         moved = 0; maxMoved = 0; lift = 0; maxLift = 0; speed = 0; upDone = false; downDone = false; onYou = false
-        origin = nil; last = nil; speeds = []; lastWarn = nil
+        origin = nil; last = nil; speeds = []; lastWarn = nil; lastSpoken = ""
     }
 
     func share(_ band: Int) -> Double {
@@ -99,6 +100,12 @@ final class SweepCoverage: ObservableObject {
             }
         }
         let (h, warning) = text()
+        // spoken once per new instruction: the numbers in the text change all the time, the first words and the warning do not
+        let words = warning ?? String(h.prefix(14))
+        if words != lastSpoken {
+            lastSpoken = words
+            Voice.say(warning == "drift" ? "You moved. Go back to where you started." : String(h.split(whereSeparator: { ".:".contains($0) }).first ?? ""), every: 0)
+        }
         hint = h
         // one buzz when a new problem starts, not every 0.2 s while it lasts
         if let warning, warning != lastWarn { UINotificationFeedbackGenerator().notificationOccurred(.warning) }

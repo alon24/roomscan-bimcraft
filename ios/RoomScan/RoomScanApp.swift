@@ -39,6 +39,7 @@ struct RoomScanApp: App {
                 .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gear") } }
                 .task {
                     Reporter.log("app launched")
+                    UIApplication.shared.isIdleTimerDisabled = true      // the screen stays on while the app is open
                     // Scan temp files left behind (the app was closed mid-scan, or a result was never saved or reset). Nothing is in
                     // use yet at launch; saved and waiting scans are in Documents and are not touched.
                     Task.detached(priority: .utility) { TempFiles.purge(olderThan: 24 * 3600) }
