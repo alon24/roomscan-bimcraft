@@ -548,6 +548,15 @@ def walk_edit(scan_id: str, body: dict):
     return res
 
 
+@app.get("/api/scans/{scan_id}/walk/colours.bin")
+def walk_colours(scan_id: str):
+    """The 3D surface coloured from all the frames of a walk. Made the first time it is asked for, which takes a minute or so."""
+    d = _dir(scan_id)
+    if not (d / "walk_points.json").exists() or not (d / "mesh.bin").exists():
+        raise HTTPException(404, "only a built walk has these")
+    return FileResponse(walk_mod.bake_colours(d), media_type="application/octet-stream")
+
+
 @app.get("/api/scans/{scan_id}/walk/photos")
 def walk_photos(scan_id: str, x: float, y: float, z: float):
     """The photos that show this spot."""

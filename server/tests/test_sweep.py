@@ -490,3 +490,26 @@ def test_walk_flags_points_and_finds_their_photos(tmp_path):
     assert walk.photos_of(tmp_path, [0.0, 0.0, 2.0], [frame]) == []     # behind the camera
     # higher in the room is higher in the picture
     assert walk.photos_of(tmp_path, [0.0, 0.5, -2.0], [frame])[0]["v"] < 0.5
+
+
+def test_walk_window_clicks_make_a_window_of_that_size(tmp_path):
+    from app import layout, walk
+    v = [[0.0, 0.0], [0.0, 4.0], [5.0, 4.0], [5.0, 0.0]]
+    click = lambda kind, x, y, z: {"kind": kind, "x": x, "y": y, "z": z}
+    # floor at -1.4. A window: bottom and top, left and right. A second far along the wall. A door with one click.
+    pts = [click("window", 1.0, -0.5, -0.05), click("window", 1.0, 0.7, -0.03), click("window", 2.4, -0.5, 0.02), click("window", 2.4, 0.7, 0.0), click("window", 4.4, 0.0, 0.0), click("door", 4.95, -0.5, -2.0)]
+    got = walk.openings_from(pts, v, [False] * 4, -1.4)
+    wins = sorted((o for o in got if o["kind"] == "window"), key=lambda o: o["at"][0])
+    assert len(wins) == 2 and len([o for o in got if o["kind"] == "door"]) == 1
+    w = wins[0]
+    assert abs(w["width"] - 1.4) < 0.01 and abs(w["sill"] - 0.9) < 0.01 and abs(w["head"] - 2.1) < 0.01 and w["width_known"] and w["height_known"]
+    assert abs(w["at"][0] - 1.7) < 0.01 and abs(w["at"][1]) < 0.01
+    assert not wins[1]["width_known"] and not wins[1]["height_known"]
+    door = next(o for o in got if o["kind"] == "door")
+    assert door["sill"] == 0 and door["head"] == 2.1 and abs(door["at"][0] - 5) < 0.01
+    # they get through into BIMCraft with their own sizes
+    lay = {"vertices": v, "open": [False] * 4, "openings": got, "height_m": 2.6}
+    assert '"sill": 900' in layout.script(lay)
+    if os.environ.get("BIMCRAFT_CLI"):
+        ok, log = layout.export(tmp_path, lay, "Sizes")
+        assert ok, log

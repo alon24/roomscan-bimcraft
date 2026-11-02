@@ -262,10 +262,14 @@ Room tab → **Walk**. The phone films the whole time, and photos, LiDAR depth, 
 4. The little plan shows what the LiDAR has seen and your points, blue near the floor and orange near the ceiling. It is only a guess. **Undo** takes back the last point.
 5. Tap **Stop**, then **Upload**. Then **Open the plan**, and on that page press **Plan**.
 
-The server looks at the flat surfaces round each click to work out what it is. Two walls meeting make a corner, and the point is moved to where they really meet. Clicks on one wall agree on one line, and walls are joined by what the LiDAR saw between them, so the order of the clicks doesn't matter. Where two walls meet and nobody clicked the corner, it is added if the readings run along both walls to it. A stretch with few readings along it is marked open. On the Layout page every point is listed. Click one, on the plan or in the list, to see **Photos of this point**, the frames that show it best, with a green ring on the spot. Then:
+The server looks at the flat surfaces round each click to work out what it is. Two walls meeting make a corner, and the point is moved to where they really meet. Clicks on one wall agree on one line, and walls are joined by what the LiDAR saw between them, so the order of the clicks doesn't matter. Where two walls meet and nobody clicked the corner, it is added if the readings run along both walls to it. A stretch with few readings along it is marked open. The Layout page opens a walk in **3D**, with your points at their real heights inside the scan, and the surface coloured from all the photos. Turn, move and zoom it freely. Clicks on a door or window become a real shape on its wall: their spread gives its width, and their lowest and highest give its height. A size your clicks don't show uses a usual one and says "partly a guess". The sizes also go into the BIMCraft file.
+
+Click a point in 3D to hang its photo in the view, where the camera saw it. **Stand where it was taken** puts you at that camera, where the photo lies over the scan. Drag a point to move it, also up and down.
+
+On the Layout page every point is listed. Click one, on the plan or in the list, to see **Photos of this point**, the frames that show it best, with a green ring on the spot. Then:
 
 - **Change what it is:** pick from the list, including Door and Window. **Ignore it** leaves it off the plan.
-- **Move it:** drag it on the plan.
+- **Move it:** drag it on the plan, or in 3D, where it moves in the plane facing you.
 - **Add one:** press **Add point**, then click the plan.
 
 Points are never deleted. Anything the server is unsure of is flagged ⚑, such as a point off the plan's walls, or one with nothing solid there, which may be a door or window. Changes to points save at once. Press **Make the plan again from the points** to use them; that replaces corrections made to the plan itself, not to the points.
@@ -430,6 +434,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.62.0 | Layout page: a walk opens in **3D**. Points are at their real heights, doors and windows have real shapes and sizes, the surface is coloured from all the photos, and a point's photo hangs in the view. Sizes go into BIMCraft. |
 | 0.61.0 | **Walk** replaces Sketch: film the room and click points in any order. Everything goes to the server, which works out what each point is, fits walls through the LiDAR, finds corners and makes the plan. On the Layout page every point has its photos and can be changed, moved or added. Points are flagged, never deleted. |
 | 0.60.1 | Sketch: **Start**, **End** and **Reset** buttons. Nothing is recorded before Start, End decides how the last stretch finishes, and Reset wipes the sketch after asking. |
 | 0.60.0 | New **Sketch** on the phone: walk the room, tap each corner, and the plan draws itself live; 360 photos then go onto it by themselves. Layout page: join other sweeps into one plan. |

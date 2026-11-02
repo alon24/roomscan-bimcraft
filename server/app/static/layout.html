@@ -69,6 +69,7 @@
     <div id="pointPhotos" hidden>
       <h2>Photos of this point</h2>
       <div id="ppFrame" style="position:relative;border-radius:7px;overflow:hidden;background:var(--bg)"><img id="ppImg" alt="Photo of this point" style="display:block;width:100%"><div id="ppDot" style="position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid #35e06a;border-radius:50%;box-shadow:0 0 0 2px rgba(0,0,0,.6);pointer-events:none"></div></div>
+      <div class="row" id="ppIn3d" hidden><label><input type="checkbox" id="ppShow" checked> Put this photo in the 3D view</label><button id="ppStand">Stand where it was taken</button></div>
       <div class="row"><button id="ppPrev">‹</button><span id="ppText" class="mute" style="flex:1;text-align:center"></span><button id="ppNext">›</button></div>
     </div>
     <div id="photoBox" hidden>
@@ -87,8 +88,11 @@
     <div class="row"><label for="scanFade">Strength</label> <input id="scanFade" type="range" min="0.15" max="1" step="0.05" value="0.85"></div>
     <div class="row"><label><input type="checkbox" id="showTop"> Readings at the walls</label></div>
     <div class="row"><label><input type="checkbox" id="showAll"> Furniture and lower readings</label></div>
+    <div id="colourMsg" class="mute"></div>
     <div id="only3d" hidden>
       <div class="row"><label><input type="checkbox" id="xray" checked> See the plan through the scan</label></div>
+      <div class="row"><label><input type="checkbox" id="labels3d" checked> Lengths and names</label></div>
+      <div class="row"><label><input type="checkbox" id="panels3d" checked> Wall panels</label></div>
       <div class="v3"><button id="vAbove">From above</button><button id="vPhone">From the phone's spot</button></div>
     </div>
     <div id="walkBox" hidden>
@@ -203,7 +207,7 @@ function draw() {
   // doors and windows sit on their nearest wall
   L.openings.forEach((o, k) => {
     const n = nearestOnWall(o.at), s = toScreen(n.q), colour = o.kind === "door" ? c("--door") : c("--win"), on = sel?.opening === k;
-    const dx = n.w.b[0] - n.w.a[0], dy = n.w.b[1] - n.w.a[1], ll = Math.hypot(dx, dy) || 1, half = (o.kind === "door" ? .45 : .6) * view.s;
+    const dx = n.w.b[0] - n.w.a[0], dy = n.w.b[1] - n.w.a[1], ll = Math.hypot(dx, dy) || 1, half = (o.width ? o.width / 2 : o.kind === "door" ? .45 : .6) * view.s;
     el("line", { x1: s[0] - dx / ll * half, y1: s[1] + dy / ll * half, x2: s[0] + dx / ll * half, y2: s[1] - dy / ll * half, stroke: on ? c("--sel") : colour, "stroke-width": 8, "data-opening": k, style: "cursor:pointer" });
   });
   // the corners
@@ -330,7 +334,7 @@ function panel() {
 }
 function tip() {
   $("tipText").textContent = {
-    select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · drag a corner's ball to move it · click a wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
+    select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · click a point to see its photos · drag a point or corner to move it · click a wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
     measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : "Type the real length on the right",
     point: "Click where the new point goes", door: "Click a wall where the door is", window: "Click a wall where the window is",
   }[tool];
@@ -452,26 +456,55 @@ window.addEventListener("resize", draw);
 $("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
 $("tPoint").onclick = () => setTool("point"); $("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
 $("fit").onclick = () => is3d ? view3d("start") : fit(); $("tidy").onclick = tidy;
-$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw;
+$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw; $("labels3d").onchange = draw; $("panels3d").onchange = draw;
 $("vAbove").onclick = () => view3d("above"); $("vPhone").onclick = () => view3d("phone");
 $("v3d").onclick = () => set3d(!is3d);
 $("scanCut").onchange = loadScan;
 let ppList = [], ppAt = 0, ppAsk = 0;
 async function pointPhotos() {
   const w = sel?.point != null ? walk[sel.point] : null, box = $("pointPhotos");
-  if (!w) { box.hidden = true; return; }
+  if (!w) { box.hidden = true; ppList = []; photo3d(); return; }
   const ask = ++ppAsk;
   const r = await fetch(`/api/scans/${id}/walk/photos?x=${w.x}&y=${w.y}&z=${w.z}`).catch(() => null);
   const j = r?.ok ? await r.json() : { photos: [] };
   if (ask !== ppAsk) return;
-  ppList = j.photos; ppAt = 0; box.hidden = !ppList.length; showPhotoAt();
+  ppList = j.photos; ppAt = 0; box.hidden = !ppList.length; showPhotoAt(); if (!ppList.length) photo3d();
 }
 function showPhotoAt() {
   const f = ppList[ppAt]; if (!f) return;
   $("ppImg").src = `/api/scans/${id}/photos/${f.file}?up=1`;
   $("ppDot").style.left = f.u * 100 + "%"; $("ppDot").style.top = f.v * 100 + "%";
   $("ppText").textContent = `${ppAt + 1} of ${ppList.length} · taken ${f.away_m} m away`;
+  photo3d();
 }
+// The photo itself hanging in the 3D view, where the camera saw it: from where it was taken it lies exactly over the scan.
+function photo3d() {
+  if (!G) return;
+  if (G.photoMesh) { G.world.remove(G.photoMesh); G.photoMesh.geometry.dispose(); G.photoMesh.material.map?.dispose(); G.photoMesh.material.dispose(); G.photoMesh = null; G.dirty = true; }
+  const f = ppList[ppAt], box = $("pointPhotos");
+  $("ppIn3d").hidden = !is3d;
+  if (!is3d || !f || box.hidden || !$("ppShow").checked) return;
+  const k = f.intrinsics, t = f.transform, z = Math.max(f.away_m, .4);
+  const m = new T.Matrix4().set(t[0][0], t[1][0], t[2][0], t[3][0], t[0][1], t[1][1], t[2][1], t[3][1], t[0][2], t[1][2], t[2][2], t[3][2], 0, 0, 0, 1);
+  const corner = (u, v) => new T.Vector3((u - k[2][0]) * z / k[0][0], -(v - k[2][1]) * z / k[1][1], -z).applyMatrix4(m);
+  const c = [corner(0, f.height), corner(f.width, f.height), corner(f.width, 0), corner(0, 0)];
+  const g = new T.BufferGeometry().setFromPoints(c); g.setIndex([0, 1, 2, 0, 2, 3]);
+  g.setAttribute("uv", new T.BufferAttribute(new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), 2));
+  const want = f;
+  new T.TextureLoader().load(`/api/scans/${id}/photos/${f.file}`, tex => {
+    if (ppList[ppAt] !== want || !is3d) { tex.dispose(); g.dispose(); return; }
+    tex.colorSpace = T.SRGBColorSpace;
+    G.photoMesh = new T.Mesh(g, new T.MeshBasicMaterial({ map: tex, side: T.DoubleSide, transparent: true, opacity: .92, depthTest: false }));
+    G.photoMesh.renderOrder = 15; G.world.add(G.photoMesh); G.dirty = true;
+  });
+}
+$("ppShow").onchange = photo3d;
+$("ppStand").onclick = () => {
+  const f = ppList[ppAt]; if (!f || !G) return;
+  const t = f.transform, fw = new T.Vector3(-t[2][0], -t[2][1], -t[2][2]).normalize();
+  G.r = .05; G.target.set(t[3][0], t[3][1], t[3][2]).addScaledVector(fw, .05);
+  G.el = Math.asin(-fw.y); G.az = Math.atan2(-fw.x, -fw.z); place3d();
+};
 $("ppPrev").onclick = () => { ppAt = (ppAt + ppList.length - 1) % ppList.length; showPhotoAt(); };
 $("ppNext").onclick = () => { ppAt = (ppAt + 1) % ppList.length; showPhotoAt(); };
 function renderWalk() {
@@ -574,6 +607,7 @@ async function set3d(on) {
   is3d = on;
   $("v3d").classList.toggle("on", on); $("v3d").textContent = on ? "Plan" : "3D";
   $("gl").hidden = !on; svg.style.display = on ? "none" : ""; $("only3d").hidden = !on;
+  photo3d();
   for (const b of ["tMeasure", "tDoor", "tWindow", "tPoint"]) $(b).disabled = on;
   setTool("select");
   if (on) { resize3d(); await loadMesh(); clip3d(); view3d(G.placed ? null : "start"); G.placed = true; draw(); } else { loadScan(); }
@@ -586,18 +620,29 @@ function init3d() {
   const camera = new T.PerspectiveCamera(50, 1, 0.02, 200), overlay = new T.Group(); world.add(overlay);
   G = { renderer, world, camera, overlay, meshes: new Map(), target: new T.Vector3(), az: 0, el: .8, r: 10, labels: new Map(), hits: [], dirty: true };
   const dom = renderer.domElement, ray = new T.Raycaster();
-  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); return ray.intersectObjects(G.hits, false)[0]; };
+  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); return ray.intersectObjects(G.hits.filter(o => o.visible), false)[0]; };
   let act = null;
   dom.addEventListener("contextmenu", e => e.preventDefault());
   dom.addEventListener("pointerdown", e => {
     if (document.activeElement?.tagName === "INPUT") document.activeElement.blur();
     dom.setPointerCapture(e.pointerId);
     const hit = e.button === 0 && !e.shiftKey ? pick(e) : null;
+    if (hit?.object.userData.point != null) {          // moved in the plane facing you: turn the view to move it another way
+      const i = hit.object.userData.point, dir = camera.getWorldDirection(new T.Vector3());
+      act = { point: i, plane: new T.Plane().setFromNormalAndCoplanarPoint(dir, hit.object.position), moved: false, sx: e.clientX, sy: e.clientY };
+      sel = { point: i }; draw(); pointPhotos(); return;
+    }
     if (hit?.object.userData.corner != null) { remember(); act = { corner: hit.object.userData.corner, y: hit.point.y, moved: false }; sel = { corner: act.corner }; draw(); return; }
     act = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, pan: e.button !== 0 || e.shiftKey, hit };
   });
   dom.addEventListener("pointermove", e => {
     if (!act) return;
+    if (act.point != null) {
+      const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
+      const q = ray.ray.intersectPlane(act.plane, new T.Vector3());
+      if (q && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) > 3) { Object.assign(walk[act.point], { x: q.x, y: q.y, z: q.z }); act.moved = true; draw(); }
+      return;
+    }
     if (act.corner != null) {
       const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
       const q = ray.ray.intersectPlane(new T.Plane(new T.Vector3(0, 1, 0), -act.y), new T.Vector3());
@@ -612,7 +657,13 @@ function init3d() {
     place3d();
   });
   dom.addEventListener("pointerup", e => {
-    if (act?.corner != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
+    if (act?.point != null) {
+      if (act.moved) {
+        const w = walk[act.point];
+        fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, y: w.y, z: w.z }) }).then(r => r.ok ? r.json() : null).then(n => { if (n) { Object.assign(w, n); $("walkMsg").textContent = "Saved. Make the plan again to use it."; pointPhotos(); draw(); } });
+      }
+    }
+    else if (act?.corner != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
     else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.wall != null ? { wall: u.wall } : null); }
     act = null;
   });
@@ -657,6 +708,15 @@ async function meshOf(scanId, matrix) {
   if (matrix) { m.matrixAutoUpdate = false; m.matrix.fromArray(matrix); m.matrixWorldNeedsUpdate = true; }
   return m;
 }
+// A walk's surface starts with its first colours, and takes the full colouring from all the frames when the server has it ready.
+async function bakedColours(m) {
+  $("colourMsg").textContent = "Colouring the surface from all the photos. The first time takes a minute or so…";
+  const r = await fetch(`/api/scans/${id}/walk/colours.bin`).catch(() => null);
+  if (!r?.ok) { $("colourMsg").textContent = ""; return; }
+  const rgb = new Uint8Array(await r.arrayBuffer()), col = m.geometry.getAttribute("color");
+  if (rgb.length === col.array.length) { for (let i = 0; i < rgb.length; i++) col.array[i] = Math.pow(rgb[i] / 255, 2.2); col.needsUpdate = true; G.dirty = true; }
+  $("colourMsg").textContent = "";
+}
 // Each scan is loaded once; a join only moves it. Scans taken out are removed.
 async function loadMesh() {
   $("tipText").textContent = "Loading the scan…";
@@ -664,7 +724,7 @@ async function loadMesh() {
   for (const [k, m] of G.meshes) if (!keep.has(k)) { G.world.remove(m); m.geometry.dispose(); m.material.dispose(); G.meshes.delete(k); }
   for (const w of wanted) {
     let m = G.meshes.get(w.scan);
-    if (m === undefined) { m = await meshOf(w.scan, w.matrix).catch(() => null); if (m) { G.world.add(m); G.meshes.set(w.scan, m); } }
+    if (m === undefined) { m = await meshOf(w.scan, w.matrix).catch(() => null); if (m) { G.world.add(m); G.meshes.set(w.scan, m); if (w.scan === id && walk.length) bakedColours(m); } }
     else if (m && w.matrix) { m.matrix.fromArray(w.matrix); m.matrixWorldNeedsUpdate = true; }
   }
   tip();
@@ -721,6 +781,18 @@ function build3d() {
     }
     const s = label3d(`${i + 1}`, on ? "#e0226e" : "#15191c"); s.position.copy(b).add(new T.Vector3(0, .2, 0)); ov.add(s);
   });
+  // doors and windows, in their real size on their walls
+  L.openings.forEach(o => {
+    const n = nearestOnWall(o.at), wd = (o.width || (o.kind === "door" ? .9 : 1.2)) / 2, sill = o.sill ?? (o.kind === "door" ? 0 : .9), head = o.head ?? (o.kind === "door" ? 2.1 : 2.1);
+    const dx = n.w.b[0] - n.w.a[0], dy = n.w.b[1] - n.w.a[1], ll = Math.hypot(dx, dy) || 1, a = [n.q[0] - dx / ll * wd, n.q[1] - dy / ll * wd], b = [n.q[0] + dx / ll * wd, n.q[1] + dy / ll * wd];
+    const p = [at(a, y0 + sill), at(b, y0 + sill), at(b, y0 + head), at(a, y0 + head)], colour = o.kind === "door" ? 0xa0522d : 0x7b3fc4;
+    const g = new T.BufferGeometry().setFromPoints(p); g.setIndex([0, 1, 2, 0, 2, 3]);
+    const q = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: .4, side: T.DoubleSide, depthWrite: false, depthTest: !xray })); q.renderOrder = 12; ov.add(q);
+    p.forEach((c, i) => bar(c, p[(i + 1) % 4], .012, colour));
+    const known = o.width_known && o.height_known;
+    const s = label3d(`${o.kind === "door" ? "Door" : "Window"} ${(wd * 2).toFixed(2)} × ${(head - sill).toFixed(2)} m${o.width_known === undefined || known ? "" : " (partly a guess)"}`, o.kind === "door" ? "#7a3d1f" : "#5c2d96");
+    s.position.copy(p[2]).lerp(p[3], .5); ov.add(s);
+  });
   // what the floor and the ceiling were taken to be, and where the phone was
   const mid = L.vertices.reduce((m, p) => [m[0] + p[0] / L.vertices.length, m[1] + p[1] / L.vertices.length], [0, 0]);
   const fl = label3d(`Floor I chose`, "#2478c8"); fl.position.copy(at(mid, y0)).lerp(at(L.vertices[0], y0), .35); ov.add(fl);
@@ -739,6 +811,8 @@ function build3d() {
     const on = sel?.point === i, b = new T.Mesh(new T.SphereGeometry(on ? .08 : .055, 14, 10), mat(on ? 0xe0226e : (WALK[w.kind] || WALK.unknown)));
     b.position.set(w.x, w.y, w.z); b.renderOrder = 26; b.userData.point = i; ov.add(b); G.hits.push(b);
   });
+  const showLabels = $("labels3d").checked, showPanels = $("panels3d").checked;
+  ov.children.forEach(o => { if (o.isSprite) o.visible = showLabels; else if (o.userData.wall != null) o.visible = showPanels; });
   // the readings the walls came from, in the band they were read
   if ($("showTop").checked && pts.top.length) {
     const yb = (scene.ceiling ?? y1) - .35, arr = new Float32Array(pts.top.length * 3);
@@ -759,6 +833,7 @@ function build3d() {
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
   joined = j.joins || []; walk = j.walk || []; renderWalk(); renderJoins(); fillJoinPick();
   fit(); tip(); loadScan();
+  if (walk.length) set3d(true);      // a walk has real heights: it opens in 3D
 })();
 </script>
 </body>

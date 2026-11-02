@@ -12,14 +12,16 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
-from . import layout, meshscan
+from PIL import Image
+
+from . import frames, layout, meshscan
 
 KINDS = ("corner", "floor edge", "ceiling edge", "wall", "floor", "ceiling", "door", "window", "ignore", "unknown")
 NEAR = 0.3             # metres round a click to look for surfaces
 ON_PLANE = 0.02        # metres
 MIN_ON_PLANE = 30      # readings
 SNAP = 0.25            # metres a click may move to the surface
-LEVEL_NEAR = 0.2       # metres from the floor or ceiling that counts as at it
+LEVEL_NEAR = 0.4       # metres from the floor or ceiling that counts as at it: a click aimed at the join from close by lands about this near
 SAME = 0.15            # metres: clicks this close are one corner
 STRAIGHT_DEG = 8       # a corner that turns less than this is just a point along a wall
 SUPPORT = 0.35         # share of a stretch that must have readings for it to be a wall
@@ -29,6 +31,9 @@ SAME_WALL_M = 0.1      # this close in place, are one wall
 WALL_FIT = 0.04         # metres either side of a wall's line that count as on it
 NEAR_CORNER = 1.5       # metres: walls crossing this near the clicks on them meet in a corner
 OFF_PLAN = 0.25         # metres from the plan's walls that gets a point flagged
+OPENING_LINK = 1.8      # metres along a wall: clicks further apart are two doors or windows
+OPENING_MIN = 0.3       # metres: clicks spreading less than this don't show a size
+USUAL = {"door": {"width": 0.9, "sill": 0.0, "head": 2.1}, "window": {"width": 1.2, "sill": 0.9, "head": 2.1}}
 PHOTO_FAR = 5.0         # metres
 PHOTO_APART = 8         # frames: photos shown of one point differ by at least this
 FAR_CORNER = 4.0       # metres: an unclicked corner further than this from the clicks either side is not believed
@@ -395,10 +400,111 @@ def photos_of(d: Path, p: list[float], frames: list[dict], most: int = 4) -> lis
             a, b, aspect = 1 - u / w, 1 - v / h, w / h
         else:
             a, b, aspect = u / w, v / h, w / h
-        out.append({"file": ph["file"], "u": round(a, 4), "v": round(b, 4), "aspect": round(aspect, 4), "away_m": round(z, 2)})
+        out.append({"file": ph["file"], "u": round(a, 4), "v": round(b, 4), "aspect": round(aspect, 4), "away_m": round(z, 2), "transform": ph["transform"], "intrinsics": ph["intrinsics"], "width": w, "height": h})
         used.append(i)
         if len(out) >= most:
             break
+    return out
+
+
+def openings_from(points: list[dict], v: list[list[float]], gaps: list[bool], floor_y: float) -> list[dict]:
+    """Doors and windows from their clicks. Clicks close together along one wall are one opening: how far they spread gives its width, their lowest and highest its height.
+    A size the clicks don't show is marked unknown, and a usual one is used. All in plan x, y before the drawing turn."""
+    solid = [(a, b) for (a, b), g in zip(zip(v, v[1:] + v[:1]), gaps) if not g] or list(zip(v, v[1:] + v[:1]))
+    near: dict[tuple, list] = {}
+    for p in points:
+        if p["kind"] not in ("door", "window"):
+            continue
+        xy = [p["x"], -p["z"]]
+        best = None
+        for i, (a, b) in enumerate(solid):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(dx, dy) or 1e-9
+            t = max(0.0, min(L, ((xy[0] - a[0]) * dx + (xy[1] - a[1]) * dy) / L))
+            dist = math.dist(xy, [a[0] + dx / L * t, a[1] + dy / L * t])
+            if best is None or dist < best[0]:
+                best = (dist, i, t)
+        near.setdefault((p["kind"], best[1]), []).append((best[2], p["y"] - floor_y))
+    out = []
+    for (kind, i), hits in near.items():
+        hits.sort()
+        group = [hits[0]]
+        def close(g: list) -> None:
+            a, b = solid[i]
+            L = math.dist(a, b) or 1e-9
+            along = [h[0] for h in g]
+            ys = [h[1] for h in g]
+            mid = (min(along) + max(along)) / 2
+            wide, tall = max(along) - min(along), max(ys) - min(ys)
+            known_w, known_h = wide >= OPENING_MIN, tall >= OPENING_MIN
+            usual = USUAL[kind]
+            sill = 0.0 if kind == "door" else (min(ys) if known_h else usual["sill"])
+            head = max(max(ys), usual["head"]) if kind == "door" else (max(ys) if known_h else usual["head"])
+            out.append({"kind": kind, "at": [a[0] + (b[0] - a[0]) * mid / L, a[1] + (b[1] - a[1]) * mid / L], "width": round(wide if known_w else usual["width"], 3), "sill": round(max(sill, 0.0), 3),
+                        "head": round(head, 3), "width_known": known_w, "height_known": known_h or kind == "door", "clicks": len(g)})
+        for h in hits[1:]:
+            if h[0] - group[-1][0] > OPENING_LINK:
+                close(group)
+                group = []
+            group.append(h)
+        close(group)
+    return out
+
+
+def bake_colours(d: Path, every: int = 1) -> Path:
+    """Every point of the 3D surface coloured from the photo that sees it best, using all the frames, not only the few the textured view keeps. layout_colours.bin: r, g, b per
+    vertex of mesh.bin. A photo with something nearer in front of the spot doesn't count, and what no photo saw keeps the colour it had."""
+    out = d / "layout_colours.bin"
+    mesh, rep = d / "mesh.bin", d / "report.json"
+    if out.exists() and out.stat().st_mtime >= mesh.stat().st_mtime:
+        return out
+    n = json.loads(rep.read_text())["vertices"]
+    buf = mesh.read_bytes()
+    V = np.frombuffer(buf, "<f4", n * 3).reshape(-1, 3).astype(np.float32)
+    rgb = np.frombuffer(buf, np.uint8, n * 3, n * 12).copy()
+    rgb = rgb.reshape(-1, 3)
+    best = np.full(n, -9.0, np.float32)
+    for ph in frames.manifest(d)[::every]:
+        if not (ph.get("transform") and ph.get("intrinsics") and ph.get("width") and (d / "photos" / ph["file"]).exists()):
+            continue
+        M = np.asarray(ph["transform"], float).T
+        R, t = M[:3, :3].astype(np.float32), M[:3, 3].astype(np.float32)
+        k = ph["intrinsics"]
+        fx, fy, cx, cy = float(k[0][0]), float(k[1][1]), float(k[2][0]), float(k[2][1])
+        w, h = float(ph["width"]), float(ph["height"])
+        pc = (V - t) @ R
+        z = -pc[:, 2]
+        front = (z > 0.2) & (z < PHOTO_FAR + 1)
+        idx = np.nonzero(front)[0]
+        if not len(idx):
+            continue
+        u = fx * pc[idx, 0] / z[idx] + cx
+        v = cy - fy * pc[idx, 1] / z[idx]
+        ok = (u >= 0) & (u < w - 1) & (v >= 0) & (v < h - 1)
+        idx, u, v = idx[ok], u[ok], v[ok]
+        if not len(idx):
+            continue
+        centred = 1 - np.maximum(np.abs(u - w / 2) / (w / 2), np.abs(v - h / 2) / (h / 2))
+        score = centred - z[idx] / PHOTO_FAR
+        win = score > best[idx]
+        idx, u, v, score = idx[win], u[win], v[win], score[win]
+        if not len(idx):
+            continue
+        dm = meshscan._depth_map(d, ph) if ph.get("depth_file") else None
+        if dm is not None:
+            dh, dw = dm.shape
+            seen = dm[np.minimum((v * dh / h).astype(int), dh - 1), np.minimum((u * dw / w).astype(int), dw - 1)]
+            clear = ~((seen > 0.1) & (z[idx] > seen + 0.1))
+            idx, u, v, score = idx[clear], u[clear], v[clear], score[clear]
+            if not len(idx):
+                continue
+        img = np.asarray(Image.open(d / "photos" / ph["file"]).convert("RGB"))
+        sx, sy = img.shape[1] / w, img.shape[0] / h
+        rgb[idx] = img[np.minimum((v * sy).astype(int), img.shape[0] - 1), np.minimum((u * sx).astype(int), img.shape[1] - 1)]
+        best[idx] = score
+    tmp = out.with_suffix(".tmp")
+    tmp.write_bytes(rgb.tobytes())
+    tmp.replace(out)
     return out
 
 
@@ -431,7 +537,7 @@ def build(d: Path, clicks: list[dict]) -> dict:
     (d / "layout_points.json").write_text(json.dumps({"top": top, "all": low}))
     turn = layout._turn([{"a": [a[0], -a[1]], "b": [b[0], -b[1]]} for a, b in zip(v, v[1:] + v[:1])])
     gaps = _no_wall(v, seen)
-    openings = [{"kind": p["kind"], "at": layout._rotate([p["x"], -p["z"]], turn)} for p in points if p["kind"] in ("door", "window")]
+    openings = [{**o, "at": layout._rotate(o["at"], turn)} for o in openings_from(points, v, gaps, floor_y)]
     lay = {"vertices": [layout._rotate(p, turn) for p in v], "openings": openings, "open": gaps, "height_m": round(ceil_y - floor_y, 3), "turn_deg": round(turn, 3),
            "floor_y": floor_y, "ceiling_y": ceil_y, "edited": False}
     (d / "layout.json").write_text(json.dumps(lay))

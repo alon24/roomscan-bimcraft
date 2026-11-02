@@ -110,7 +110,8 @@ def validate(body: dict) -> dict:
     for o in body.get("openings") or []:
         if o.get("kind") not in ("door", "window"):
             raise ValueError("an opening is a door or a window")
-        openings.append({"kind": o["kind"], "at": [round(float(o["at"][0]), 3), round(float(o["at"][1]), 3)]})
+        keep = {k: (float(o[k]) if k in ("width", "sill", "head") else bool(o[k])) for k in ("width", "sill", "head", "width_known", "height_known") if o.get(k) is not None}
+        openings.append({"kind": o["kind"], "at": [round(float(o["at"][0]), 3), round(float(o["at"][1]), 3)], **keep})
     if not all(math.isfinite(v) and abs(v) < 500 for p in clean + [o["at"] for o in openings] for v in p):
         raise ValueError("a point is out of range")
     gaps = body.get("open")
@@ -374,9 +375,19 @@ def script(layout: dict, name: str = "Room") -> str:
         inside = _inside_point(v)
         lines.append(f"room {json.dumps({'point': [round(inside[0] * 1000), round(inside[1] * 1000)], 'name': name})}")
     solid = [(a, b) for (a, b), g in zip(zip(v, v[1:] + v[:1]), gaps) if not g]
+    made: set[str] = set()
     for o in layout.get("openings") or []:
         x, y = _on_wall(o["at"], solid, WALL_CENTRE)
-        lines.append(f"{o['kind']} {json.dumps({'at': [round(x * 1000), round(y * 1000)]})}")
+        spec = {"at": [round(x * 1000), round(y * 1000)]}
+        if o.get("width") and o.get("head"):     # its own measured size
+            w_mm, h_mm, sill = round(o["width"] * 1000), round((o["head"] - o.get("sill", 0)) * 1000), round(o.get("sill", 0) * 1000)
+            name = f"{o['kind'].title()} {w_mm} x {h_mm}" + (f" sill {sill}" if o["kind"] == "window" else "")
+            if name not in made:
+                made.add(name)
+                size = {"category": o["kind"], "name": name, "width": w_mm, "height": h_mm, **({"sill": sill} if o["kind"] == "window" else {})}
+                lines.append(f"type {json.dumps(size)}")
+            spec["type"] = name
+        lines.append(f"{o['kind']} {json.dumps(spec)}")
     return "\n".join(lines) + "\n"
 
 
