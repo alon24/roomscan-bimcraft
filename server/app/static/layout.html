@@ -42,6 +42,13 @@
   #files { display:flex; flex-wrap:wrap; gap:6px; }
   table { width:100%; border-collapse:collapse; } td { padding:2px 4px; cursor:pointer; } td:last-child { text-align:right; font-weight:600; }
   tr.sel td { color:var(--sel); }
+  #mk { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; background:#15191c; }
+  #mk[hidden] { display:none; }
+  #mkBar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; background:var(--card); border-bottom:1px solid var(--line); }
+  #mkStage { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  #mkInner { position:relative; }
+  #mkInner img { display:block; width:100%; height:100%; user-select:none; -webkit-user-drag:none; }
+  #ppImg { cursor:zoom-in; }
   @media (max-width:760px) { main { flex-direction:column; } #wrap { min-height:60vh; } aside { width:auto; border-left:0; border-top:1px solid var(--line); } }
 </style>
 </head>
@@ -64,12 +71,23 @@
   <button id="fit">Fit</button>
 </header>
 <main>
-  <div id="wrap"><svg id="svg"></svg><div id="gl" hidden></div><div id="tip"><span id="tipText"></span></div></div>
+  <div id="wrap"><svg id="svg"></svg><div id="gl" hidden></div><div id="tip"><span id="tipText"></span></div>
+    <div id="mk" hidden>
+      <div id="mkBar">
+        <button id="mkPoint">Add a point</button><select id="mkKind" aria-label="What the new point is"></select><button id="mkDoor">Draw a door</button><button id="mkWindow">Draw a window</button>
+        <span id="mkMsg" class="mute" style="flex:1;min-width:160px"></span>
+        <button id="mkPrev" aria-label="Previous photo">‹</button><span id="mkCount" class="mute"></span><button id="mkNext" aria-label="Next photo">›</button>
+        <button id="mkClose" class="main">Close (Esc)</button>
+      </div>
+      <div id="mkStage"><div id="mkInner"><img id="mkImg" alt="Photo to mark" draggable="false"><svg id="mkSvg"></svg></div></div>
+    </div>
+  </div>
   <aside>
     <div id="pointPhotos" hidden>
-      <h2>Photos of this point</h2>
+      <h2 id="ppHead">Photos of this point</h2>
       <div id="ppFrame" style="position:relative;border-radius:7px;overflow:hidden;background:var(--bg)"><img id="ppImg" alt="Photo of this point" style="display:block;width:100%"><div id="ppDot" style="position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid #35e06a;border-radius:50%;box-shadow:0 0 0 2px rgba(0,0,0,.6);pointer-events:none"></div></div>
       <div class="row" id="ppIn3d" hidden><label><input type="checkbox" id="ppShow" checked> Put this photo in the 3D view</label><button id="ppStand">Stand where it was taken</button></div>
+      <div class="row"><button id="ppMark" class="main">Mark a door or window on this photo</button></div>
       <div class="row"><button id="ppPrev">‹</button><span id="ppText" class="mute" style="flex:1;text-align:center"></span><button id="ppNext">›</button></div>
     </div>
     <div id="photoBox" hidden>
@@ -173,6 +191,7 @@ function nearestOnWall(p) {
   return best;
 }
 function draw() {
+  if (!$("mk").hidden) mkRender();
   if (is3d) { build3d(); side(); return; }
   svg.replaceChildren();
   const css = getComputedStyle(document.documentElement), c = n => css.getPropertyValue(n).trim();
@@ -322,19 +341,50 @@ function panel() {
     const n = document.createElement("div"); n.className = "mute";
     n.textContent = w.added ? "Added by hand." : `${w.guess === k ? "Worked out from" : "Your choice. The scan suggested: " + (WALK_NAME[w.guess] || w.guess) + ". It found"} ${w.walls} wall${w.walls === 1 ? "" : "s"} around it${w.fixed ? ". Placed by hand" : w.snapped_cm ? `, and moved it ${w.snapped_cm} cm onto the surface` : ""}. Drag it on the plan to move it.`;
     P.append(n);
+    const del = document.createElement("button"); del.textContent = "Delete this point"; del.onclick = () => deletePoint(w); P.append(del);
     if (w.flag) { const f = document.createElement("div"); f.style.cssText = "color:var(--door);font-weight:600;margin-top:4px"; f.textContent = "⚑ " + w.flag; P.append(f); }
   } else if (sel?.corner != null) {
     head(`Corner ${sel.corner + 1}`);
     const b = document.createElement("button"); b.textContent = "Delete this corner"; b.onclick = removeSelected; P.append(b);
-  } else if (sel?.opening != null) {
-    head(L.openings[sel.opening].kind === "door" ? "Door" : "Window");
+  } else if (sel?.opening != null && L.openings[sel.opening]) {
+    const o = L.openings[sel.opening], door = o.kind === "door";
+    head(door ? "Door" : "Window");
+    const row = document.createElement("div"); row.className = "row";
+    const pick = document.createElement("select");
+    pick.append(...[["door", "Door"], ["window", "Window"]].map(([v, t]) => Object.assign(document.createElement("option"), { value: v, textContent: t, selected: v === o.kind })));
+    pick.onchange = () => {
+      remember(); o.kind = pick.value; o.marked = true;
+      if (o.kind === "door") { o.sill = 0; o.head = Math.max(o.head || 0, 2.1); o.height_known = false; }
+      else if (!o.sill) { o.sill = .9; o.head = 2.1; o.height_known = false; }
+      changed();
+    };
+    row.append(pick); P.append(row);
+    const size = (label, value, apply) => {
+      const r = document.createElement("div"); r.className = "row";
+      const l = document.createElement("label"); l.textContent = label;
+      const i = Object.assign(document.createElement("input"), { type: "number", step: "0.01", min: "0", value: value.toFixed(2) });
+      i.onkeydown = e => { if (e.key === "Enter") i.blur(); e.stopPropagation(); };
+      i.onchange = () => { const v = parseFloat(i.value); if (!(v >= 0)) return; i.blur(); remember(); apply(v); o.marked = true; changed(); };
+      r.append(l, " ", i, " m"); P.append(r);
+    };
+    size("Width", o.width || (door ? .9 : 1.2), v => { if (v > .04) { o.width = v; o.width_known = true; } });
+    if (!door) size("Bottom above the floor", o.sill ?? .9, v => { o.sill = v; o.head = Math.max(o.head ?? 2.1, v + .05); o.height_known = true; });
+    size(door ? "Height" : "Top above the floor", o.head ?? 2.1, v => { if (v > (o.sill ?? (door ? 0 : .9))) { o.head = v; if (door) o.sill = 0; o.sill ??= .9; o.height_known = true; } });
+    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Drag it to slide it along the wall."; P.append(n);
     const b = document.createElement("button"); b.textContent = "Delete it"; b.onclick = removeSelected; P.append(b);
   }
+  if (sel) { const b = document.createElement("button"); b.textContent = "Done (Esc)"; b.style.marginTop = "8px"; b.onclick = letGo; P.append(b); }
   tip();
+}
+function letGo() { document.activeElement?.blur?.(); measure = []; setTool("select"); sel = null; draw(); if ($("mk").hidden) pointPhotos(); }
+async function deletePoint(w) {
+  const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: w.id }) });
+  if (!r.ok) return;
+  walk.splice(walk.indexOf(w), 1); sel = null; renderWalk(); $("walkMsg").textContent = "Deleted. Make the plan again to use it."; draw(); if ($("mk").hidden) pointPhotos();
 }
 function tip() {
   $("tipText").textContent = {
-    select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · click a point to see its photos · drag a point or corner to move it · click a wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
+    select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · click a point to see its photos · drag a point or corner to move it · click a door, window or wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
     measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : "Type the real length on the right",
     point: "Click where the new point goes", door: "Click a wall where the door is", window: "Click a wall where the window is",
   }[tool];
@@ -412,8 +462,8 @@ svg.addEventListener("pointerdown", e => {
   }
   if (t.point != null) { select({ point: +t.point }); drag = { point: +t.point, moved: false }; svg.setPointerCapture(e.pointerId); return; }
   if (t.corner != null) { remember(); drag = { corner: +t.corner, moved: false }; sel = { corner: +t.corner }; svg.setPointerCapture(e.pointerId); draw(); return; }
-  if (t.opening != null) { select({ opening: +t.opening }); return; }
-  if (t.wall != null) { select({ wall: +t.wall }); return; }
+  if (t.opening != null) { remember(); select({ opening: +t.opening }); drag = { opening: +t.opening, moved: false }; svg.setPointerCapture(e.pointerId); return; }
+  if (t.wall != null) { const q = planToWorld(p); select({ wall: +t.wall, spot: [q[0], (scene?.floor ?? 0) + 1.2, q[1]] }); return; }
   sel = null; drag = { pan: [x - view.x, y - view.y] }; svg.setPointerCapture(e.pointerId); draw();
 });
 svg.addEventListener("pointermove", e => {
@@ -424,6 +474,7 @@ svg.addEventListener("pointermove", e => {
     const [wx, wz] = planToWorld(toPlan(x, y)), w = walk[drag.point];
     w.x = wx; w.z = wz; drag.moved = true; draw(); return;
   }
+  if (drag.opening != null) { const q = toPlan(x, y); L.openings[drag.opening].at = [+q[0].toFixed(3), +q[1].toFixed(3)]; drag.moved = true; draw(); return; }
   const p = toPlan(x, y); L.vertices[drag.corner] = [+p[0].toFixed(3), +p[1].toFixed(3)]; drag.moved = true; draw();
 });
 svg.addEventListener("pointerup", async () => {
@@ -434,7 +485,7 @@ svg.addEventListener("pointerup", async () => {
     return;
   }
   if (drag?.point != null) { drag = null; return; }
-  if (drag?.corner != null) { if (drag.moved) changed(); else history.pop(), $("undo").disabled = !history.length; } drag = null; });
+  if (drag?.corner != null || drag?.opening != null) { if (drag.moved) changed(); else history.pop(), $("undo").disabled = !history.length; } drag = null; });
 svg.addEventListener("dblclick", e => {
   if (tool !== "select" || e.target.dataset.wall == null) return;
   const r = svg.getBoundingClientRect(), p = toPlan(e.clientX - r.left, e.clientY - r.top), n = nearestOnWall(p);
@@ -449,9 +500,13 @@ svg.addEventListener("wheel", e => {
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
   if (e.key === "Delete" || e.key === "Backspace") removeSelected();
-  if (e.key === "Escape") setTool("select");
   if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); $("undo").click(); }
 });
+window.addEventListener("keydown", e => {            // works from inside a box being typed in too
+  if (e.key !== "Escape") return;
+  if (!$("mk").hidden) { if (mkDraw) mkMode(null); else mkClose(); return; }
+  letGo();
+}, true);
 window.addEventListener("resize", draw);
 $("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
 $("tPoint").onclick = () => setTool("point"); $("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
@@ -461,11 +516,27 @@ $("vAbove").onclick = () => view3d("above"); $("vPhone").onclick = () => view3d(
 $("v3d").onclick = () => set3d(!is3d);
 $("scanCut").onchange = loadScan;
 let ppList = [], ppAt = 0, ppAsk = 0;
+function spotOfSelection() {
+  if (sel?.point != null) return walk[sel.point] || null;
+  const fl = scene?.floor ?? 0;
+  if (sel?.opening != null && L.openings[sel.opening]) {
+    const o = L.openings[sel.opening], q = planToWorld(nearestOnWall(o.at).q);
+    return { x: q[0], y: fl + ((o.sill ?? 0) + (o.head ?? 2.1)) / 2, z: q[1] };
+  }
+  if (sel?.wall != null) {
+    if (sel.spot) return { x: sel.spot[0], y: sel.spot[1], z: sel.spot[2] };
+    const w = wallsOf()[sel.wall]; if (!w) return null;
+    const q = planToWorld([(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2]);
+    return { x: q[0], y: fl + 1.2, z: q[1] };
+  }
+  return null;
+}
 async function pointPhotos() {
-  const w = sel?.point != null ? walk[sel.point] : null, box = $("pointPhotos");
-  if (!w) { box.hidden = true; ppList = []; photo3d(); return; }
+  const w = spotOfSelection(), box = $("pointPhotos");
+  if (!w) { ++ppAsk; box.hidden = true; ppList = []; photo3d(); return; }
   const ask = ++ppAsk;
-  const r = await fetch(`/api/scans/${id}/walk/photos?x=${w.x}&y=${w.y}&z=${w.z}`).catch(() => null);
+  $("ppHead").textContent = sel?.point != null ? "Photos of this point" : sel?.opening != null ? "Photos of this door or window" : "Photos of this spot";
+  const r = await fetch(`/api/scans/${id}/walk/photos?x=${w.x}&y=${w.y}&z=${w.z}&most=8`).catch(() => null);
   const j = r?.ok ? await r.json() : { photos: [] };
   if (ask !== ppAsk) return;
   ppList = j.photos; ppAt = 0; box.hidden = !ppList.length; showPhotoAt(); if (!ppList.length) photo3d();
@@ -499,6 +570,185 @@ function photo3d() {
   });
 }
 $("ppShow").onchange = photo3d;
+
+// Marking on a photo. A photo knows where its camera was, so a spot in the picture is a line through the room, and where that line meets a wall of the plan is a place on that wall.
+// A door or window is kept as its place on the wall, so its edges in the picture and its size are the same thing.
+let mkDraw = null, mkStart = null, mkHold = null, mkW = 0, mkH = 0, mkSeen = new Set();
+$("mkKind").append(...Object.keys(WALK_NAME).filter(k => k !== "ignore").map(k => Object.assign(document.createElement("option"), { value: k, textContent: WALK_NAME[k] })));
+$("mkKind").value = "corner";
+// a spot in the photo as a place in the room: the LiDAR reading there, or else the wall the photo looks at
+async function mkPlace(f, a, b) {
+  const r = await fetch(`/api/scans/${id}/walk/from_photo?file=${encodeURIComponent(f.file)}&u=${a}&v=${b}`).catch(() => null), j = r?.ok ? await r.json() : {};
+  if (j.found) return { x: j.x, y: j.y, z: j.z, how: "from the LiDAR reading there" };
+  const hit = wallUnder(camRay(f, a, b)); if (!hit) return null;
+  const q = wallSpot(hit.fr, hit.m.s, hit.m.h);
+  return { x: q[0], y: q[1], z: q[2], how: `on wall ${hit.w.i + 1}, because there is no LiDAR reading there` };
+}
+const mkF = () => ppList[ppAt];
+function camPoint(f, q) {          // room point to picture, 0 to 1 the right way up, as the server does it. null if it is behind the camera
+  const t = f.transform, k = f.intrinsics, d = [q[0] - t[3][0], q[1] - t[3][1], q[2] - t[3][2]], dot = a => a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+  const z = -dot(t[2]); if (z < .05) return null;
+  const u = k[0][0] * dot(t[0]) / z + k[2][0], v = k[2][1] - k[1][1] * dot(t[1]) / z, w = f.width, h = f.height, xUp = t[0][1], yUp = t[1][1];
+  if (Math.abs(xUp) > Math.abs(yUp)) return xUp > 0 ? [v / h, 1 - u / w] : [1 - v / h, u / w];
+  return yUp < 0 ? [1 - u / w, 1 - v / h] : [u / w, v / h];
+}
+function camRay(f, a, b) {         // picture to a line through the room
+  const t = f.transform, k = f.intrinsics, w = f.width, h = f.height, xUp = t[0][1], yUp = t[1][1];
+  let u, v;
+  if (Math.abs(xUp) > Math.abs(yUp)) { if (xUp > 0) { v = a * h; u = (1 - b) * w; } else { v = (1 - a) * h; u = b * w; } }
+  else if (yUp < 0) { u = (1 - a) * w; v = (1 - b) * h; } else { u = a * w; v = b * h; }
+  const x = (u - k[2][0]) / k[0][0], y = (k[2][1] - v) / k[1][1];
+  return { from: t[3].slice(0, 3), dir: [0, 1, 2].map(i => t[0][i] * x + t[1][i] * y - t[2][i]) };
+}
+function wallFrame(w) { const l = len(w) || 1e-9; return { a: w.a, ux: (w.b[0] - w.a[0]) / l, uy: (w.b[1] - w.a[1]) / l, l }; }
+function onWall(fr, ray) {         // where the line meets this wall: metres along it and metres above the floor
+  const A = planToWorld(fr.a), B = planToWorld([fr.a[0] + fr.ux, fr.a[1] + fr.uy]), ex = B[0] - A[0], ez = B[1] - A[1], nx = -ez, nz = ex;
+  const under = ray.dir[0] * nx + ray.dir[2] * nz; if (Math.abs(under) < 1e-6) return null;
+  const c = ((A[0] - ray.from[0]) * nx + (A[1] - ray.from[2]) * nz) / under; if (c <= 0) return null;
+  const x = ray.from[0] + ray.dir[0] * c, y = ray.from[1] + ray.dir[1] * c, z = ray.from[2] + ray.dir[2] * c;
+  return { s: (x - A[0]) * ex + (z - A[1]) * ez, h: y - (scene?.floor ?? 0), c };
+}
+function wallSpot(fr, s, h) { const q = planToWorld([fr.a[0] + fr.ux * s, fr.a[1] + fr.uy * s]); return [q[0], (scene?.floor ?? 0) + h, q[1]]; }
+function wallUnder(ray) {          // the nearest wall that this line actually meets
+  let best = null;
+  for (const w of wallsOf()) { if (L.open[w.i]) continue; const fr = wallFrame(w), m = onWall(fr, ray); if (m && m.s > -.3 && m.s < fr.l + .3 && m.h > -.5 && m.h < L.height_m + .5 && (!best || m.c < best.m.c)) best = { fr, m, w }; }
+  return best;
+}
+function openingBox(o) {
+  const n = nearestOnWall(o.at), fr = wallFrame(n.w), door = o.kind === "door", mid = n.t * fr.l, wd = o.width || (door ? .9 : 1.2);
+  return { fr, s0: mid - wd / 2, s1: mid + wd / 2, h0: o.sill ?? (door ? 0 : .9), h1: o.head ?? 2.1 };
+}
+function setOpening(o, b) {
+  const mid = Math.max(0, Math.min(b.fr.l, (b.s0 + b.s1) / 2));
+  o.at = [+(b.fr.a[0] + b.fr.ux * mid).toFixed(3), +(b.fr.a[1] + b.fr.uy * mid).toFixed(3)];
+  o.width = +Math.max(.1, b.s1 - b.s0).toFixed(3); o.width_known = true; o.marked = true;
+  o.sill = o.kind === "door" ? 0 : +Math.max(0, b.h0).toFixed(3);
+  o.head = +Math.max(o.sill + .1, b.h1).toFixed(3); o.height_known = true;
+}
+function mkOpen() { if (!mkF()) return; $("mk").hidden = false; mkMode(null); mkLoad(); }
+function mkClose() { $("mk").hidden = true; mkDraw = null; mkStart = null; mkHold = null; }
+function mkLoad() {
+  const f = mkF(); if (!f) return;
+  const box = $("mkStage").getBoundingClientRect(), k = Math.min(box.width / f.aspect, box.height);
+  mkH = k; mkW = k * f.aspect; $("mkInner").style.width = mkW + "px"; $("mkInner").style.height = mkH + "px";
+  $("mkImg").src = `/api/scans/${id}/photos/${f.file}?up=1`;
+  $("mkCount").textContent = `Photo ${ppAt + 1} of ${ppList.length}`;
+  mkSeen = new Set(); mkRender();
+  fetch(`/api/scans/${id}/walk/seen?file=${encodeURIComponent(f.file)}`).then(r => r.ok ? r.json() : { ids: [] }).then(j => { if (mkF() === f) { mkSeen = new Set(j.ids); mkRender(); } }).catch(() => {});
+}
+function mkMode(kind) {
+  mkDraw = kind; mkStart = null;
+  $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
+  $("mkSvg").style.cursor = kind ? "crosshair" : "default";
+  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind ? `Click one corner of the ${kind}, then the opposite corner.` : "Click a point, door or window to select it. Drag a point or an edge to where it really is.";
+  mkRender();
+}
+function mkRender() {
+  const svgM = $("mkSvg"), f = mkF(); svgM.replaceChildren(); if (!f) return;
+  const el = (n, at) => { const e = document.createElementNS(NS, n); for (const k in at) e.setAttribute(k, at[k]); svgM.append(e); return e; };
+  const px = (fr, s, h) => { const q = camPoint(f, wallSpot(fr, s, h)); return q && [q[0] * mkW, q[1] * mkH]; };
+  const quad = b => { const c = [px(b.fr, b.s0, b.h0), px(b.fr, b.s1, b.h0), px(b.fr, b.s1, b.h1), px(b.fr, b.s0, b.h1)]; return c.every(Boolean) ? c : null; };
+  L.openings.forEach((o, k) => {
+    const b = openingBox(o), c = quad(b); if (!c) return;
+    const on = sel?.opening === k, colour = on ? "#ff2f86" : o.kind === "door" ? "#ff9a4d" : "#b98cff";
+    const body = el("polygon", { points: c.map(p => p.join(",")).join(" "), fill: colour, "fill-opacity": on ? .14 : .22, stroke: colour, "stroke-width": on ? 3 : 2 });
+    body.style.cursor = mkDraw ? "crosshair" : on ? "move" : "pointer"; body.dataset.opening = k; body.dataset.grab = "body";
+    const lab = el("text", { x: (c[2][0] + c[3][0]) / 2, y: (c[2][1] + c[3][1]) / 2 - 7, fill: "#fff", "font-size": 13, "font-weight": 700, "text-anchor": "middle", "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
+    lab.textContent = `${o.kind === "door" ? "Door" : "Window"} ${(b.s1 - b.s0).toFixed(2)} × ${(b.h1 - b.h0).toFixed(2)} m`;
+    if (!on || mkDraw) return;
+    const door = o.kind === "door", grabs = [["s0", [c[0], c[3]]], ["s1", [c[1], c[2]]], ["h1", [c[2], c[3]]], ...(door ? [] : [["h0", [c[0], c[1]]]])];
+    for (const [g, [p, q]] of grabs) {
+      el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: "transparent", "stroke-width": 18, "data-opening": k, "data-grab": g, style: `cursor:${g[0] === "s" ? "ew-resize" : "ns-resize"}` });
+      el("circle", { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: 8, fill: "#fff", stroke: colour, "stroke-width": 3, "data-opening": k, "data-grab": g, style: `cursor:${g[0] === "s" ? "ew-resize" : "ns-resize"}` });
+    }
+  });
+  walk.forEach((w, i) => {
+    if (!mkSeen.has(w.id)) return;
+    const on = sel?.point === i, h = mkHold?.point === i && mkHold.at ? mkHold.at : camPoint(f, [w.x, w.y, w.z]); if (!h) return;
+    const x = h[0] * mkW, y = h[1] * mkH, grip = { "data-point": i, style: "cursor:move" };
+    el("circle", { cx: x, cy: y, r: on ? 11 : 8, fill: WALK[w.kind] || WALK.unknown, stroke: on ? "#ff2f86" : "#fff", "stroke-width": on ? 4 : 2, ...grip });
+    const t = el("text", { x: x + 13, y: y + 5, fill: "#fff", "font-size": 14, "font-weight": 700, "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
+    t.textContent = `${i + 1} ${WALK_NAME[w.kind] || w.kind}`;
+  });
+  if (mkStart?.now) {
+    const b = { fr: mkStart.fr, s0: mkStart.s, s1: mkStart.now.s, h0: mkStart.h, h1: mkStart.now.h }, c = quad(b);
+    if (c) el("polygon", { points: c.map(p => p.join(",")).join(" "), fill: "#35e06a", "fill-opacity": .2, stroke: "#35e06a", "stroke-width": 2, "pointer-events": "none" });
+  }
+}
+const mkAt = e => { const r = $("mkSvg").getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+function mkFinish(end) {
+  const a = mkStart, kind = mkDraw;
+  if (Math.abs(end.s - a.s) < .1 || Math.abs(end.h - a.h) < .1) { $("mkMsg").textContent = "That is too small. Click the opposite corner."; a.now = null; return; }
+  remember();
+  const o = { kind };
+  setOpening(o, { fr: a.fr, s0: Math.min(a.s, end.s), s1: Math.max(a.s, end.s), h0: Math.min(a.h, end.h), h1: Math.max(a.h, end.h) });
+  L.openings.push(o); sel = { opening: L.openings.length - 1 }; mkMode(null); changed();
+}
+$("mkSvg").addEventListener("pointerdown", async e => {
+  e.preventDefault(); document.activeElement?.blur?.();
+  const f = mkF(), [a, b] = mkAt(e), ray = camRay(f, a, b);
+  if (mkDraw === "point") {
+    const q = await mkPlace(f, a, b), kind = $("mkKind").value;
+    if (!q) { $("mkMsg").textContent = "No LiDAR reading and no wall there, so I can't place it. Try another photo."; return; }
+    const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ add: { x: q.x, y: q.y, z: q.z, kind } }) });
+    if (!r.ok) return;
+    const n = await r.json(); walk.push(n); mkSeen.add(n.id); sel = { point: walk.length - 1 }; renderWalk();
+    $("walkMsg").textContent = "Saved. Make the plan again to use it.";
+    $("mkMsg").textContent = `Point ${walk.length} placed ${q.how}. Click the next, or Esc to stop.`; draw(); return;
+  }
+  const pt = e.target.dataset?.point;
+  if (!mkDraw && pt != null) { sel = { point: +pt }; mkHold = { point: +pt, at: null }; $("mkSvg").setPointerCapture(e.pointerId); draw(); return; }
+  if (mkDraw) {
+    if (mkStart) { const m = onWall(mkStart.fr, ray); if (m) mkFinish(m); else $("mkMsg").textContent = "That is not on the same wall. Click the opposite corner."; mkRender(); return; }
+    const hit = wallUnder(ray);
+    if (!hit) { $("mkMsg").textContent = "There is no wall of the plan there, so I can't place it. Try another photo or fix the wall first."; return; }
+    mkStart = { fr: hit.fr, s: hit.m.s, h: hit.m.h, now: null };
+    $("mkMsg").textContent = `On wall ${hit.w.i + 1}. Now click the opposite corner.`;
+    return;
+  }
+  const k = e.target.dataset?.opening;
+  if (k == null) { if (sel?.opening != null) { sel = null; draw(); } return; }
+  if (sel?.opening !== +k) { sel = { opening: +k }; draw(); return; }
+  const box = openingBox(L.openings[+k]), m = onWall(box.fr, ray); if (!m) return;
+  remember(); mkHold = { k: +k, grab: e.target.dataset.grab, box, from: m, base: { ...box }, moved: false };
+  $("mkSvg").setPointerCapture(e.pointerId);
+});
+$("mkSvg").addEventListener("pointermove", e => {
+  const f = mkF(); if (!f || (!mkHold && !mkStart)) return;
+  const [a, b] = mkAt(e), ray = camRay(f, a, b);
+  if (mkHold?.point != null) { mkHold.at = [a, b]; mkRender(); return; }
+  if (mkStart) { mkStart.now = onWall(mkStart.fr, ray); mkRender(); return; }
+  const m = onWall(mkHold.box.fr, ray); if (!m) return;
+  const h = mkHold, x = h.box, g = h.grab, o = L.openings[h.k];
+  if (g === "body") { const d = m.s - h.from.s; x.s0 = h.base.s0 + d; x.s1 = h.base.s1 + d; }
+  else if (g === "s0") x.s0 = Math.min(m.s, x.s1 - .1);
+  else if (g === "s1") x.s1 = Math.max(m.s, x.s0 + .1);
+  else if (g === "h0") x.h0 = Math.max(0, Math.min(m.h, x.h1 - .1));
+  else if (g === "h1") x.h1 = Math.min(L.height_m, Math.max(m.h, x.h0 + .1));
+  setOpening(o, x); h.moved = true; mkRender();
+});
+$("mkSvg").addEventListener("pointerup", async () => {
+  if (!mkHold) return;
+  if (mkHold.point != null) {
+    const w = walk[mkHold.point], at = mkHold.at, f = mkF();
+    if (!at) { mkHold = null; return; }
+    const q = await mkPlace(f, at[0], at[1]); mkHold = null;
+    if (!q) { $("mkMsg").textContent = "No LiDAR reading and no wall there, so it stayed where it was."; mkRender(); return; }
+    const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: q.x, y: q.y, z: q.z }) });
+    if (r.ok) { Object.assign(w, await r.json()); $("walkMsg").textContent = "Saved. Make the plan again to use it."; $("mkMsg").textContent = `Moved ${q.how}.`; }
+    draw(); return;
+  }
+  const moved = mkHold.moved; mkHold = null;
+  if (moved) changed(); else { history.pop(); $("undo").disabled = !history.length; }
+});
+$("mkPoint").onclick = () => mkMode(mkDraw === "point" ? null : "point");
+$("mkDoor").onclick = () => mkMode(mkDraw === "door" ? null : "door");
+$("mkWindow").onclick = () => mkMode(mkDraw === "window" ? null : "window");
+$("mkClose").onclick = mkClose;
+$("mkPrev").onclick = () => { ppAt = (ppAt + ppList.length - 1) % ppList.length; showPhotoAt(); mkStart = null; mkLoad(); };
+$("mkNext").onclick = () => { ppAt = (ppAt + 1) % ppList.length; showPhotoAt(); mkStart = null; mkLoad(); };
+$("ppMark").onclick = mkOpen; $("ppImg").onclick = mkOpen;
+window.addEventListener("resize", () => { if (!$("mk").hidden) mkLoad(); });
 $("ppStand").onclick = () => {
   const f = ppList[ppAt]; if (!f || !G) return;
   const t = f.transform, fw = new T.Vector3(-t[2][0], -t[2][1], -t[2][2]).normalize();
@@ -620,7 +870,9 @@ function init3d() {
   const camera = new T.PerspectiveCamera(50, 1, 0.02, 200), overlay = new T.Group(); world.add(overlay);
   G = { renderer, world, camera, overlay, meshes: new Map(), target: new T.Vector3(), az: 0, el: .8, r: 10, labels: new Map(), hits: [], dirty: true };
   const dom = renderer.domElement, ray = new T.Raycaster();
-  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); return ray.intersectObjects(G.hits.filter(o => o.visible), false)[0]; };
+  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); const all = ray.intersectObjects(G.hits.filter(o => o.visible), false), first = all[0], u = first?.object.userData;
+    if (!first || (u.opening == null && u.wall == null)) return first;                 // a door or window lies on its wall: a point close by still comes first, then the door or window
+    return all.find(h => h.distance < first.distance + .25 && (h.object.userData.point != null || h.object.userData.corner != null)) || all.find(h => h.distance < first.distance + .05 && h.object.userData.opening != null) || first; };
   let act = null;
   dom.addEventListener("contextmenu", e => e.preventDefault());
   dom.addEventListener("pointerdown", e => {
@@ -633,6 +885,7 @@ function init3d() {
       sel = { point: i }; draw(); pointPhotos(); return;
     }
     if (hit?.object.userData.corner != null) { remember(); act = { corner: hit.object.userData.corner, y: hit.point.y, moved: false }; sel = { corner: act.corner }; draw(); return; }
+    if (hit?.object.userData.opening != null) { remember(); act = { opening: hit.object.userData.opening, plane: new T.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new T.Vector3()), hit.point), moved: false, sx: e.clientX, sy: e.clientY }; select({ opening: act.opening }); return; }
     act = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, pan: e.button !== 0 || e.shiftKey, hit };
   });
   dom.addEventListener("pointermove", e => {
@@ -641,6 +894,12 @@ function init3d() {
       const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
       const q = ray.ray.intersectPlane(act.plane, new T.Vector3());
       if (q && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) > 3) { Object.assign(walk[act.point], { x: q.x, y: q.y, z: q.z }); act.moved = true; draw(); }
+      return;
+    }
+    if (act.opening != null) {
+      const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
+      const q = ray.ray.intersectPlane(act.plane, new T.Vector3());
+      if (q && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) > 3) { L.openings[act.opening].at = worldToPlan(q.x, q.z); act.moved = true; draw(); }
       return;
     }
     if (act.corner != null) {
@@ -663,8 +922,8 @@ function init3d() {
         fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, y: w.y, z: w.z }) }).then(r => r.ok ? r.json() : null).then(n => { if (n) { Object.assign(w, n); $("walkMsg").textContent = "Saved. Make the plan again to use it."; pointPhotos(); draw(); } });
       }
     }
-    else if (act?.corner != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
-    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.wall != null ? { wall: u.wall } : null); }
+    else if (act?.corner != null || act?.opening != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
+    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.wall != null ? { wall: u.wall, spot: act.hit.point.toArray() } : null); }
     act = null;
   });
   dom.addEventListener("wheel", e => { e.preventDefault(); G.r = Math.max(.05, Math.min(60, G.r * Math.exp(e.deltaY * .0012))); place3d(); }, { passive: false });
@@ -767,7 +1026,7 @@ function build3d() {
     const on = sel?.wall === w.i, gap = L.open[w.i], colour = on ? 0xe0226e : gap ? 0xd9761e : 0x0f9d8f, a0 = at(w.a, y0), b0 = at(w.b, y0), a1 = at(w.a, y1), b1 = at(w.b, y1);
     const pos = new Float32Array([a0.x, y0, a0.z, b0.x, y0, b0.z, b1.x, y1, b1.z, a1.x, y1, a1.z]), g = new T.BufferGeometry();
     g.setAttribute("position", new T.BufferAttribute(pos, 3)); g.setIndex([0, 1, 2, 0, 2, 3]);
-    const panel = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: gap ? (on ? .16 : .03) : on ? .42 : .22, side: T.DoubleSide, depthWrite: false, depthTest: !xray }));
+    const panel = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: gap ? (on ? .1 : .03) : on ? .12 : .22, side: T.DoubleSide, depthWrite: false, depthTest: !xray }));
     panel.renderOrder = 10; panel.userData.wall = w.i; ov.add(panel); G.hits.push(panel);
     bar(a0, b0, on ? .022 : .014, colour); bar(a1, b1, on ? .022 : .014, colour);
     const s = label3d(`Wall ${w.i + 1}${gap ? " open" : ""}: ${fmt(len(w))}`, on ? "#e0226e" : gap ? "#b35f14" : "#0a7a6f");
@@ -782,12 +1041,12 @@ function build3d() {
     const s = label3d(`${i + 1}`, on ? "#e0226e" : "#15191c"); s.position.copy(b).add(new T.Vector3(0, .2, 0)); ov.add(s);
   });
   // doors and windows, in their real size on their walls
-  L.openings.forEach(o => {
+  L.openings.forEach((o, k) => {
     const n = nearestOnWall(o.at), wd = (o.width || (o.kind === "door" ? .9 : 1.2)) / 2, sill = o.sill ?? (o.kind === "door" ? 0 : .9), head = o.head ?? (o.kind === "door" ? 2.1 : 2.1);
     const dx = n.w.b[0] - n.w.a[0], dy = n.w.b[1] - n.w.a[1], ll = Math.hypot(dx, dy) || 1, a = [n.q[0] - dx / ll * wd, n.q[1] - dy / ll * wd], b = [n.q[0] + dx / ll * wd, n.q[1] + dy / ll * wd];
-    const p = [at(a, y0 + sill), at(b, y0 + sill), at(b, y0 + head), at(a, y0 + head)], colour = o.kind === "door" ? 0xa0522d : 0x7b3fc4;
+    const p = [at(a, y0 + sill), at(b, y0 + sill), at(b, y0 + head), at(a, y0 + head)], colour = sel?.opening === k ? 0xe0226e : o.kind === "door" ? 0xa0522d : 0x7b3fc4;
     const g = new T.BufferGeometry().setFromPoints(p); g.setIndex([0, 1, 2, 0, 2, 3]);
-    const q = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: .4, side: T.DoubleSide, depthWrite: false, depthTest: !xray })); q.renderOrder = 12; ov.add(q);
+    const q = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: .4, side: T.DoubleSide, depthWrite: false, depthTest: !xray })); q.renderOrder = 12; q.userData.opening = k; ov.add(q); G.hits.push(q);
     p.forEach((c, i) => bar(c, p[(i + 1) % 4], .012, colour));
     const known = o.width_known && o.height_known;
     const s = label3d(`${o.kind === "door" ? "Door" : "Window"} ${(wd * 2).toFixed(2)} × ${(head - sill).toFixed(2)} m${o.width_known === undefined || known ? "" : " (partly a guess)"}`, o.kind === "door" ? "#7a3d1f" : "#5c2d96");

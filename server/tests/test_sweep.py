@@ -513,3 +513,45 @@ def test_walk_window_clicks_make_a_window_of_that_size(tmp_path):
     if os.environ.get("BIMCRAFT_CLI"):
         ok, log = layout.export(tmp_path, lay, "Sizes")
         assert ok, log
+
+
+def _frame_for_photo_tests():
+    # a camera at (0, 1, 0), upright, looking along -z. 400 x 400, focal 200, centre 200, 200
+    return {"file": "a.jpg", "width": 400, "height": 400, "depth_file": "a.bin", "intrinsics": [[200, 0, 0], [0, 200, 0], [200, 200, 1]],
+            "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 1, 0, 1]]}
+
+
+def test_a_spot_in_a_photo_is_placed_from_its_lidar_reading(tmp_path, monkeypatch):
+    import numpy as np
+    from app import meshscan, walk
+    depth = np.full((40, 40), 2.0)
+    monkeypatch.setattr(meshscan, "_depth_map", lambda d, ph: depth)
+    ph = _frame_for_photo_tests()
+    x, y, z = walk.photo_point(tmp_path, ph, 0.75, 0.5)     # half way to the right edge: 1 m right at 2 m
+    assert (x, y, z) == pytest.approx((1.0, 1.0, -2.0))
+    depth[:] = 0
+    assert walk.photo_point(tmp_path, ph, 0.75, 0.5) is None
+
+
+def test_a_photo_shows_only_the_points_nothing_hides(tmp_path, monkeypatch):
+    import numpy as np
+    from app import meshscan, walk
+    monkeypatch.setattr(meshscan, "_depth_map", lambda d, ph: np.full((40, 40), 2.0))
+    pts = [{"id": "front", "x": 0, "y": 1, "z": -2}, {"id": "hidden", "x": 0, "y": 1, "z": -4}, {"id": "behind", "x": 0, "y": 1, "z": 2}, {"id": "aside", "x": 9, "y": 1, "z": -2}]
+    assert walk.seen_in(tmp_path, _frame_for_photo_tests(), pts) == ["front"]
+
+
+def test_making_the_plan_again_keeps_doors_marked_by_hand(tmp_path, monkeypatch):
+    from app import layout, main, walk
+    d = tmp_path
+    (d / "walk_points.json").write_text("[]")
+    (d / "layout.json").write_text(json.dumps({"turn_deg": 90, "openings": [{"kind": "door", "at": [1.0, 0.0], "width": 0.9, "marked": True}, {"kind": "window", "at": [5.0, 5.0]}]}))
+    def built(_d, _c):
+        (d / "layout.json").write_text(json.dumps({"turn_deg": 0, "openings": [{"kind": "window", "at": layout._rotate(layout._rotate([1.0, 0.0], -90), 0), "width": 1.2}, {"kind": "window", "at": [8.0, 8.0], "width": 1.0}]}))
+        return {"built": True}
+    monkeypatch.setattr(walk, "build", built)
+    main._build_walk(d, force=True)
+    got = json.loads((d / "layout.json").read_text())["openings"]
+    assert [o["kind"] for o in got] == ["window", "door"] and got[0]["at"] == [8.0, 8.0]
+    assert got[1]["at"] == pytest.approx(layout._rotate([1.0, 0.0], -90), abs=1e-3)
+    assert got[1]["marked"] is True and layout.validate({"vertices": [[0, 0], [1, 0], [1, 1]], "height_m": 2.5, "openings": got})["openings"][1]["marked"] is True

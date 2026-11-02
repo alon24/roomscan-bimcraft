@@ -363,6 +363,8 @@ at least size + 4 mm across; connectors on strongly curved or thin cuts can fail
 
 ![The layout standing inside the scan in 3D](docs/img/web-layout-3d.jpg)
 
+![Marking a door and fixing points on a photo](docs/img/web-layout-mark.jpg)
+
 Open a sweep on the web page and press **Layout**. You get the room from above with no pictures: the walls with their lengths, on a 1 m grid, over the grey readings the scan took at the walls. Your changes save by themselves and stay when the scan is re-converted.
 
 - **See what is real:** the scan lies under the plan, seen from above in its real colours, so you can tell a wall from a sofa. **Take off above** removes everything higher than 2, 1.5 or 1 m, which lets you see under a lowered ceiling. **Strength** fades it, and you can turn it off.
@@ -373,7 +375,11 @@ Open a sweep on the web page and press **Layout**. You get the room from above w
 - **Type a wall's real length:** click the wall, type the tape's number, press Enter.
 - **Type the length between any two points:** press **Set a length**, click two points, type the number, press Enter.
 - A typed length stretches the room: everything past the far end moves along that line, so the other walls keep their direction. Check the walls that run on a slant, because their lengths can change too.
-- **Add door / Add window:** press it, then click the wall. They use BIMCraft's default sizes for now.
+- **Add door / Add window:** press it, then click the wall. It starts at a usual size.
+- **Mark a door or window on a photo:** click a wall, door or window to see its photos, then click the photo to open it large. Press **Draw a door** or **Draw a window** and click two opposite corners. To refine one, click it and drag its edges or handles to the real edges in the photo. Use ‹ › to check it in another photo. It lands on the wall the photo is looking at, so fix a wall that is in the wrong place first.
+- **Fix points on a photo:** the large photo shows the points it can really see. Press **Add a point**, pick what it is, and click spots in the photo: each lands where the phone's LiDAR read that spot, or on the wall if it has no reading there. Drag a point to move it. Click a point to change what it is, or to delete it. **Make the plan again from the points** then uses them. It keeps doors and windows you marked or changed by hand, but replaces other hand corrections to the plan.
+- **Get out:** **Esc** closes the photo or lets go of what is selected. **Done** does the same.
+- **Change a door or window:** click its shape, in 3D or on the plan. Pick **Door** or **Window**, type its width and height, or drag it along the wall. BIMCraft gets that size. **Make the plan again** keeps them.
 - **Tidy** takes out very short walls and nearly straight corners, then straightens walls that are nearly along the grid. **Undo** takes back any step, and **Back to the scan's walls** starts again.
 
 **Into BIMCraft:** press **Build BIMCraft and Blender files**, download `room.bimcraft`, then run `bimcraft ~/Downloads/room.bimcraft`. The file has the walls, doors, windows, floor, ceiling and room. `room.ifc` is there for other BIM programs, and `plan.png` is BIMCraft's drawing of the plan.
@@ -434,6 +440,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.63.0 | Layout page: click a wall to see its photos, and **mark doors and windows on the photo**: draw two corners, then drag the edges to refine. The photo also shows your points: add, move, delete and classify them there. Click a door or window to change which it is, type its size or slide it along the wall. **Esc** or **Done** lets go of a selection. |
 | 0.62.0 | Layout page: a walk opens in **3D**. Points are at their real heights, doors and windows have real shapes and sizes, the surface is coloured from all the photos, and a point's photo hangs in the view. Sizes go into BIMCraft. |
 | 0.61.0 | **Walk** replaces Sketch: film the room and click points in any order. Everything goes to the server, which works out what each point is, fits walls through the LiDAR, finds corners and makes the plan. On the Layout page every point has its photos and can be changed, moved or added. Points are flagged, never deleted. |
 | 0.60.1 | Sketch: **Start**, **End** and **Reset** buttons. Nothing is recorded before Start, End decides how the last stretch finishes, and Reset wipes the sketch after asking. |

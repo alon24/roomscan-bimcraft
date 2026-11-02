@@ -407,6 +407,57 @@ def photos_of(d: Path, p: list[float], frames: list[dict], most: int = 4) -> lis
     return out
 
 
+def _camera(ph: dict) -> tuple:
+    M = np.asarray(ph["transform"], float).T
+    k = ph["intrinsics"]
+    return M, float(k[0][0]), float(k[1][1]), float(k[2][0]), float(k[2][1]), float(ph["width"]), float(ph["height"])
+
+
+def photo_point(d: Path, ph: dict, a: float, b: float) -> list[float] | None:
+    """A spot in a photo as shown the right way up (0 to 1) becomes a place in the room, from the LiDAR reading the phone took with that photo. None if it has no reading there."""
+    M, fx, fy, cx, cy, w, h = _camera(ph)
+    t = ph["transform"]
+    x_up, y_up = t[0][1], t[1][1]
+    if abs(x_up) > abs(y_up):
+        v, u = (a * h, (1 - b) * w) if x_up > 0 else ((1 - a) * h, b * w)
+    elif y_up < 0:
+        u, v = (1 - a) * w, (1 - b) * h
+    else:
+        u, v = a * w, b * h
+    dm = meshscan._depth_map(d, ph) if ph.get("depth_file") else None
+    if dm is None:
+        return None
+    dh, dw = dm.shape
+    i, j = int(v * dh / h), int(u * dw / w)
+    near = dm[max(i - 2, 0):i + 3, max(j - 2, 0):j + 3]
+    near = near[near > 0.1]
+    if not near.size:
+        return None
+    z = float(np.median(near))
+    return [round(float(x), 4) for x in M[:3, 3] + M[:3, :3] @ np.array([(u - cx) * z / fx, (cy - v) * z / fy, -z])]
+
+
+def seen_in(d: Path, ph: dict, points: list[dict]) -> list[str]:
+    """The points this photo really shows: in the picture and with nothing in front of them."""
+    M, fx, fy, cx, cy, w, h = _camera(ph)
+    dm = meshscan._depth_map(d, ph) if ph.get("depth_file") else None
+    out = []
+    for p in points:
+        pc = (np.array([p["x"], p["y"], p["z"]], float) - M[:3, 3]) @ M[:3, :3]
+        z = -pc[2]
+        if z < 0.1:
+            continue
+        u, v = fx * pc[0] / z + cx, cy - fy * pc[1] / z
+        if not (0 <= u < w and 0 <= v < h):
+            continue
+        if dm is not None:
+            seen = dm[min(int(v * dm.shape[0] / h), dm.shape[0] - 1), min(int(u * dm.shape[1] / w), dm.shape[1] - 1)]
+            if seen > 0.1 and z > seen + 0.3:
+                continue
+        out.append(p["id"])
+    return out
+
+
 def openings_from(points: list[dict], v: list[list[float]], gaps: list[bool], floor_y: float) -> list[dict]:
     """Doors and windows from their clicks. Clicks close together along one wall are one opening: how far they spread gives its width, their lowest and highest its height.
     A size the clicks don't show is marked unknown, and a usual one is used. All in plan x, y before the drawing turn."""

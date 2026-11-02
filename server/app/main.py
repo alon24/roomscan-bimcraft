@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -160,7 +161,17 @@ def _build_walk(d: Path, force: bool = False) -> dict | None:
     saved = d / "layout.json"
     if not force and saved.exists() and json.loads(saved.read_text()).get("edited"):
         return {"built": False, "kept": True}
-    return walk_mod.build(d, json.loads(f.read_text()))
+    old = json.loads(saved.read_text()) if saved.exists() else {}
+    out = walk_mod.build(d, json.loads(f.read_text()))
+    marked = [o for o in old.get("openings") or [] if o.get("marked")]
+    if marked and out.get("built"):           # doors and windows set by hand stay, and replace what the clicks made in the same place
+        new = json.loads(saved.read_text())
+        back = -float(old.get("turn_deg") or 0)
+        kept = [{**o, "at": layout_mod._rotate(layout_mod._rotate(o["at"], back), new.get("turn_deg") or 0)} for o in marked]
+        clear = lambda g: all(math.dist(g["at"], k["at"]) > (g.get("width", 1) + k.get("width", 1)) / 2 for k in kept)
+        new["openings"] = [g for g in new["openings"] if clear(g)] + kept
+        saved.write_text(json.dumps(new))
+    return out
 
 
 def _convert(d: Path) -> dict:
@@ -511,13 +522,24 @@ def walk_points(scan_id: str, body: dict):
 
 @app.post("/api/scans/{scan_id}/walk/edit")
 def walk_edit(scan_id: str, body: dict):
-    """Change one point by hand: {"id", "kind"?, "x"?, "y"?, "z"?}, or add one: {"add": {"x", "z", "y"?, "kind"?}}. Points are never deleted: "ignore" leaves one out of the plan.
+    """Change one point by hand: {"id", "kind"?, "x"?, "y"?, "z"?}, or add one: {"add": {"x", "z", "y"?, "kind"?}}. "ignore" leaves one out of the plan, {"delete": id} takes it away.
     Saved at once; the plan itself changes on Make the plan again."""
     d = _dir(scan_id)
     fp, fr = d / "walk_points.json", d / "walk_result.json"
     points = json.loads(fp.read_text()) if fp.exists() else []
     result = json.loads(fr.read_text()) if fr.exists() else {"points": [], "floor_y": None, "ceiling_y": None}
     new = body.get("add")
+    gone = body.get("delete")
+    if gone is not None:          # only when asked by hand. A copy stays in walk_deleted.json
+        raw = next((p for p in points if p["id"] == gone), None)
+        if raw is None:
+            raise HTTPException(404, "no such point")
+        bin_ = d / "walk_deleted.json"
+        bin_.write_text(json.dumps((json.loads(bin_.read_text()) if bin_.exists() else []) + [raw]))
+        fp.write_text(json.dumps([p for p in points if p["id"] != gone]))
+        result["points"] = [p for p in result["points"] if p["id"] != gone]
+        fr.write_text(json.dumps(result))
+        return {"deleted": gone}
     try:
         if isinstance(new, dict):
             fl, ce = result.get("floor_y"), result.get("ceiling_y")
@@ -557,11 +579,34 @@ def walk_colours(scan_id: str):
     return FileResponse(walk_mod.bake_colours(d), media_type="application/octet-stream")
 
 
+def _frame(d: Path, name: str) -> dict:
+    ph = next((p for p in frame_tools.manifest(d) if p.get("file") == name), None)
+    if not ph or not ph.get("transform") or not ph.get("intrinsics") or not ph.get("width"):
+        raise HTTPException(404, "no such photo")
+    return ph
+
+
+@app.get("/api/scans/{scan_id}/walk/from_photo")
+def walk_from_photo(scan_id: str, file: str, u: float, v: float):
+    """Where in the room a spot in a photo is, from that photo's LiDAR reading."""
+    d = _dir(scan_id)
+    p = walk_mod.photo_point(d, _frame(d, file), u, v)
+    return {"found": p is not None, **({"x": p[0], "y": p[1], "z": p[2]} if p else {})}
+
+
+@app.get("/api/scans/{scan_id}/walk/seen")
+def walk_seen(scan_id: str, file: str):
+    """The clicked points this photo really shows."""
+    d = _dir(scan_id)
+    f = d / "walk_result.json"
+    return {"ids": walk_mod.seen_in(d, _frame(d, file), json.loads(f.read_text())["points"]) if f.exists() else []}
+
+
 @app.get("/api/scans/{scan_id}/walk/photos")
-def walk_photos(scan_id: str, x: float, y: float, z: float):
+def walk_photos(scan_id: str, x: float, y: float, z: float, most: int = 4):
     """The photos that show this spot."""
     d = _dir(scan_id)
-    return {"photos": walk_mod.photos_of(d, [x, y, z], frame_tools.manifest(d))}
+    return {"photos": walk_mod.photos_of(d, [x, y, z], frame_tools.manifest(d), most=max(1, min(most, 12)))}
 
 
 @app.post("/api/scans/{scan_id}/walk/rebuild")
