@@ -41,6 +41,7 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
     let live = LiveLink()            // optional two-way link to the server (docs/live-guide.md)
     var liveWanted = false           // room scans: the Room tab asks for it
     var addTo: String?               // these frames go into this scan on the server, not a new one
+    private var spotNode: SCNNode?
     @Published var builtID: String?  // the scan the last upload made or added to
     var sweepMode = false
     @Published var ringActive = false
@@ -66,6 +67,25 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         super.init()
         sceneView.delegate = self
         sceneView.automaticallyUpdatesLighting = true
+    }
+
+    /// Adding to a sweep: a ring on the floor where it was taken, and a post rising from it, so it can be seen across the room.
+    private func showSpot(_ p: SIMD3<Float>, floorY: Float) {
+        let root = SCNNode()
+        root.simdPosition = SIMD3(p.x, floorY, p.z)
+        func paint(_ g: SCNGeometry) -> SCNNode {
+            g.firstMaterial?.diffuse.contents = UIColor.systemTeal.withAlphaComponent(0.85)
+            g.firstMaterial?.readsFromDepthBuffer = false
+            let n = SCNNode(geometry: g)
+            n.renderingOrder = 10
+            return n
+        }
+        root.addChildNode(paint(SCNTube(innerRadius: 0.22, outerRadius: 0.27, height: 0.01)))
+        let post = paint(SCNCylinder(radius: 0.012, height: 1.6))
+        post.position = SCNVector3(0, 0.8, 0)
+        root.addChildNode(post)
+        sceneView.scene.rootNode.addChildNode(root)
+        spotNode = root
     }
 
     /// Show the camera as soon as the tab opens, so it is clear the app is alive before anything is scanned.
@@ -124,6 +144,8 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         recorder?.maxPhotos = UserDefaults.standard.object(forKey: "allFrames") as? Bool ?? true ? 400 : 120
         ring.begin()
         sweep.reset()
+        sweep.waitingForSpot = sweepMode && addTo != nil
+        spotNode?.removeFromParentNode(); spotNode = nil
         if addTo != nil || (liveWanted && (UserDefaults.standard.object(forKey: "liveGuide") as? Bool ?? true)) {
             live.begin(server: ServerAddress.url, kind: sweepMode ? "sweep" : "room",
                        name: (sweepMode ? "Sweep " : "3D room ") + Date().formatted(), project: UserDefaults.standard.string(forKey: "project") ?? "", info: scanInfo, addTo: addTo)
@@ -135,6 +157,14 @@ final class MeshScanModel: NSObject, ObservableObject, ARSCNViewDelegate {
         coverageTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.ring.update(frame: self.sceneView.session.currentFrame, recorder: self.recorder)
+            if self.sweep.waitingForSpot, self.live.matched {
+                if let p = self.live.spot {
+                    self.sweep.setSpot(p)
+                    self.showSpot(p, floorY: self.live.floorY ?? p.y - 1.4)
+                } else {
+                    self.sweep.waitingForSpot = false
+                }
+            }
             if self.sweepMode, let f = self.sceneView.session.currentFrame { self.sweep.update(f) }
             self.live.pump(self.recorder, frame: self.sceneView.session.currentFrame)
         }
@@ -730,7 +760,7 @@ struct MeshScanView: View {
     private var guide: String {
         if !MeshScanModel.supported { return "Mesh scanning needs an iPhone with LiDAR." }
         if addTo != nil && !model.scanning && model.plyURL == nil {
-            return sweepMode ? "Adding to this sweep: stand where you stood before (within 50 cm), tap Start scan and film what was missing. Frames from elsewhere are left out."
+            return sweepMode ? "Adding to this sweep: tap Start scan and look around. The app finds where it is and leads you to where you stood, then you film what was missing."
                              : "Adding to this scan: start where something from the first scan is in view, tap Start scan and film what was missing."
         }
         if sweepMode && !model.scanning && model.plyURL == nil {

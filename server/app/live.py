@@ -487,6 +487,7 @@ class Session:
         return {**res, "T": None}
 
     def _commit_alignment(self, T: np.ndarray, rms_mm, msg: dict) -> None:
+        msg.update(spot_for_phone(self.d, T))
         with self.lock:
             self.T = T
             self.push(msg)               # in the same locked step as T: no map in the old frame can be sent before `aligned`
@@ -793,6 +794,19 @@ def start_finish(scan_id: str, info: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- the WebSocket
+
+def spot_for_phone(d: Path, T: np.ndarray) -> dict:
+    """Where a sweep was taken, in the coordinates of a phone adding to it (T: phone's world to the scan's), so it can lead you there."""
+    room = _read(d / "room.json", None)
+    if not room or not room.get("centre"):
+        return {}
+    Tinv = np.linalg.inv(T)
+    spot = Tinv[:3, :3] @ np.array(room["centre"], dtype=float) + Tinv[:3, 3]
+    out = {"spot": [round(float(v), 4) for v in spot]}
+    if (room.get("floor") or {}).get("wall_m"):
+        out["floor_y"] = round(float(spot[1] - room["floor"]["wall_m"]), 4)
+    return out
+
 
 async def _send(ws: WebSocket, sess: Session, obj: dict) -> None:
     async with sess.send_lock:

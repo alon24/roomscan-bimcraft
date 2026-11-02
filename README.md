@@ -206,7 +206,7 @@ Everything runs on your own server (OpenCV finds the card); nothing leaves it.
 #### Fix a scan without redoing it
 Open it in **Models**:
 - **Mark floor and ceiling points**: move close (zoom doesn't help: the LiDAR reading stays the same), aim the crosshair, press **Floor** or **Ceiling**. Each point floats where you marked it. The plan in the corner fills in as the LiDAR sees the room: grey = seen, blue = floor, orange = ceiling, dots = your points, arrow = you. **Save to the scan** makes the height come from your points. They don't need to be marked in the same visit as the scan.
-- **Add more to this scan**: film what was missing. For a sweep, stand where you stood before (within 50 cm): frames from elsewhere are left out.
+- **Add more to this scan**: for a sweep, tap **Start scan** and look around. Once the app finds where it is in the old scan, an arrow, a voice and a ring on the floor lead you to where you stood (frames from elsewhere could not be used). Then film what was missing.
 
 ### What the server builds from a sweep (360 picture and room model)
 For a scan made with **From one spot** (above) the server notices that every frame was taken from about the same spot (the app also
@@ -382,6 +382,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.53.1 | Add more to a sweep leads you back to where you stood: arrow, distance, voice and a ring on the floor. The LiDAR print's 3MF is now the one saved from Snapmaker Orca after a good print. |
 | 0.53.0 | **Mark floor and ceiling points** (after a sweep, or Models > a sweep): move close, aim the crosshair, press **Floor** or **Ceiling**. A point floats there, the height shows live, and a small plan in the corner shows what the LiDAR has seen and where your points are. **Save to the scan** makes that the room's height (it says what the sweep alone measured). The screen no longer goes to sleep while the app is open, and the room scan screens have no zoom buttons (pinch still zooms). **Add more to this scan** (Models): new frames go into the same scan. A sweep only uses frames from about the same spot. **Spoken guidance** during a sweep and the print calibration, also with the ring switch on silent. |
 | 0.52.0 (server) | **Sweeps line their frames up against each other.** ARKit's position for the phone drifts by up to about 40 cm in a sweep (turning on one spot and pointing at a blank ceiling give it little to go on), which moved the floor and ceiling from frame to frame. The server now corrects each frame's position from the surfaces and photo features it shares with the others. A living room measured 2.76 m high now measures 2.54 m (tape: 2.57 m). Press **Re-convert** on older sweeps. |
 | 0.51.2 (server) | Sweeps: the room view and panel show each **wall's width and height** and mark the corners, instead of the distance from you to each wall. |

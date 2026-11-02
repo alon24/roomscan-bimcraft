@@ -48,7 +48,12 @@ final class SweepCoverage: ObservableObject {
     var speedLevel: Level { speed > Self.speedBad ? .bad : speed > Self.speedOk ? .warn : .good }
     /// Photos are only kept while they are any use to the server: from the start spot, of the room. It drops the others anyway
     /// (sweep.main_spot, sweep.looks_at_you), and a frame taken 1.2 m away doubles the walls if it is kept.
-    var keepFrames: Bool { driftLevel != .bad && !onYou }
+    var keepFrames: Bool { !walking && driftLevel != .bad && !onYou }
+    /// Adding to a sweep: first the server has to find where the phone is (its frames are needed for that), then you walk to the spot.
+    var waitingForSpot = false
+    @Published var walking = false
+    @Published var spotDistance = 0.0        // metres to the spot
+    @Published var spotBearing = 0.0         // degrees, how far to turn to face it: + right
     /// Median turn speed over the scan, sent with the upload.
     var medianSpeed: Double { speeds.isEmpty ? 0 : speeds.sorted()[speeds.count / 2] }
 
@@ -57,6 +62,19 @@ final class SweepCoverage: ObservableObject {
         hint = Self.startHint
         moved = 0; maxMoved = 0; lift = 0; maxLift = 0; speed = 0; upDone = false; downDone = false; onYou = false
         origin = nil; last = nil; speeds = []; lastWarn = nil; lastSpoken = ""
+        waitingForSpot = false; walking = false
+    }
+
+    func setSpot(_ p: SIMD3<Float>) {
+        origin = p
+        waitingForSpot = false
+        walking = true
+    }
+
+    /// Say and show one instruction while this is not yet a normal sweep.
+    private func guide(_ text: String, say: String) {
+        hint = text
+        if say != lastSpoken { lastSpoken = say; Voice.say(say, every: 0) }
     }
 
     func share(_ band: Int) -> Double {
@@ -67,6 +85,10 @@ final class SweepCoverage: ObservableObject {
         guard case .normal = frame.camera.trackingState else { last = nil; return }
         let t = frame.camera.transform
         let pos = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        if waitingForSpot {
+            guide("Look around the room slowly, so the app can find where it is in the old scan.", say: "Look around the room slowly.")
+            return
+        }
         if origin == nil { origin = pos }
         let d = pos - origin!
         moved = Double(simd_length(SIMD2(d.x, d.z)))
@@ -74,6 +96,24 @@ final class SweepCoverage: ObservableObject {
         maxMoved = max(maxMoved, moved)
         maxLift = max(maxLift, abs(lift))
         onYou = Self.looksAtYou(frame)
+        if walking {
+            let to = origin! - pos
+            let along = SIMD2(to.x, to.z)
+            var ahead = SIMD2(-t.columns.2.x, -t.columns.2.z)
+            if simd_length(ahead) < 0.3 { ahead = SIMD2(-t.columns.0.x, -t.columns.0.z) }      // phone lying flat: its top edge
+            spotDistance = Double(simd_length(along))
+            spotBearing = Double(atan2(ahead.y * along.x * -1 + ahead.x * along.y, ahead.x * along.x + ahead.y * along.y)) * 180 / .pi
+            if moved <= Self.driftOk {               // arrived: what counts starts now
+                walking = false
+                cells = [Bool](repeating: false, count: 72)
+                maxMoved = 0; maxLift = 0; upDone = false; downDone = false; last = nil
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                guide("You're on the spot. Now film what was missing.", say: "You're on the spot. Now film what was missing.")
+            } else {
+                guide(String(format: "Walk %.1f m to the ring on the floor, and stand in the middle of it.", spotDistance), say: "Follow the arrow to the ring on the floor.")
+            }
+            return
+        }
 
         let f = -SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)        // where the camera looks (world, Y up)
         let fn = simd_normalize(f)
@@ -170,6 +210,13 @@ struct SweepPanel: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            if sweep.walking {
+                VStack(spacing: 2) {
+                    Image(systemName: "arrow.up").font(.system(size: 52, weight: .bold)).foregroundStyle(Theme.accent).rotationEffect(.degrees(sweep.spotBearing))
+                    Text(String(format: "%.1f m", sweep.spotDistance)).font(.headline.monospacedDigit())
+                }
+                .frame(width: 96, height: 96)
+            } else {
             ZStack {
                 RingCoverageDial(cells: sweep.cells)
                 VStack(spacing: 0) {   // straight up / straight down, in the middle of the dial
@@ -178,6 +225,7 @@ struct SweepPanel: View {
                 }.font(.system(size: 11, weight: .bold))
             }
             .frame(width: 96, height: 96)
+            }
             VStack(alignment: .leading, spacing: 5) {
                 Text(sweep.hint).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 5) {

@@ -187,3 +187,14 @@ def test_marked_points_set_the_height_and_can_be_taken_back(tmp_path):
     write({})
     sweep.apply_marks(room, tmp_path)
     assert room["height_m"] == 2.76 and room["ceiling"]["wall_m"] == 1.26 and "marks" not in room
+
+
+def test_a_phone_adding_to_a_sweep_is_told_where_the_spot_is_in_its_own_coordinates(tmp_path):
+    import json
+    from app import live
+    (tmp_path / "room.json").write_text(json.dumps({"centre": [1.0, 0.0, 2.0], "floor": {"wall_m": 1.5}}))
+    T = np.eye(4)
+    T[:3, 3] = [0.5, 0.25, -1.0]                 # the phone's world to the scan's
+    out = live.spot_for_phone(tmp_path, T)
+    assert out["spot"] == pytest.approx([0.5, -0.25, 3.0]) and out["floor_y"] == pytest.approx(-1.75)
+    assert live.spot_for_phone(tmp_path / "nothing", T) == {}

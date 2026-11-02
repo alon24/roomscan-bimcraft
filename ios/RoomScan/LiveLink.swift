@@ -70,6 +70,9 @@ final class LiveLink: NSObject, ObservableObject {
     @Published var needs: [LiveNeed] = []
     @Published var grid: LiveGrid?
     @Published var you: SIMD3<Float>?
+    @Published var matched = false           // adding to a scan: the server knows where this phone is in it
+    @Published var spot: SIMD3<Float>?       // and where that sweep was taken, in this phone's coordinates
+    var floorY: Float?
     @Published var waiting = 0            // frames the server has not confirmed yet
     @Published var note = ""              // what the link is doing, in words (for the finish step)
 
@@ -105,6 +108,7 @@ final class LiveLink: NSObject, ObservableObject {
         task?.cancel(with: .goingAway, reason: nil); task = nil
         scanID = nil; link = .off
         percent = 0; summary = ""; needs = []; grid = nil; you = nil; waiting = 0; note = ""
+        matched = false; spot = nil; floorY = nil
     }
 
     /// Reset or Save pressed: throw the draft away on the server too. `done(true)` once the server confirmed it is gone; if it could
@@ -238,6 +242,11 @@ final class LiveLink: NSObject, ObservableObject {
             Reporter.log("live: server error: \(note)")
         case "aligned":
             note = o["message"] as? String ?? note
+            if o["ok"] as? Bool == true {
+                if let s = o["spot"] as? [NSNumber], s.count == 3 { spot = SIMD3(s[0].floatValue, s[1].floatValue, s[2].floatValue) }
+                floorY = (o["floor_y"] as? NSNumber)?.floatValue
+                matched = true
+            }
         default: break
         }
     }
