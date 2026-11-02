@@ -111,6 +111,9 @@ def validate(body: dict) -> dict:
         if o.get("kind") not in ("door", "window"):
             raise ValueError("an opening is a door or a window")
         keep = {k: (float(o[k]) if k in ("width", "sill", "head") else bool(o[k])) for k in ("width", "sill", "head", "width_known", "height_known", "marked") if o.get(k) is not None}
+        ends = o.get("ends")          # where its two sides really are, world x, z: it need not lie exactly on the plan's wall
+        if isinstance(ends, list) and len(ends) == 2:
+            keep["ends"] = [[round(float(e[0]), 3), round(float(e[1]), 3)] for e in ends]
         openings.append({"kind": o["kind"], "at": [round(float(o["at"][0]), 3), round(float(o["at"][1]), 3)], **keep})
     if not all(math.isfinite(v) and abs(v) < 500 for p in clean + [o["at"] for o in openings] for v in p):
         raise ValueError("a point is out of range")

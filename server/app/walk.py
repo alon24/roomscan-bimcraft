@@ -475,7 +475,7 @@ def openings_from(points: list[dict], v: list[list[float]], gaps: list[bool], fl
             dist = math.dist(xy, [a[0] + dx / L * t, a[1] + dy / L * t])
             if best is None or dist < best[0]:
                 best = (dist, i, t)
-        near.setdefault((p["kind"], best[1]), []).append((best[2], p["y"] - floor_y))
+        near.setdefault((p["kind"], best[1]), []).append((best[2], p["y"] - floor_y, p["x"], p["z"]))
     out = []
     for (kind, i), hits in near.items():
         hits.sort()
@@ -491,8 +491,12 @@ def openings_from(points: list[dict], v: list[list[float]], gaps: list[bool], fl
             usual = USUAL[kind]
             sill = 0.0 if kind == "door" else (min(ys) if known_h else usual["sill"])
             head = max(max(ys), usual["head"]) if kind == "door" else (max(ys) if known_h else usual["head"])
-            out.append({"kind": kind, "at": [a[0] + (b[0] - a[0]) * mid / L, a[1] + (b[1] - a[1]) * mid / L], "width": round(wide if known_w else usual["width"], 3), "sill": round(max(sill, 0.0), 3),
-                        "head": round(head, 3), "width_known": known_w, "height_known": known_h or kind == "door", "clicks": len(g)})
+            one = {"kind": kind, "at": [a[0] + (b[0] - a[0]) * mid / L, a[1] + (b[1] - a[1]) * mid / L], "width": round(wide if known_w else usual["width"], 3), "sill": round(max(sill, 0.0), 3),
+                   "head": round(head, 3), "width_known": known_w, "height_known": known_h or kind == "door", "clicks": len(g)}
+            if known_w:          # its sides are at the clicks themselves
+                one["ends"] = [[round(g[0][2], 3), round(g[0][3], 3)], [round(g[-1][2], 3), round(g[-1][3], 3)]]
+                one["width"] = round(math.hypot(g[0][2] - g[-1][2], g[0][3] - g[-1][3]), 3)
+            out.append(one)
         for h in hits[1:]:
             if h[0] - group[-1][0] > OPENING_LINK:
                 close(group)

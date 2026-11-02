@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import os
 import shutil
 
@@ -555,3 +556,15 @@ def test_making_the_plan_again_keeps_doors_marked_by_hand(tmp_path, monkeypatch)
     assert [o["kind"] for o in got] == ["window", "door"] and got[0]["at"] == [8.0, 8.0]
     assert got[1]["at"] == pytest.approx(layout._rotate([1.0, 0.0], -90), abs=1e-3)
     assert got[1]["marked"] is True and layout.validate({"vertices": [[0, 0], [1, 0], [1, 1]], "height_m": 2.5, "openings": got})["openings"][1]["marked"] is True
+
+
+def test_a_door_stands_at_its_clicks_not_on_the_plan_wall():
+    from app import layout, walk
+    v = [[0.0, 0.0], [0.0, 4.0], [5.0, 4.0], [5.0, 0.0]]
+    click = lambda x, y, z: {"kind": "door", "x": x, "y": y, "z": z}
+    # the south wall is at z = 0, the real door is on a slant off it
+    got = walk.openings_from([click(1.0, 0.7, -0.1), click(2.0, -1.4, 0.1)], v, [False] * 4, -1.4)[0]
+    assert sorted(got["ends"]) == [[1.0, -0.1], [2.0, 0.1]]
+    assert got["width"] == pytest.approx(math.hypot(1.0, 0.2), abs=1e-3)
+    kept = layout.validate({"vertices": v, "height_m": 2.5, "openings": [got]})["openings"][0]
+    assert kept["ends"] == got["ends"]

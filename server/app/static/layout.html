@@ -74,7 +74,7 @@
   <div id="wrap"><svg id="svg"></svg><div id="gl" hidden></div><div id="tip"><span id="tipText"></span></div>
     <div id="mk" hidden>
       <div id="mkBar">
-        <button id="mkPoint">Add a point</button><select id="mkKind" aria-label="What the new point is"></select><button id="mkDoor">Draw a door</button><button id="mkWindow">Draw a window</button>
+        <button id="mkPoint">Add a point</button><select id="mkKind" aria-label="What the new point is"></select><button id="mkWall">Draw a wall</button><button id="mkDoor">Draw a door</button><button id="mkWindow">Draw a window</button>
         <span id="mkMsg" class="mute" style="flex:1;min-width:160px"></span>
         <button id="mkPrev" aria-label="Previous photo">‹</button><span id="mkCount" class="mute"></span><button id="mkNext" aria-label="Next photo">›</button>
         <button id="mkClose" class="main">Close (Esc)</button>
@@ -368,7 +368,7 @@ function panel() {
       i.onchange = () => { const v = parseFloat(i.value); if (!(v >= 0)) return; i.blur(); remember(); apply(v); o.marked = true; changed(); };
       r.append(l, " ", i, " m"); P.append(r);
     };
-    size("Width", o.width || (door ? .9 : 1.2), v => { if (v > .04) { o.width = v; o.width_known = true; } });
+    size("Width", o.width || (door ? .9 : 1.2), v => { if (v > .04) { const b = openingBox(o), m = (b.s0 + b.s1) / 2; b.s0 = m - v / 2; b.s1 = m + v / 2; const sill = o.sill, head = o.head; setOpening(o, { ...b, h0: sill ?? b.h0, h1: head ?? b.h1 }); o.height_known = !!o.height_known; } });
     if (!door) size("Bottom above the floor", o.sill ?? .9, v => { o.sill = v; o.head = Math.max(o.head ?? 2.1, v + .05); o.height_known = true; });
     size(door ? "Height" : "Top above the floor", o.head ?? 2.1, v => { if (v > (o.sill ?? (door ? 0 : .9))) { o.head = v; if (door) o.sill = 0; o.sill ??= .9; o.height_known = true; } });
     const n = document.createElement("div"); n.className = "mute"; n.textContent = "Drag it to slide it along the wall."; P.append(n);
@@ -490,7 +490,7 @@ svg.addEventListener("pointermove", e => {
     const [wx, wz] = planToWorld(toPlan(x, y)), w = walk[drag.point];
     w.x = wx; w.z = wz; drag.moved = true; draw(); return;
   }
-  if (drag.opening != null) { const q = toPlan(x, y); L.openings[drag.opening].at = [+q[0].toFixed(3), +q[1].toFixed(3)]; drag.moved = true; draw(); return; }
+  if (drag.opening != null) { const q = toPlan(x, y); moveOpening(L.openings[drag.opening], q); drag.moved = true; draw(); return; }
   const p = toPlan(x, y); L.vertices[drag.corner] = [+p[0].toFixed(3), +p[1].toFixed(3)]; drag.moved = true; draw();
 });
 svg.addEventListener("pointerup", async () => {
@@ -589,7 +589,13 @@ $("ppShow").onchange = photo3d;
 
 // Marking on a photo. A photo knows where its camera was, so a spot in the picture is a line through the room, and where that line meets a wall of the plan is a place on that wall.
 // A door or window is kept as its place on the wall, so its edges in the picture and its size are the same thing.
-let mkDraw = null, mkStart = null, mkHold = null, mkW = 0, mkH = 0, mkSeen = new Set();
+let mkDraw = null, mkStart = null, mkHold = null, mkW = 0, mkH = 0, mkSeen = new Set(), mkSnap = null;
+// the point this spot in the photo is on, if it is close enough to mean it
+function pointNear(f, a, b) {
+  let best = null, bd = 20;
+  walk.forEach((w, i) => { if (!mkSeen.has(w.id)) return; const q = camPoint(f, [w.x, w.y, w.z]); if (!q) return; const d = Math.hypot((q[0] - a) * mkW, (q[1] - b) * mkH); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
 $("mkKind").append(...Object.keys(WALK_NAME).filter(k => k !== "ignore").map(k => Object.assign(document.createElement("option"), { value: k, textContent: WALK_NAME[k] })));
 $("mkKind").value = "corner";
 // a spot in the photo as a place in the room: the LiDAR reading there, or else the wall the photo looks at
@@ -630,13 +636,30 @@ function wallUnder(ray) {          // the nearest wall that this line actually m
   for (const w of wallsOf()) { if (L.open[w.i]) continue; const fr = wallFrame(w), m = onWall(fr, ray); if (m && m.s > -.3 && m.s < fr.l + .3 && m.h > -.5 && m.h < L.height_m + .5 && (!best || m.c < best.m.c)) best = { fr, m, w }; }
   return best;
 }
+function moveOpening(o, p) {
+  if (o.ends) {
+    const [a, b] = o.ends.map(e => worldToPlan(e[0], e[1])), dx = p[0] - (a[0] + b[0]) / 2, dy = p[1] - (a[1] + b[1]) / 2;
+    o.ends = [a, b].map(q => planToWorld([q[0] + dx, q[1] + dy]).map(v => +v.toFixed(3)));
+  }
+  o.at = [+p[0].toFixed(3), +p[1].toFixed(3)];
+}
+function endsFrame(ends) {
+  const a = worldToPlan(ends[0][0], ends[0][1]), b = worldToPlan(ends[1][0], ends[1][1]), l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-9;
+  return { a, ux: (b[0] - a[0]) / l, uy: (b[1] - a[1]) / l, l };
+}
 function openingBox(o) {
+  if (o.ends) { const fr = endsFrame(o.ends), door = o.kind === "door"; return { fr, own: true, s0: 0, s1: fr.l, h0: o.sill ?? (door ? 0 : .9), h1: o.head ?? 2.1 }; }
   const n = nearestOnWall(o.at), fr = wallFrame(n.w), door = o.kind === "door", mid = n.t * fr.l, wd = o.width || (door ? .9 : 1.2);
   return { fr, s0: mid - wd / 2, s1: mid + wd / 2, h0: o.sill ?? (door ? 0 : .9), h1: o.head ?? 2.1 };
 }
 function setOpening(o, b) {
-  const mid = Math.max(0, Math.min(b.fr.l, (b.s0 + b.s1) / 2));
-  o.at = [+(b.fr.a[0] + b.fr.ux * mid).toFixed(3), +(b.fr.a[1] + b.fr.uy * mid).toFixed(3)];
+  const planAt = s => [b.fr.a[0] + b.fr.ux * s, b.fr.a[1] + b.fr.uy * s];
+  if (b.own) {
+    o.ends = [planAt(b.s0), planAt(b.s1)].map(q => planToWorld(q).map(v => +v.toFixed(3)));
+    const q = nearestOnWall(planAt((b.s0 + b.s1) / 2)).q; o.at = [+q[0].toFixed(3), +q[1].toFixed(3)];
+  } else {
+    const q = planAt(Math.max(0, Math.min(b.fr.l, (b.s0 + b.s1) / 2))); o.at = [+q[0].toFixed(3), +q[1].toFixed(3)];
+  }
   o.width = +Math.max(.1, b.s1 - b.s0).toFixed(3); o.width_known = true; o.marked = true;
   o.sill = o.kind === "door" ? 0 : +Math.max(0, b.h0).toFixed(3);
   o.head = +Math.max(o.sill + .1, b.h1).toFixed(3); o.height_known = true;
@@ -653,10 +676,10 @@ function mkLoad() {
   fetch(`/api/scans/${id}/walk/seen?file=${encodeURIComponent(f.file)}`).then(r => r.ok ? r.json() : { ids: [] }).then(j => { if (mkF() === f) { mkSeen = new Set(j.ids); mkRender(); } }).catch(() => {});
 }
 function mkMode(kind) {
-  mkDraw = kind; mkStart = null;
-  $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
+  mkDraw = kind; mkStart = null; mkSnap = null;
+  $("mkWall").classList.toggle("on", kind === "wall"); $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
   $("mkSvg").style.cursor = kind ? "crosshair" : "default";
-  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind ? `Click one corner of the ${kind}, then the opposite corner.` : "Press Add a point to add one. Click a point, door or window to select it, and drag it to where it really is.";
+  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind === "wall" ? "Click two spots on the wall, at any height. A click on a point sticks to it." : kind ? `Click one corner of the ${kind}, then the opposite corner. A click on a point sticks to it.` : "Press Add a point to add one. Click a point, door or window to select it. Drag a point, an edge or a square plan corner to where it really is.";
   mkRender();
 }
 function mkRender() {
@@ -664,6 +687,23 @@ function mkRender() {
   const el = (n, at) => { const e = document.createElementNS(NS, n); for (const k in at) e.setAttribute(k, at[k]); svgM.append(e); return e; };
   const px = (fr, s, h) => { const q = camPoint(f, wallSpot(fr, s, h)); return q && [q[0] * mkW, q[1] * mkH]; };
   const quad = b => { const c = [px(b.fr, b.s0, b.h0), px(b.fr, b.s1, b.h0), px(b.fr, b.s1, b.h1), px(b.fr, b.s0, b.h1)]; return c.every(Boolean) ? c : null; };
+  const fl = scene?.floor ?? 0, inPhoto = (x, z, y) => { const q = camPoint(f, [x, y, z]); return q && [q[0] * mkW, q[1] * mkH]; };
+  for (const w of wallsOf()) {
+    const A = planToWorld(w.a), B = planToWorld(w.b), on = sel?.wall === w.i, colour = on ? "#ff2f86" : L.open[w.i] ? "#ffb066" : "#2fe0cf";
+    for (const y of [fl, fl + L.height_m]) {
+      const p = inPhoto(A[0], A[1], y), q = inPhoto(B[0], B[1], y);
+      if (p && q) el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: colour, "stroke-width": on ? 3 : 2, "stroke-dasharray": L.open[w.i] ? "6 5" : "none", "pointer-events": "none" });
+    }
+  }
+  L.vertices.forEach((v, k) => {
+    const A = planToWorld(v), held = mkHold?.corner === k && mkHold.at, bits = held ? [[held[0] * mkW, held[1] * mkH]] : [inPhoto(A[0], A[1], fl), inPhoto(A[0], A[1], fl + L.height_m)];
+    bits.forEach(p => {
+      if (!p || p[0] < 0 || p[1] < 0 || p[0] > mkW || p[1] > mkH) return;
+      el("rect", { x: p[0] - 7, y: p[1] - 7, width: 14, height: 14, fill: "#2fe0cf", stroke: "#000", "stroke-width": 2, "data-corner": k, style: "cursor:move" });
+      const t = el("text", { x: p[0] + 11, y: p[1] - 9, fill: "#2fe0cf", "font-size": 13, "font-weight": 700, "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
+      t.textContent = `Plan corner ${k + 1}`;
+    });
+  });
   L.openings.forEach((o, k) => {
     const b = openingBox(o), c = quad(b); if (!c) return;
     const on = sel?.opening === k, colour = on ? "#ff2f86" : o.kind === "door" ? "#ff9a4d" : "#b98cff";
@@ -687,18 +727,64 @@ function mkRender() {
     t.textContent = `${i + 1} ${WALK_NAME[w.kind] || w.kind}`;
   });
   if (mkStart?.now) {
-    const b = { fr: mkStart.fr, s0: mkStart.s, s1: mkStart.now.s, h0: mkStart.h, h1: mkStart.now.h }, c = quad(b);
-    if (c) el("polygon", { points: c.map(p => p.join(",")).join(" "), fill: "#35e06a", "fill-opacity": .2, stroke: "#35e06a", "stroke-width": 2, "pointer-events": "none" });
+    const [a, b] = mkStart.at, [c, d] = mkStart.now;
+    if (mkDraw === "wall") el("line", { x1: a * mkW, y1: b * mkH, x2: c * mkW, y2: d * mkH, stroke: "#35e06a", "stroke-width": 3, "stroke-dasharray": "6 4", "pointer-events": "none" });
+    else el("rect", { x: Math.min(a, c) * mkW, y: Math.min(b, d) * mkH, width: Math.abs(c - a) * mkW, height: Math.abs(d - b) * mkH, fill: "#35e06a", "fill-opacity": .12, stroke: "#35e06a", "stroke-width": 2, "stroke-dasharray": "6 4", "pointer-events": "none" });
+  }
+  if (((mkDraw && mkDraw !== "point") || mkHold?.corner != null) && mkSnap != null && walk[mkSnap]) {
+    const q = camPoint(f, [walk[mkSnap].x, walk[mkSnap].y, walk[mkSnap].z]);
+    if (q) el("circle", { cx: q[0] * mkW, cy: q[1] * mkH, r: 15, fill: "none", stroke: "#35e06a", "stroke-width": 4, "pointer-events": "none" });
   }
 }
 const mkAt = e => { const r = $("mkSvg").getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
-function mkFinish(end) {
-  const a = mkStart, kind = mkDraw;
-  if (Math.abs(end.s - a.s) < .1 || Math.abs(end.h - a.h) < .1) { $("mkMsg").textContent = "That is too small. Click the opposite corner."; a.now = null; return; }
+// Two opposite corners, where they really are in the room: its sides stand at them, so it takes their angle and not the plan wall's.
+function mkFinish(q) {
+  if (mkDraw === "wall") return mkWallDone(worldToPlan(mkStart.q.x, mkStart.q.z), worldToPlan(q.x, q.z));
+  const a = mkStart.q, kind = mkDraw, fl = scene?.floor ?? 0, fr = endsFrame([[a.x, a.z], [q.x, q.z]]), h0 = Math.min(a.y, q.y) - fl, h1 = Math.max(a.y, q.y) - fl;
+  if (fr.l < .1 || h1 - h0 < .1) { $("mkMsg").textContent = "Those are too close. Click the opposite corner."; return; }
   remember();
-  const o = { kind };
-  setOpening(o, { fr: a.fr, s0: Math.min(a.s, end.s), s1: Math.max(a.s, end.s), h0: Math.min(a.h, end.h), h1: Math.max(a.h, end.h) });
+  const o = { kind, at: [0, 0] };
+  setOpening(o, { fr, own: true, s0: 0, s1: fr.l, h0, h1 });
   L.openings.push(o); sel = { opening: L.openings.length - 1 }; mkMode(null); changed();
+}
+// A wall through two real spots. If the plan has a wall like it, that wall moves there and its neighbours stretch to meet it, so the outline stays closed; if not, it is a new stretch of the outline.
+function mkWallDone(A, B) {
+  const l = Math.hypot(B[0] - A[0], B[1] - A[1]);
+  if (l < .1) { $("mkMsg").textContent = "Those are too close. Click a second spot further along the wall."; return; }
+  const ux = (B[0] - A[0]) / l, uy = (B[1] - A[1]) / l, off = (p, a, x, y) => Math.abs((p[0] - a[0]) * y - (p[1] - a[1]) * x);
+  let best = null;
+  for (const w of wallsOf()) {
+    const L1 = len(w) || 1e-9, x = (w.b[0] - w.a[0]) / L1, y = (w.b[1] - w.a[1]) / L1;
+    if (Math.abs(ux * y - uy * x) > Math.sin(25 * Math.PI / 180)) continue;
+    const d = Math.max(off(A, w.a, x, y), off(B, w.a, x, y)), t = [A, B].map(p => (p[0] - w.a[0]) * x + (p[1] - w.a[1]) * y);
+    if (d < .8 && Math.max(...t) > -.3 && Math.min(...t) < L1 + .3 && (!best || d < best.d)) best = { w, d };
+  }
+  const n = L.vertices.length, V = L.vertices, round = p => [+p[0].toFixed(3), +p[1].toFixed(3)];
+  const meet = (p, q) => {            // where the new wall's line meets the line p to q
+    const x = q[0] - p[0], y = q[1] - p[1], under = ux * y - uy * x;
+    if (Math.abs(under) < .1) return null;
+    const t = ((p[0] - A[0]) * y - (p[1] - A[1]) * x) / under;
+    return [A[0] + ux * t, A[1] + uy * t];
+  };
+  remember();
+  if (best) {
+    const i = best.w.i, j = (i + 1) % n, along = p => (p[0] - A[0]) * ux + (p[1] - A[1]) * uy, startsA = along(V[i]) < along(V[j]);
+    const near = (m, was, far) => m && Math.hypot(m[0] - was[0], m[1] - was[1]) < 1.5 ? m : far;
+    const a = near(meet(V[(i + n - 1) % n], V[i]), V[i], startsA ? A : B), b = near(meet(V[j], V[(j + 1) % n]), V[j], startsA ? B : A);
+    V[i] = round(a); V[j] = round(b); L.open[i] = false;
+    sel = { wall: i }; $("mkMsg").textContent = `Wall ${i + 1} now runs through those two spots.`;
+  } else {
+    const mid = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], w = nearestOnWall(mid).w, first = (A[0] - w.a[0]) * (w.b[0] - w.a[0]) + (A[1] - w.a[1]) * (w.b[1] - w.a[1]) < (B[0] - w.a[0]) * (w.b[0] - w.a[0]) + (B[1] - w.a[1]) * (w.b[1] - w.a[1]);
+    V.splice(w.i + 1, 0, round(first ? A : B), round(first ? B : A));
+    L.open.splice(w.i + 1, 0, false, L.open[w.i]);
+    sel = { wall: w.i + 1 }; $("mkMsg").textContent = "No wall like it, so this is a new stretch of the outline. Drag the plan corners if it joins the wrong way.";
+  }
+  const msg = $("mkMsg").textContent; mkMode(null); $("mkMsg").textContent = msg; changed();
+}
+async function mkCorner(f, a, b) {
+  const near = pointNear(f, a, b);
+  if (near != null) { const w = walk[near]; return { x: w.x, y: w.y, z: w.z, how: `on point ${near + 1}` }; }
+  return mkPlace(f, a, b);
 }
 $("mkSvg").addEventListener("pointerdown", async e => {
   e.preventDefault(); document.activeElement?.blur?.();
@@ -712,14 +798,16 @@ $("mkSvg").addEventListener("pointerdown", async e => {
     $("walkMsg").textContent = "Saved. Make the plan again to use it.";
     $("mkMsg").textContent = `Point ${walk.length} placed ${q.how}. Click the next, or Esc to stop.`; draw(); return;
   }
+  const cn = e.target.dataset?.corner;
+  if (!mkDraw && cn != null) { sel = { corner: +cn }; mkHold = { corner: +cn, at: null }; $("mkSvg").setPointerCapture(e.pointerId); draw(); return; }
   const pt = e.target.dataset?.point;
   if (!mkDraw && pt != null) { sel = { point: +pt }; mkHold = { point: +pt, at: null }; $("mkSvg").setPointerCapture(e.pointerId); draw(); return; }
   if (mkDraw) {
-    if (mkStart) { const m = onWall(mkStart.fr, ray); if (m) mkFinish(m); else $("mkMsg").textContent = "That is not on the same wall. Click the opposite corner."; mkRender(); return; }
-    const hit = wallUnder(ray);
-    if (!hit) { $("mkMsg").textContent = "There is no wall of the plan there, so I can't place it. Try another photo or fix the wall first."; return; }
-    mkStart = { fr: hit.fr, s: hit.m.s, h: hit.m.h, now: null };
-    $("mkMsg").textContent = `On wall ${hit.w.i + 1}. Now click the opposite corner.`;
+    const q = await mkCorner(f, a, b);
+    if (!q) { $("mkMsg").textContent = "No point, LiDAR reading or wall there, so I can't place that corner. Try another spot or photo."; return; }
+    if (mkStart) { mkFinish(q); mkRender(); return; }
+    mkStart = { q, at: [a, b], now: null };
+    $("mkMsg").textContent = `First corner placed ${q.how}. Now click the opposite corner.`;
     return;
   }
   const k = e.target.dataset?.opening;
@@ -730,10 +818,12 @@ $("mkSvg").addEventListener("pointerdown", async e => {
   $("mkSvg").setPointerCapture(e.pointerId);
 });
 $("mkSvg").addEventListener("pointermove", e => {
-  const f = mkF(); if (!f || (!mkHold && !mkStart)) return;
+  const f = mkF(); if (!f || (!mkHold && !mkStart && !mkDraw)) return;
   const [a, b] = mkAt(e), ray = camRay(f, a, b);
   if (mkHold?.point != null) { mkHold.at = [a, b]; mkRender(); return; }
-  if (mkStart) { mkStart.now = onWall(mkStart.fr, ray); mkRender(); return; }
+  if (mkHold?.corner != null) { mkHold.at = [a, b]; mkSnap = pointNear(f, a, b); mkRender(); return; }
+  if (mkDraw && mkDraw !== "point") { mkSnap = pointNear(f, a, b); if (mkStart) mkStart.now = [a, b]; mkRender(); return; }
+  if (mkDraw) return;
   const m = onWall(mkHold.box.fr, ray); if (!m) return;
   const h = mkHold, x = h.box, g = h.grab, o = L.openings[h.k];
   if (g === "body") { const d = m.s - h.from.s; x.s0 = h.base.s0 + d; x.s1 = h.base.s1 + d; }
@@ -745,6 +835,13 @@ $("mkSvg").addEventListener("pointermove", e => {
 });
 $("mkSvg").addEventListener("pointerup", async () => {
   if (!mkHold) return;
+  if (mkHold.corner != null) {
+    const k = mkHold.corner, at = mkHold.at; mkSnap = null;
+    if (!at) { mkHold = null; return; }
+    const q = await mkCorner(mkF(), at[0], at[1]); mkHold = null;
+    if (!q) { $("mkMsg").textContent = "No point, LiDAR reading or wall there, so the corner stayed where it was."; mkRender(); return; }
+    remember(); L.vertices[k] = worldToPlan(q.x, q.z); $("mkMsg").textContent = `Plan corner ${k + 1} moved ${q.how}.`; changed(); return;
+  }
   if (mkHold.point != null) {
     const w = walk[mkHold.point], at = mkHold.at, f = mkF();
     if (!at) { mkHold = null; return; }
@@ -757,6 +854,7 @@ $("mkSvg").addEventListener("pointerup", async () => {
   const moved = mkHold.moved; mkHold = null;
   if (moved) changed(); else { history.pop(); $("undo").disabled = !history.length; }
 });
+$("mkWall").onclick = () => mkMode(mkDraw === "wall" ? null : "wall");
 $("mkPoint").onclick = () => mkMode(mkDraw === "point" ? null : "point");
 $("mkDoor").onclick = () => mkMode(mkDraw === "door" ? null : "door");
 $("mkWindow").onclick = () => mkMode(mkDraw === "window" ? null : "window");
@@ -915,7 +1013,7 @@ function init3d() {
     if (act.opening != null) {
       const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
       const q = ray.ray.intersectPlane(act.plane, new T.Vector3());
-      if (q && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) > 3) { L.openings[act.opening].at = worldToPlan(q.x, q.z); act.moved = true; draw(); }
+      if (q && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) > 3) { moveOpening(L.openings[act.opening], worldToPlan(q.x, q.z)); act.moved = true; draw(); }
       return;
     }
     if (act.corner != null) {
@@ -1058,8 +1156,7 @@ function build3d() {
   });
   // doors and windows, in their real size on their walls
   L.openings.forEach((o, k) => {
-    const n = nearestOnWall(o.at), wd = (o.width || (o.kind === "door" ? .9 : 1.2)) / 2, sill = o.sill ?? (o.kind === "door" ? 0 : .9), head = o.head ?? (o.kind === "door" ? 2.1 : 2.1);
-    const dx = n.w.b[0] - n.w.a[0], dy = n.w.b[1] - n.w.a[1], ll = Math.hypot(dx, dy) || 1, a = [n.q[0] - dx / ll * wd, n.q[1] - dy / ll * wd], b = [n.q[0] + dx / ll * wd, n.q[1] + dy / ll * wd];
+    const box = openingBox(o), wd = (box.s1 - box.s0) / 2, sill = box.h0, head = box.h1, a = [box.fr.a[0] + box.fr.ux * box.s0, box.fr.a[1] + box.fr.uy * box.s0], b = [box.fr.a[0] + box.fr.ux * box.s1, box.fr.a[1] + box.fr.uy * box.s1];
     const p = [at(a, y0 + sill), at(b, y0 + sill), at(b, y0 + head), at(a, y0 + head)], colour = sel?.opening === k ? 0xe0226e : o.kind === "door" ? 0xa0522d : 0x7b3fc4;
     const g = new T.BufferGeometry().setFromPoints(p); g.setIndex([0, 1, 2, 0, 2, 3]);
     const q = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: .4, side: T.DoubleSide, depthWrite: false, depthTest: !xray })); q.renderOrder = 12; q.userData.opening = k; ov.add(q); G.hits.push(q);
