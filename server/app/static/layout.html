@@ -77,6 +77,15 @@
   #ppFrame { position:relative; width:fit-content; max-width:100%; margin:0 auto; border-radius:9px; overflow:hidden; background:var(--bg); }
   #ppImg { display:block; max-width:100%; max-height:30dvh; cursor:zoom-in; }
   #ppMark { width:100%; }
+  #flow { padding:0 0 10px; }
+  #flowSteps { display:flex; flex-wrap:wrap; gap:4px; margin:0 0 8px; }
+  #flowSteps button { flex:none; min-height:36px; padding:4px 10px; font-size:13px; }
+  .tick { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:99px; background:color-mix(in srgb, var(--acc) 16%, transparent); color:var(--acc); margin-left:6px; vertical-align:1px; }
+  .tick.warn { background:color-mix(in srgb, var(--door) 16%, transparent); color:var(--door); }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; margin:4px 0 8px; }
+  .chips button { min-height:36px; min-width:40px; padding:2px 8px; font-size:13px; }
+  .tape { display:grid; grid-template-columns:1fr 96px 44px; gap:6px; align-items:center; margin:4px 0; }
+  body.marking #flow { display:none; }
 
   #mk { position:fixed; inset:0; z-index:9; display:flex; flex-direction:column; background:#15191c; }
   #mk[hidden] { display:none; }
@@ -99,9 +108,16 @@
   #mkTools button.on { color:var(--acc); font-weight:700; }
   body.marking #side { z-index:10; bottom:0; height:auto; max-height:48dvh; transform:none; transition:none; }
   body.marking:not(.picked) #side, body.marking:not(.has-sel) #side { display:none; }
-  body.marking #sheetHead, body.marking #pointPhotos, body.marking #sheetBody > section, body.marking #sheetBody > details, body.marking #photoBox { display:none; }
+  body.marking #sheetHead, body.marking #pointPhotos, body.marking #sheetBody > section, body.marking #sheetBody > details, body.marking #photoBox, body.marking #flow { display:none; }
   body.marking #sheetBody { height:auto !important; padding-top:10px; }
 
+  @media (max-width:760px) {
+    body.flowing #sheetBody { display:flex; flex-direction:column; }
+    body.flowing #flow { order:1; flex:none; } body.flowing #pointPhotos { order:2; flex:none; } body.flowing #panel { order:3; flex:none; }
+    body.flowing #sheetBody > section, body.flowing #sheetBody > details, body.flowing #photoBox, body.flowing #ppHead, body.flowing #ppIn3d, body.flowing #ppMark { display:none; }
+    body.flowing #ppImg { max-height:34dvh; }
+    body.flowing #side[data-sheet=half] #sheetBody { flex:1; height:calc(55% - var(--peek)); }
+  }
   @media (min-width:761px) {
     :root { --top:auto; --peek:0px; --tools:0px; }
     body { font-size:14px; }
@@ -136,6 +152,8 @@
     #mkTools .i { width:18px; height:18px; }
     #mkInfo { order:3; font-size:14px; border-bottom:1px solid var(--line); } #mkStage { order:4; }
     body.marking #side { position:static; display:flex !important; height:auto; max-height:none; z-index:auto; }
+    body.marking #flow { display:block; }
+    body.marking #flow[hidden] { display:none; }
     body.marking #sheetHead, body.marking #sheetBody > section, body.marking #sheetBody > details { display:block; }
     body.marking #pointPhotos { display:block; } body.marking #pointPhotos[hidden] { display:none; }
     body.marking #sheetBody { padding-top:10px; }
@@ -146,6 +164,7 @@
 </head>
 <body>
 <svg style="display:none" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.500l3 3 5-6"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
   <symbol id="i-next" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
@@ -163,6 +182,7 @@
   <h1 id="name">Layout</h1>
   <span class="gap"></span>
   <nav id="tools" aria-label="Tools">
+    <button id="tCheck" title="Go through the walls, doors and windows, lengths, then build the files" aria-label="Check the room"><svg class="i"><use href="#i-check"/></svg><span class="long">Check the room</span><span class="short">Check</span></button>
     <button id="tSelect" title="Move" aria-label="Move" class="on"><svg class="i"><use href="#i-move"/></svg><span class="long">Move</span><span class="short">Move</span></button>
     <button id="tMeasure" title="Set a length" aria-label="Set a length"><svg class="i"><use href="#i-ruler"/></svg><span class="long">Set a length</span><span class="short">Length</span></button>
     <button id="tDoor" title="Add door" aria-label="Add door"><svg class="i"><use href="#i-door"/></svg><span class="long">Add door</span><span class="short">Door</span></button>
@@ -193,6 +213,7 @@
       <div id="prob"></div>
     </div>
     <div id="sheetBody">
+    <div id="flow" hidden></div>
     <div id="panel"></div>
     <div id="pointPhotos" hidden>
       <h2 id="ppHead">Photos of this point</h2>
@@ -228,8 +249,8 @@
     <details class="sec" id="walkBox" hidden><summary><h2>Points from the walk</h2></summary>
       <div id="walkKey" class="mute"></div>
       <table id="walkList" style="margin-top:6px"></table>
-      <button id="walkRebuild" style="margin-top:6px">Make the plan again from the points</button>
-      <div class="mute" style="margin-top:4px">Points are never deleted. "Ignore it" leaves one off the plan. Making the plan again replaces corrections to the plan itself, not to the points.</div>
+      <button id="walkRebuild" style="margin-top:6px">Make the walls again from the points</button>
+      <div class="mute" style="margin-top:4px">"Ignore it" leaves a point off the plan. Walls you haven't fixed follow their points by themselves, so this is only for starting the walls over. Confirmed walls and doors you set by hand always stay. Undo brings the rest back.</div>
       <div id="walkMsg" class="mute" style="margin-top:4px"></div>
     </details>
     <details class="sec"><summary><h2>Scans in this plan</h2></summary>
@@ -269,6 +290,8 @@ const narrow = matchMedia("(max-width:760px)"), coarse = matchMedia("(pointer:co
 const gap2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const id = new URLSearchParams(location.search).get("scan");
 const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
+let W = [], checks = [], loose = [], undoN = 0, flow = null;       // what the server knows about the walls, and the guided check
+const syncUndo = () => { $("undo").disabled = !undoN && !saveT; };
 let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
 let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = [], scanSeen = false, is3d = false, scene = null, joined = [], photos = new Map(), walk = [];
 const WALK = { corner: "#15191c", "floor edge": "#2478c8", "ceiling edge": "#d9761e", wall: "#0f9d8f", floor: "#6aa9e0", ceiling: "#efb27a", door: "#a0522d", window: "#7b3fc4", ignore: "#b9c0c6", unknown: "#e0226e" };
@@ -282,14 +305,39 @@ const fmt = m => m.toFixed(2) + " m";
 const area = v => Math.abs(v.reduce((s, a, i) => { const b = v[(i + 1) % v.length]; return s + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
 const clone = () => JSON.stringify({ v: L.vertices, o: L.openings, h: L.height_m, g: L.open });
 
-function remember() { history.push(clone()); if (history.length > 100) history.shift(); $("undo").disabled = false; }
+function remember() { history.push(clone()); if (history.length > 100) history.shift(); }
 function changed() { draw(); clearTimeout(saveT); saveT = setTimeout(save, 400); }
 async function save() {
   clearTimeout(saveT); saveT = null;
   const r = await fetch(`/api/scans/${id}/layout`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(L) });
   if (!r.ok) { $("prob").textContent = "Could not save: " + ((await r.json().catch(() => ({}))).detail || r.status); return false; }
-  const j = await r.json(); $("prob").textContent = j.problem || ""; return !j.problem;
+  const j = await r.json(); $("prob").textContent = j.problem || "";
+  meta(j);
+  if (JSON.stringify(j.vertices) !== JSON.stringify(L.vertices) || JSON.stringify(j.open) !== JSON.stringify(L.open)) { L.vertices = j.vertices; L.open = j.open; draw(); } else side();
+  return !j.problem;
 }
+function meta(j) { W = j.walls || []; checks = j.checks || []; loose = j.loose || []; undoN = j.undo || 0; syncUndo(); $("prob").textContent = j.problem || ""; }
+function takeView(j) {
+  meta(j);
+  Object.assign(L, { vertices: j.vertices, open: j.open, openings: j.openings || [], height_m: j.height_m, turn_deg: j.turn_deg || 0 }); $("height").value = L.height_m;
+  if (sel?.wall != null && !L.vertices[sel.wall]) sel = null;
+  if (sel?.opening != null && !L.openings[sel.opening]) sel = null;
+  if (sel?.corner != null && !L.vertices[sel.corner]) sel = null;
+}
+function say(text) { if (!$("mk").hidden) $("mkMsg").textContent = text; else { $("tipText").textContent = text; $("tip").classList.remove("quiet"); } }
+// one fix to the room, kept by the server
+async function doAct(op, args = {}) {
+  if (saveT) await save();
+  const r = await fetch(`/api/scans/${id}/layout/action`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op, ...args }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { say(j.detail || "That didn't work."); return null; }
+  takeView(j); draw(); return j;
+}
+async function pull() {
+  const r = await fetch(`/api/scans/${id}/layout/state`); if (!r.ok) return;
+  const j = await r.json(); walk = j.walk || []; takeView(j); renderWalk(); draw();
+}
+function pointSaved(text = "Saved.") { $("walkMsg").textContent = text; return pull(); }
 
 function el(name, attrs, parent = svg, text) {
   const e = document.createElementNS(NS, name);
@@ -357,7 +405,7 @@ function draw() {
   // the points clicked on the walk
   walk.forEach((w, i) => {
     const s = toScreen(walkPlan(w)), on = sel?.point === i;
-    el("circle", { cx: s[0], cy: s[1], r: on ? 8 : 5, fill: WALK[w.kind] || WALK.unknown, stroke: on ? c("--sel") : "#fff", "stroke-width": on ? 3 : 1.5, "data-point": i, style: "cursor:pointer" });
+    el("circle", { cx: s[0], cy: s[1], r: on || (sel?.wall != null && W[sel.wall]?.points.includes(w.id)) ? 8 : 5, fill: WALK[w.kind] || WALK.unknown, stroke: on ? c("--sel") : sel?.wall != null && W[sel.wall]?.points.includes(w.id) ? "#20c060" : "#fff", "stroke-width": on || (sel?.wall != null && W[sel.wall]?.points.includes(w.id)) ? 3 : 1.5, "data-point": i, style: "cursor:pointer" });
   });
   // a length being set
   measure.forEach((m, i) => { const s = toScreen(m.p); el("circle", { cx: s[0], cy: s[1], r: 6, fill: c("--acc") }); if (i) { const r = toScreen(measure[0].p); el("line", { x1: r[0], y1: r[1], x2: s[0], y2: s[1], stroke: c("--acc"), "stroke-width": 2.5, "stroke-dasharray": "6 4" }); } });
@@ -425,17 +473,18 @@ function stretch(a, b, to, from = null) {
 let lastSel = "null";
 function sheet(state) { $("side").dataset.sheet = state; if (state !== "peek") $("sheetBody").scrollTop = 0; }
 function panel() {
+  renderFlow();
   const P = $("panel"), key = JSON.stringify(sel) + (measure.length === 2);
   document.body.classList.toggle("has-sel", !!sel);
   if (key !== lastSel) { lastSel = key; const on = sel || measure.length === 2; if (on && $("side").dataset.sheet === "peek") sheet("half"); else if (!on && $("side").dataset.sheet === "half") sheet("peek"); }
   if (document.activeElement && P.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // don't remove what is being typed in
   P.replaceChildren();
   const head = t => { const h = document.createElement("h2"); h.textContent = t; P.append(h); };
-  const askLength = (label, value, apply) => {
+  const askLength = (label, value, apply, fromServer = false) => {
     const r = document.createElement("div"); r.className = "row";
     r.innerHTML = `<label for="wallLen">${label}</label> <input id="wallLen" type="number" step="0.001" min="0.05" value="${value.toFixed(3)}"> m <button id="applyLen" class="main">Set</button>`;
     P.append(r);
-    const go = () => { const v = parseFloat($("wallLen").value); if (!(v > .04)) return; $("wallLen").blur(); remember(); apply(v); changed(); };
+    const go = () => { const v = parseFloat($("wallLen").value); if (!(v > .04)) return; $("wallLen").blur(); if (fromServer) return apply(v); remember(); apply(v); changed(); };
     r.querySelector("#applyLen").onclick = go;
     r.querySelector("#wallLen").onkeydown = e => { if (e.key === "Enter") go(); e.stopPropagation(); };
   };
@@ -446,15 +495,28 @@ function panel() {
     const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past the second point moves to match."; P.append(n);
   } else if (sel?.wall != null && L.vertices.length) {
     const w = wallsOf()[sel.wall]; if (!w) return;
+    const m = W[w.i] || {}, btn = (text, go, cls) => { const b = document.createElement("button"); b.textContent = text; if (cls) b.className = cls; b.onclick = go; return b; };
     head(`Wall ${w.i + 1}`);
-    askLength("Real length", len(w), v => stretch(w.a, w.b, v, len(w) - .05));
-    const o = document.createElement("div"); o.className = "row";
-    const ob = document.createElement("button"); ob.textContent = L.open[w.i] ? "There is a wall here" : "No wall here: it's open";
-    ob.onclick = () => { remember(); L.open[w.i] = !L.open[w.i]; changed(); }; o.append(ob);
-    const add = document.createElement("button"); add.textContent = "Add a corner in the middle";
-    add.onclick = () => { remember(); L.vertices.splice(w.i + 1, 0, [+((w.a[0] + w.b[0]) / 2).toFixed(3), +((w.a[1] + w.b[1]) / 2).toFixed(3)]); L.open.splice(w.i + 1, 0, L.open[w.i]); sel = { corner: w.i + 1 }; changed(); };
-    o.append(add); P.append(o);
-    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past this wall's end moves to match."; P.append(n);
+    const hd = P.lastElementChild;
+    if (m.confirmed) hd.insertAdjacentHTML("beforeend", '<span class="tick">Confirmed</span>');
+    if (m.mixed) hd.insertAdjacentHTML("beforeend", '<span class="tick warn">Points disagree</span>');
+    const r1 = document.createElement("div"); r1.className = "row";
+    r1.append(m.confirmed ? btn("Not sure any more", () => doAct("confirm_wall", { wall: m.id, on: false })) : btn("Correct", async () => { if (await doAct("confirm_wall", { wall: m.id }) && flow?.step === "walls") nextWall(); }, "main"));
+    r1.append(btn("Move it", () => onPhoto("wall", m.id)), btn("Split it", () => onPhoto("split", m.id)));
+    r1.append(btn(L.open[w.i] ? "There is a wall here" : "It's open: no wall", () => doAct("set_open", { wall: m.id, on: !L.open[w.i] })), btn("Not a wall", () => doAct("not_a_wall", { wall: m.id }).then(j => { if (j) { sel = null; draw(); pointPhotos(); } })));
+    P.append(r1);
+    askLength("Tape says", m.length_m || len(w), v => doAct("set_length", { wall: m.id, m: v }), true);
+    if (m.length_m) P.append(btn("Forget the tape length", () => doAct("set_length", { wall: m.id, m: null })));
+    const chips = (title, ids, go) => {
+      if (!ids?.length) return;
+      const t = document.createElement("div"); t.className = "mute"; t.textContent = title; P.append(t);
+      const c = document.createElement("div"); c.className = "chips";
+      for (const pid of ids) { const i = walk.findIndex(p => p.id === pid); if (i >= 0) c.append(btn(String(i + 1), () => go(pid, i))); }
+      P.append(c);
+    };
+    if (m.mixed) { const t = document.createElement("div"); t.className = "mute"; t.textContent = "Its points are away from its line, so it may really be two surfaces. Split it, or take off the points that belong elsewhere."; P.append(t); }
+    chips("Its points, in green. Tap one to see it:", m.points, (pid, i) => select({ point: i }));
+    chips("Other points near it. Tap one to add it to this wall:", m.near, pid => doAct("assign_point", { point: pid, wall: m.id }));
   } else if (sel?.point != null && walk[sel.point]) {
     const w = walk[sel.point], k = w.kind;
     head(`Point ${sel.point + 1}: ${WALK_NAME[k] || k}`);
@@ -463,12 +525,20 @@ function panel() {
     pick.append(...Object.keys(WALK_NAME).map(n => Object.assign(document.createElement("option"), { value: n, textContent: WALK_NAME[n], selected: n === k })));
     pick.onchange = async () => {
       const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, kind: pick.value }) });
-      if (r.ok) { Object.assign(w, await r.json()); renderWalk(); draw(); $("walkMsg").textContent = "Saved. Make the plan again to use it."; }
+      if (r.ok) { Object.assign(w, await r.json()); renderWalk(); draw(); pointSaved(); }
     };
     row.append(pick); P.append(row);
     const n = document.createElement("div"); n.className = "mute";
     n.textContent = w.added ? "Added by hand." : `${w.guess === k ? "Worked out from" : "Your choice. The scan suggested: " + (WALK_NAME[w.guess] || w.guess) + ". It found"} ${w.walls} wall${w.walls === 1 ? "" : "s"} around it${w.fixed ? ". Placed by hand" : w.snapped_cm ? `, and moved it ${w.snapped_cm} cm onto the surface` : ""}. Drag it on the plan to move it.`;
     P.append(n);
+    if (W.length && ["corner", "floor edge", "ceiling edge", "wall"].includes(w.kind)) {
+      const on = W.findIndex(x => x.points.includes(w.id)), row2 = document.createElement("div"); row2.className = "row";
+      const lab = document.createElement("label"); lab.textContent = "Part of";
+      const wp = document.createElement("select");
+      wp.append(Object.assign(document.createElement("option"), { value: "", textContent: "No wall", selected: on < 0 }), ...W.map((x, i) => Object.assign(document.createElement("option"), { value: x.id, textContent: `Wall ${i + 1}`, selected: i === on })));
+      wp.onchange = () => doAct("assign_point", { point: w.id, wall: wp.value || null });
+      row2.append(lab, wp); P.append(row2);
+    }
     const del = document.createElement("button"); del.textContent = "Delete this point"; del.onclick = () => deletePoint(w); P.append(del);
     if (w.flag) { const f = document.createElement("div"); f.style.cssText = "color:var(--door);font-weight:600;margin-top:4px"; f.textContent = "⚑ " + w.flag; P.append(f); }
   } else if (sel?.corner != null) {
@@ -477,6 +547,12 @@ function panel() {
   } else if (sel?.opening != null && L.openings[sel.opening]) {
     const o = L.openings[sel.opening], door = o.kind === "door";
     head(door ? "Door" : "Window");
+    if (o.marked) P.lastElementChild.insertAdjacentHTML("beforeend", '<span class="tick">Confirmed</span>');
+    else {
+      const ok = document.createElement("button"); ok.className = "main"; ok.textContent = "Correct";
+      ok.onclick = async () => { if (await doAct("confirm_opening", { index: sel.opening }) && flow?.step === "openings") nextOpening(); };
+      P.append(ok);
+    }
     const row = document.createElement("div"); row.className = "row";
     const pick = document.createElement("select");
     pick.append(...[["door", "Door"], ["window", "Window"], ["wall", "It's a wall: nothing here"]].map(([v, t]) => Object.assign(document.createElement("option"), { value: v, textContent: t, selected: v === o.kind })));
@@ -509,9 +585,87 @@ function letGo() { document.activeElement?.blur?.(); measure = []; setTool("sele
 async function deletePoint(w) {
   const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: w.id }) });
   if (!r.ok) return;
-  walk.splice(walk.indexOf(w), 1); sel = null; renderWalk(); $("walkMsg").textContent = "Deleted. Make the plan again to use it."; draw(); if ($("mk").hidden) pointPhotos();
+  walk.splice(walk.indexOf(w), 1); sel = null; renderWalk(); pointSaved("Deleted."); draw(); if ($("mk").hidden) pointPhotos();
 }
 let tipSeen = false;
+// The guided check: walls, then doors and windows, then tape lengths, then build.
+function focusSpot(x, y, z) {
+  if (is3d && G) { G.target.set(x, y, z); G.r = Math.min(G.r, 6); place3d(); return; }
+  if (!is3d && L) { const p = worldToPlan(x, z), r = svg.getBoundingClientRect(); view.x = r.width / 2 - p[0] * view.s; view.y = r.height / 2 + p[1] * view.s; }
+}
+function pickWall(i) {
+  const w = wallsOf()[i]; if (!w) return;
+  const q = planToWorld([(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2]), y = (scene?.floor ?? 0) + 1.2;
+  focusSpot(q[0], y, q[1]); select({ wall: i, spot: [q[0], y, q[1]] });
+}
+function nextWall() {
+  const from = sel?.wall ?? -1, n = W.length;
+  for (let k = 1; k <= n; k++) { const i = (from + k + n) % n; if (!W[i].confirmed) return pickWall(i); }
+  sel = null; flow.step = "openings"; nextOpening();
+}
+function pickOpening(i) { const q = planToWorld(nearestOnWall(L.openings[i].at).q); focusSpot(q[0], (scene?.floor ?? 0) + 1.2, q[1]); select({ opening: i }); }
+function nextOpening() {
+  const i = L.openings.findIndex(o => !o.marked);
+  if (i >= 0) return pickOpening(i);
+  sel = null; draw(); pointPhotos();
+}
+async function onPhoto(mode, wall) {
+  if (!ppList.length) {
+    if (mode === "split") { await doAct("split_wall", { wall }); return; }
+    say("There are no photos of this spot. Drag the wall's corners on the plan instead."); return;
+  }
+  mkOpen(); mkMode(mode, wall);
+}
+function renderFlow() {
+  const F = $("flow"); F.hidden = !flow; if (!flow) { F.replaceChildren(); return; }
+  if (F.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+  F.replaceChildren();
+  const add = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; F.append(e); return e; };
+  const steps = add("div"); steps.id = "flowSteps";
+  for (const [k, t] of [["walls", "Walls"], ["openings", "Doors, windows"], ["tape", "Tape"], ["finish", "Finish"]]) {
+    const b = document.createElement("button"); b.textContent = t; if (flow.step === k) b.className = "on";
+    b.onclick = () => { flow.step = k; if (k === "walls") nextWall(); else if (k === "openings") nextOpening(); else { sel = null; draw(); pointPhotos(); } };
+    steps.append(b);
+  }
+  if (flow.step === "walls") {
+    const n = W.filter(w => w.confirmed).length;
+    add("div", `${n} of ${W.length} walls confirmed. Is this wall where the photo shows it?${narrow.matches ? " Slide this sheet down to see it in the room." : ""}`, "mute");
+    const r = add("div", null, "row"); const b = document.createElement("button"); b.textContent = "Skip to the next"; b.onclick = nextWall; r.append(b);
+  } else if (flow.step === "openings") {
+    const n = L.openings.filter(o => o.marked).length;
+    add("div", `${n} of ${L.openings.length} doors and windows confirmed. Select a wall to draw one on its photo.`, "mute");
+    const r = add("div", null, "chips");
+    L.openings.forEach((o, i) => { const b = document.createElement("button"); b.textContent = `${o.kind === "door" ? "Door" : "Window"} ${i + 1}${o.marked ? " ✓" : ""}`; b.onclick = () => pickOpening(i); r.append(b); });
+    const d = add("div", null, "row");
+    for (const k of ["door", "window"]) { const b = document.createElement("button"); b.textContent = k === "door" ? "Draw a door" : "Draw a window"; b.onclick = () => ppList.length ? (mkOpen(), mkMode(k)) : say("Select a wall first, so there's a photo to draw on."); d.append(b); }
+  } else if (flow.step === "tape") {
+    add("div", "Type what your tape says. The room adjusts to fit, moving confirmed walls least. Leave a box empty if you didn't measure it.", "mute");
+    wallsOf().forEach(w => {
+      const m = W[w.i] || {}, r = add("div", null, "tape");
+      const lab = document.createElement("span"); lab.textContent = `Wall ${w.i + 1}: ${len(w).toFixed(2)} m`;
+      const i = Object.assign(document.createElement("input"), { type: "number", step: "0.001", min: "0.05", placeholder: "Tape", value: m.length_m ?? "" });
+      i.setAttribute("aria-label", `Tape length of wall ${w.i + 1}`);
+      i.onkeydown = e => { if (e.key === "Enter") i.blur(); e.stopPropagation(); };
+      i.onchange = () => { i.blur(); doAct("set_length", { wall: m.id, m: i.value === "" ? null : parseFloat(i.value) }); };
+      const see = document.createElement("button"); see.className = "ico"; see.setAttribute("aria-label", `Show wall ${w.i + 1}`); see.innerHTML = '<svg class="i"><use href="#i-next"/></svg>'; see.onclick = () => pickWall(w.i);
+      r.append(lab, i, see);
+    });
+  } else {
+    const walls = W.filter(w => !w.confirmed).length, ops = L.openings.filter(o => !o.marked).length;
+    const list = [...checks];
+    if (walls) list.push({ level: "warn", text: `${walls} wall${walls > 1 ? "s" : ""} not confirmed yet.`, step: "walls" });
+    if (ops) list.push({ level: "warn", text: `${ops} door${ops > 1 ? "s or windows" : " or window"} not confirmed yet.`, step: "openings" });
+    if (loose.length) list.push({ level: "info", text: `${loose.length} point${loose.length > 1 ? "s" : ""} on no wall. That's fine for furniture, but check them if they're on a wall.`, points: true });
+    if (!list.length) add("div", "Everything is checked.", "mute");
+    for (const c of list) {
+      const r = add("div", null, "row"), t = document.createElement("span"); t.style.flex = "1"; t.textContent = c.text; if (c.level === "block") t.style.cssText = "flex:1;color:var(--warn);font-weight:600"; r.append(t);
+      if (c.wall != null || c.step) { const g = document.createElement("button"); g.textContent = "Show me"; g.onclick = () => { if (c.step) { flow.step = c.step; c.step === "walls" ? nextWall() : nextOpening(); } else { flow.step = "walls"; pickWall(c.wall); } }; r.append(g); }
+    }
+    const blocked = checks.some(c => c.level === "block"), b = add("button", "Build BIMCraft and Blender files", "main");
+    b.disabled = blocked; b.onclick = () => { const box = $("export").closest("details"); if (box) box.open = true; $("export").click(); box?.scrollIntoView({ block: "nearest" }); };
+    if (blocked) add("div", "Fix what's in red first.", "mute");
+  }
+}
 function tip() {
   const touchView = is3d ? "One finger turns · two fingers move and zoom · tap anything to select it" : "One finger moves · pinch to zoom · tap a corner or wall to select it";
   $("tip").classList.toggle("quiet", tool === "select" && tipSeen && (coarse || narrow.matches));
@@ -534,12 +688,12 @@ async function notAnOpening(k) {
     const p = worldToPlan(w.x, w.z), dx = p[0] - b.fr.a[0], dy = p[1] - b.fr.a[1], s = dx * b.fr.ux + dy * b.fr.uy;
     return s > b.s0 - .4 && s < b.s1 + .4 && Math.abs(dx * b.fr.uy - dy * b.fr.ux) < 1;
   });
-  remember(); L.openings.splice(k, 1); sel = null; changed();
+  remember(); L.openings.splice(k, 1); sel = null; await save();
   for (const w of clicks) {
     const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, kind: "wall" }) });
     if (r.ok) Object.assign(w, await r.json());
   }
-  renderWalk(); draw();
+  await pull();
   if (clicks.length) $("walkMsg").textContent = `Point${clicks.length > 1 ? "s" : ""} ${clicks.map(w => walk.indexOf(w) + 1).join(", ")} now say${clicks.length > 1 ? "" : "s"} On a wall.`;
 }
 function setTool(t) {
@@ -587,7 +741,7 @@ function tidy() {
 
 svg.addEventListener("mousedown", e => e.preventDefault());   // a click on the plan must not take the focus off the length box it just opened
 const planFingers = new Map(); let planPinch = null;
-function planCancel() { if (drag?.corner != null || drag?.opening != null) { history.pop(); $("undo").disabled = !history.length; } drag = null; }
+function planCancel() { if (drag?.corner != null || drag?.opening != null) { history.pop(); syncUndo(); } drag = null; }
 svg.addEventListener("pointerdown", e => {
   planFingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (planFingers.size === 2) { planCancel(); const [a, b] = planFingers.values(); planPinch = { d: gap2(a, b), s: view.s, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, vx: view.x, vy: view.y }; hold(svg, e); return; }
@@ -610,7 +764,7 @@ svg.addEventListener("pointerdown", e => {
     const [wx, wz] = planToWorld(p);
     fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ add: { x: wx, z: wz } }) }).then(r => r.ok ? r.json() : null).then(n => {
       if (!n) return;
-      walk.push(n); renderWalk(); setTool("select"); select({ point: walk.length - 1 }); $("walkMsg").textContent = "Saved. Say what it is, then make the plan again.";
+      walk.push(n); renderWalk(); setTool("select"); select({ point: walk.length - 1 }); pointSaved("Saved. Say what it is.");
     });
     return;
   }
@@ -651,11 +805,11 @@ svg.addEventListener("pointerup", async e => {
   if (drag?.point != null && drag.moved) {
     const w = walk[drag.point]; drag = null;
     const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, z: w.z }) });
-    if (r.ok) { Object.assign(w, await r.json()); $("walkMsg").textContent = "Saved. Make the plan again to use it."; pointPhotos(); draw(); }
+    if (r.ok) { Object.assign(w, await r.json()); pointSaved(); pointPhotos(); draw(); }
     return;
   }
   if (drag?.point != null) { drag = null; return; }
-  if (drag?.corner != null || drag?.opening != null) { if (drag.moved) changed(); else history.pop(), $("undo").disabled = !history.length; } drag = null; });
+  if (drag?.corner != null || drag?.opening != null) { if (drag.moved) changed(); else history.pop(), syncUndo(); } drag = null; });
 svg.addEventListener("dblclick", e => {
   if (tool !== "select" || e.target.dataset.wall == null) return;
   const r = svg.getBoundingClientRect(), p = toPlan(e.clientX - r.left, e.clientY - r.top), n = nearestOnWall(p);
@@ -698,10 +852,30 @@ if (!narrow.matches) for (const d of document.querySelectorAll("details.sec")) d
   head.addEventListener("pointerup", end); head.addEventListener("pointercancel", end);
   head.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sheet({ peek: "half", half: "full", full: "peek" }[side.dataset.sheet]); } });
 })();
+$("undo").onclick = async () => {
+  if (saveT) await save();
+  const r = await fetch(`/api/scans/${id}/layout/undo`, { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { say(j.detail || "Nothing to undo."); return; }
+  await pull();
+};
+$("height").onchange = () => { const h = parseFloat($("height").value); if (h >= 1 && h <= 10) { remember(); L.height_m = h; changed(); } };
+$("export").onclick = async () => {
+  const b = $("export"), m = $("exportMsg"); b.disabled = true; m.textContent = "Building…"; $("files").replaceChildren();
+  try {
+    await save();
+    const r = await fetch(`/api/scans/${id}/layout/export`, { method: "POST" }), j = await r.json();
+    if (!r.ok) { m.textContent = "BIMCraft could not build it: " + j.detail; return; }
+    m.textContent = "Ready:";
+    for (const f of j.files) { const a = document.createElement("a"); a.className = "dl"; a.href = `/api/scans/${id}/${f}`; a.download = f; a.textContent = f; $("files").append(a); }
+  } catch (e) { m.textContent = "Could not build: " + e; } finally { b.disabled = false; }
+};
+$("tCheck").onclick = () => { flow = flow ? null : { step: "walls" }; $("tCheck").classList.toggle("on", !!flow); document.body.classList.toggle("flowing", !!flow); if (flow) { sheet("full"); nextWall(); } else { sheet("peek"); draw(); } };
 $("reset").onclick = () => {        // starting again throws away hand corrections, so it asks with a second press
   const b = $("reset");
   if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "Press again to lose your corrections"; setTimeout(() => { delete b.dataset.sure; b.textContent = "Back to the scan's walls"; }, 4000); return; }
   delete b.dataset.sure; b.textContent = "Back to the scan's walls";
+  clearTimeout(saveT); saveT = null;
   fetch(`/api/scans/${id}/layout`, { method: "DELETE" }).then(() => reload());
 };
 $("fit").onclick = () => is3d ? view3d("start") : fit(); $("tidy").onclick = tidy;
@@ -882,7 +1056,7 @@ function mkLoupe(a, b) {          // what is under the finger, larger, out of it
   st.addEventListener("pointerdown", e => {
     on.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (on.size !== 2) return;
-    if (mkHold?.grab) { history.pop(); $("undo").disabled = !history.length; }
+    if (mkHold?.grab) { history.pop(); syncUndo(); }
     mkHold = null; mkAim = null; $("mkLoupe").hidden = true;
     const [a, b] = on.values(), r = st.getBoundingClientRect(), base = $("mkInner").offsetLeft, top = $("mkInner").offsetTop;
     p = { d: gap2(a, b), z: mkZoom, mx: (a.x + b.x) / 2 - r.left - base, my: (a.y + b.y) / 2 - r.top - top, x: mkX, y: mkY };
@@ -909,11 +1083,15 @@ function mkLoad() {
   mkSeen = new Set(); mkRender();
   fetch(`/api/scans/${id}/walk/seen?file=${encodeURIComponent(f.file)}`).then(r => r.ok ? r.json() : { ids: [] }).then(j => { if (mkF() === f) { mkSeen = new Set(j.ids); mkRender(); } }).catch(() => {});
 }
-function mkMode(kind) {
+let mkTarget = null;
+function mkMode(kind, target = null) {
+  mkTarget = target;
   if (kind) document.body.classList.remove("picked");          // the photo stays clear while drawing on it
   mkDraw = kind; mkStart = null; mkSnap = null; document.body.classList.toggle("adding", kind === "point" || !narrow.matches);
   $("mkWall").classList.toggle("on", kind === "wall"); $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
   $("mkSvg").style.cursor = kind ? "crosshair" : "default";
+  if (kind === "split") { $("mkMsg").textContent = "Click where this wall changes: it becomes two walls there."; mkRender(); return; }
+  if (kind === "wall" && target) { const i = W.findIndex(w => w.id === target); $("mkMsg").textContent = `Click two spots on the real wall, at any height. Wall ${i + 1} moves there.`; mkRender(); return; }
   $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind === "wall" ? "Click two spots on the wall, at any height. A click on a point sticks to it." : kind ? `Click the ${kind}'s 4 corners, in any order. A click on a point sticks to it.` : "Press Add a point to add one. Click a point, door or window to select it. Drag a point, a white corner or a square plan corner to where it really is.";
   mkRender();
 }
@@ -952,9 +1130,10 @@ function mkRender() {
   });
   walk.forEach((w, i) => {
     if (!mkSeen.has(w.id)) return;
+    const mine = sel?.wall != null && W[sel.wall]?.points.includes(w.id);
     const on = sel?.point === i, h = mkHold?.point === i && mkHold.at ? mkHold.at : camPoint(f, [w.x, w.y, w.z]); if (!h) return;
     const x = h[0] * mkW, y = h[1] * mkH, grip = { "data-point": i, style: "cursor:move" };
-    el("circle", { cx: x, cy: y, r: on ? 11 : 8, fill: WALK[w.kind] || WALK.unknown, stroke: on ? "#ff2f86" : "#fff", "stroke-width": on ? 4 : 2, ...grip });
+    el("circle", { cx: x, cy: y, r: on || mine ? 11 : 8, fill: WALK[w.kind] || WALK.unknown, stroke: on ? "#ff2f86" : mine ? "#35e06a" : "#fff", "stroke-width": on || mine ? 4 : 2, ...grip });
     const t = el("text", { x: x + 13, y: y + 5, fill: "#fff", "font-size": 14, "font-weight": 700, "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
     t.textContent = `${i + 1} ${WALK_NAME[w.kind] || w.kind}`;
   });
@@ -972,6 +1151,7 @@ function mkRender() {
 const mkAt = e => { const r = $("mkSvg").getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
 // Two opposite corners, where they really are in the room: its sides stand at them, so it takes their angle and not the plan wall's.
 function mkFinish(q) {
+  if (mkDraw === "wall" && mkTarget) { const t = mkTarget, a = mkStart.q; mkMode(null); document.body.classList.add("picked"); return doAct("move_wall", { wall: t, a: [a.x, a.z], b: [q.x, q.z] }).then(j => { if (j) $("mkMsg").textContent = "Moved. Check it on the other photos with the arrows."; }); }
   if (mkDraw === "wall") return mkWallDone(worldToPlan(mkStart.q.x, mkStart.q.z), worldToPlan(q.x, q.z));
   const pts = [...mkStart.qs.map(p => [p.x, p.y, p.z]), [q.x, q.y, q.z]].sort((p, r) => p[1] - r[1]);   // the lower two are the bottom
   let [b0, b1, t0, t1] = pts;
@@ -1023,13 +1203,20 @@ async function mkCorner(f, a, b) {
   return mkPlace(f, a, b);
 }
 async function mkPress(f, a, b) {
+  if (mkDraw === "split") {
+    const q = await mkCorner(f, a, b), t = mkTarget;
+    if (!q) { $("mkMsg").textContent = "No point, LiDAR reading or wall there. Try another spot or photo."; return; }
+    mkMode(null);
+    if (await doAct("split_wall", { wall: t, at: [q.x, q.z] })) { $("mkMsg").textContent = "Split. Select each part to move it, or to mark it open."; document.body.classList.add("picked"); }
+    return;
+  }
   if (mkDraw === "point") {
     const q = await mkPlace(f, a, b), kind = $("mkKind").value;
     if (!q) { $("mkMsg").textContent = "No LiDAR reading and no wall there, so I can't place it. Try another photo."; return; }
     const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ add: { x: q.x, y: q.y, z: q.z, kind } }) });
     if (!r.ok) return;
     const n = await r.json(); walk.push(n); mkSeen.add(n.id); sel = { point: walk.length - 1 }; renderWalk();
-    $("walkMsg").textContent = "Saved. Make the plan again to use it.";
+    pointSaved();
     $("mkMsg").textContent = `Point ${walk.length} placed ${q.how}. Click the next, or Esc to stop.`; draw(); return;
   }
   if (mkDraw) {
@@ -1076,7 +1263,7 @@ $("mkSvg").addEventListener("pointermove", e => {
   if (mkHold && mkHold.sx != null && !mkHold.at && Math.hypot(e.clientX - mkHold.sx, e.clientY - mkHold.sy) < 6) return;       // a tap with a little wobble is still a tap
   if (mkHold?.point != null) { mkHold.at = [a, b]; if (touch) mkLoupe(a, b); mkRender(); return; }
   if (mkHold?.corner != null || mkHold?.c != null) { mkHold.at = [a, b]; mkSnap = pointNear(f, a, b); if (touch) mkLoupe(a, b); mkRender(); return; }
-  if (mkDraw && mkDraw !== "point") { mkSnap = pointNear(f, a, b); if (mkStart) mkStart.now = [a, b]; mkRender(); return; }
+  if (mkDraw && mkDraw !== "point" && mkDraw !== "split") { mkSnap = pointNear(f, a, b); if (mkStart) mkStart.now = [a, b]; mkRender(); return; }
   if (mkDraw) return;
   const m = onWall(mkHold.box.fr, ray); if (!m) return;
   const h = mkHold, x = h.box, g = h.grab, o = L.openings[h.k];
@@ -1112,11 +1299,11 @@ $("mkSvg").addEventListener("pointerup", async () => {
     const q = await mkPlace(f, at[0], at[1]); mkHold = null;
     if (!q) { $("mkMsg").textContent = "No LiDAR reading and no wall there, so it stayed where it was."; mkRender(); return; }
     const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: q.x, y: q.y, z: q.z }) });
-    if (r.ok) { Object.assign(w, await r.json()); $("walkMsg").textContent = "Saved. Make the plan again to use it."; $("mkMsg").textContent = `Moved ${q.how}.`; }
+    if (r.ok) { Object.assign(w, await r.json()); pointSaved(); $("mkMsg").textContent = `Moved ${q.how}.`; }
     draw(); return;
   }
   const moved = mkHold.moved; mkHold = null;
-  if (moved) changed(); else { history.pop(); $("undo").disabled = !history.length; }
+  if (moved) changed(); else { history.pop(); syncUndo(); }
 });
 $("mkWall").onclick = () => mkMode(mkDraw === "wall" ? null : "wall");
 $("mkPoint").onclick = () => mkMode(mkDraw === "point" ? null : "point");
@@ -1137,7 +1324,7 @@ $("ppPrev").onclick = () => { ppAt = (ppAt + ppList.length - 1) % ppList.length;
 $("ppNext").onclick = () => { ppAt = (ppAt + 1) % ppList.length; showPhotoAt(); };
 function renderWalk() {
   $("walkBox").hidden = !walk.length;
-  $("tPoint").hidden = !walk.length; $("reset").hidden = !!walk.length;       // a walk starts again with Make the plan again
+  $("tPoint").hidden = !walk.length; $("reset").hidden = !!walk.length;       // a walk starts over with Make the walls again
   $("walkList").replaceChildren(...walk.map((w, i) => {
     const r = document.createElement("tr"); if (sel?.point === i) r.className = "sel";
     r.innerHTML = `<td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${WALK[w.kind] || WALK.unknown};margin-right:6px"></span>Point ${i + 1}</td><td style="font-weight:400"></td>`;
@@ -1149,12 +1336,17 @@ function renderWalk() {
   $("walkKey").replaceChildren(...Object.keys(count).map(k => { const d = document.createElement("div"); d.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${WALK[k] || WALK.unknown};margin-right:6px"></span>`; d.append(`${count[k]} ${WALK_NAME[k] || k}`); return d; }));
 }
 $("walkRebuild").onclick = async () => {
-  const b = $("walkRebuild"), m = $("walkMsg"); b.disabled = true; m.textContent = "Working it out…";
+  const b = $("walkRebuild"), m = $("walkMsg");
+  if (W.some(w => w.pinned && !w.confirmed) && !b.dataset.sure) {
+    b.dataset.sure = 1; m.textContent = "This replaces walls you moved by hand. Press again to go ahead, or confirm the walls you want to keep first.";
+    setTimeout(() => { delete b.dataset.sure; }, 6000); return;
+  }
+  delete b.dataset.sure; b.disabled = true; m.textContent = "Working it out…";
   clearTimeout(saveT); saveT = null;
   const r = await fetch(`/api/scans/${id}/walk/rebuild`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   const j = await r.json().catch(() => ({})); b.disabled = false;
   if (!r.ok) { m.textContent = j.detail || "Could not do it."; return; }
-  m.textContent = j.built ? "" : `It needs at least 3 points along the walls (${j.outline} now).`;
+  m.textContent = j.kept_confirmed ? `Your ${j.kept_confirmed} confirmed wall${j.kept_confirmed > 1 ? "s" : ""} stayed. Walls you hadn't fixed followed their points.` : j.built ? "" : `It needs at least 3 points along the walls (${j.outline} now).`;
   await reload();
 };
 async function loadScan() {
@@ -1220,7 +1412,7 @@ $("joinAdd").onclick = async () => {
 // after joining: the outline, the readings and the pictures can all have changed
 async function reload() {
   const j = await (await fetch(`/api/scans/${id}/layout`)).json();
-  pts = j.points || pts; joined = j.joins || []; walk = j.walk || []; renderWalk(); history = []; $("undo").disabled = true; sel = null;
+  pts = j.points || pts; joined = j.joins || []; walk = j.walk || []; renderWalk(); history = []; sel = null; meta(j);
   Object.assign(L, { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 });
   scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
   $("height").value = L.height_m; renderJoins(); fillJoinPick();
@@ -1263,7 +1455,7 @@ function init3d() {
     hold(dom, e);
     fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (fingers.size === 2) {
-      if (act?.corner != null || act?.opening != null) { history.pop(); $("undo").disabled = !history.length; }
+      if (act?.corner != null || act?.opening != null) { history.pop(); syncUndo(); }
       const [a, b] = fingers.values(); act = null; pinch = { d: gap2(a, b), r: G.r, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; return;
     }
     const hit = e.button === 0 && !e.shiftKey ? pick(e) : null, uh = hit?.object.userData;
@@ -1319,10 +1511,10 @@ function init3d() {
     if (act?.point != null) {
       if (act.moved) {
         const w = walk[act.point];
-        fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, y: w.y, z: w.z }) }).then(r => r.ok ? r.json() : null).then(n => { if (n) { Object.assign(w, n); $("walkMsg").textContent = "Saved. Make the plan again to use it."; pointPhotos(); draw(); } });
+        fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, y: w.y, z: w.z }) }).then(r => r.ok ? r.json() : null).then(n => { if (n) { Object.assign(w, n); pointSaved(); pointPhotos(); draw(); } });
       }
     }
-    else if (act?.corner != null || act?.opening != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
+    else if (act?.corner != null || act?.opening != null) { if (act.moved) changed(); else { history.pop(); syncUndo(); } }
     else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < (act.touch ? 12 : 4)) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.corner != null ? { corner: u.corner } : u.opening != null ? { opening: u.opening } : u.wall != null ? { wall: u.wall, spot: act.hit.point.toArray() } : null); }
     act = null;
   });
@@ -1429,7 +1621,7 @@ function build3d() {
     const panel = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: gap ? (on ? .1 : .03) : on ? .12 : .22, side: T.DoubleSide, depthWrite: false, depthTest: !xray }));
     panel.renderOrder = 10; panel.userData.wall = w.i; ov.add(panel); G.hits.push(panel);
     bar(a0, b0, on ? .022 : .014, colour); bar(a1, b1, on ? .022 : .014, colour);
-    const s = label3d(`Wall ${w.i + 1}${gap ? " open" : ""}: ${fmt(len(w))}`, on ? "#e0226e" : gap ? "#b35f14" : "#0a7a6f");
+    const s = label3d(`Wall ${w.i + 1}${gap ? " open" : ""}: ${fmt(len(w))}${W[w.i]?.confirmed ? " ✓" : ""}`, on ? "#e0226e" : gap ? "#b35f14" : "#0a7a6f");
     s.position.copy(a1).lerp(b1, .5); ov.add(s);
   });
   L.vertices.forEach((v, i) => {
@@ -1466,7 +1658,8 @@ function build3d() {
   });
   showPhone();
   walk.forEach((w, i) => {
-    const on = sel?.point === i, b = new T.Mesh(new T.SphereGeometry(on ? .08 : .055, 14, 10), mat(on ? 0xe0226e : (WALK[w.kind] || WALK.unknown)));
+    const mine = sel?.wall != null && W[sel.wall]?.points.includes(w.id);
+    const on = sel?.point === i, b = new T.Mesh(new T.SphereGeometry(on || mine ? .08 : .055, 14, 10), mat(on ? 0xe0226e : mine ? 0x20c060 : (WALK[w.kind] || WALK.unknown)));
     b.position.set(w.x, w.y, w.z); b.renderOrder = 26; b.userData.point = i; ov.add(b); G.hits.push(b);
   });
   const showLabels = $("labels3d").checked, showPanels = $("panels3d").checked;
@@ -1489,7 +1682,7 @@ function build3d() {
   pts = j.points || pts; L = { vertices: j.vertices, openings: j.openings || [], open: j.open, height_m: j.height_m, turn_deg: j.turn_deg || 0 };
   scene = { floor: j.floor_y, ceiling: j.ceiling_y, phone: j.phone };
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
-  joined = j.joins || []; walk = j.walk || []; renderWalk(); renderJoins(); fillJoinPick();
+  joined = j.joins || []; walk = j.walk || []; meta(j); renderWalk(); renderJoins(); fillJoinPick();
   fit(); tip(); loadScan();
   if (walk.length) set3d(true);      // a walk has real heights: it opens in 3D
 })();

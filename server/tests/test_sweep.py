@@ -545,10 +545,11 @@ def test_a_photo_shows_only_the_points_nothing_hides(tmp_path, monkeypatch):
 def test_making_the_plan_again_keeps_doors_marked_by_hand(tmp_path, monkeypatch):
     from app import layout, main, walk
     d = tmp_path
+    square = [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]]
     (d / "walk_points.json").write_text("[]")
-    (d / "layout.json").write_text(json.dumps({"turn_deg": 90, "openings": [{"kind": "door", "at": [1.0, 0.0], "width": 0.9, "marked": True}, {"kind": "window", "at": [5.0, 5.0]}]}))
+    (d / "layout.json").write_text(json.dumps({"vertices": square, "open": [False] * 4, "height_m": 2.5, "turn_deg": 90, "openings": [{"kind": "door", "at": [1.0, 0.0], "width": 0.9, "marked": True}, {"kind": "window", "at": [5.0, 5.0]}]}))
     def built(_d, _c):
-        (d / "layout.json").write_text(json.dumps({"turn_deg": 0, "openings": [{"kind": "window", "at": layout._rotate(layout._rotate([1.0, 0.0], -90), 0), "width": 1.2}, {"kind": "window", "at": [8.0, 8.0], "width": 1.0}]}))
+        (d / "layout.json").write_text(json.dumps({"vertices": square, "open": [False] * 4, "height_m": 2.5, "turn_deg": 0, "openings": [{"kind": "window", "at": layout._rotate(layout._rotate([1.0, 0.0], -90), 0), "width": 1.2}, {"kind": "window", "at": [8.0, 8.0], "width": 1.0}]}))
         return {"built": True}
     monkeypatch.setattr(walk, "build", built)
     main._build_walk(d, force=True)

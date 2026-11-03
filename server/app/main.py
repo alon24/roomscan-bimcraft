@@ -28,6 +28,7 @@ from starlette.background import BackgroundTask
 from . import formlimits  # noqa: F401  (side effect: lifts Starlette's 1000-files-per-form limit)
 from . import join as join_mod
 from . import walk as walk_mod
+from . import elements
 from . import layout as layout_mod
 from . import live as live_mod, apps, panorama as panorama_mod, sweep as sweep_mod, photomeasure, features as features_mod, fit as fit_mod, quality, usdzout, convert, frames as frame_tools, meshscan, ring as ring_scan_mod, turntable, objects, photos as photo_index, printprep, storage, lidartarget
 
@@ -158,19 +159,12 @@ def _build_walk(d: Path, force: bool = False) -> dict | None:
     f = d / "walk_points.json"
     if not f.exists():
         return None
-    saved = d / "layout.json"
-    if not force and saved.exists() and json.loads(saved.read_text()).get("edited"):
+    if force:
+        return elements.propose(d, json.loads(f.read_text()))
+    if elements.locked(d):
         return {"built": False, "kept": True}
-    old = json.loads(saved.read_text()) if saved.exists() else {}
     out = walk_mod.build(d, json.loads(f.read_text()))
-    marked = [o for o in old.get("openings") or [] if o.get("marked")]
-    if marked and out.get("built"):           # doors and windows set by hand stay, and replace what the clicks made in the same place
-        new = json.loads(saved.read_text())
-        back = -float(old.get("turn_deg") or 0)
-        kept = [{**o, "at": layout_mod._rotate(layout_mod._rotate(o["at"], back), new.get("turn_deg") or 0)} for o in marked]
-        clear = lambda g: all(math.dist(g["at"], k["at"]) > (g.get("width", 1) + k.get("width", 1)) / 2 for k in kept)
-        new["openings"] = [g for g in new["openings"] if clear(g)] + kept
-        saved.write_text(json.dumps(new))
+    elements.built_fresh(d)
     return out
 
 
@@ -495,7 +489,7 @@ def get_layout(scan_id: str):
     js = [j for j in layout_mod.joins(d) if (DATA / j["scan"]).exists()]
     pts = layout_mod.seen_cells(d, lay)
     return {**lay, "points": pts, "name": _meta(d).get("name", ""), "kind": _meta(d).get("kind"), **_layout_scene(d, lay), "joins": [_join_view(d, j) for j in js],
-            "walk": json.loads((d / "walk_result.json").read_text())["points"] if (d / "walk_result.json").exists() else []}
+            "walk": json.loads((d / "walk_result.json").read_text())["points"] if (d / "walk_result.json").exists() else [], **elements.view(d)}
 
 
 @app.post("/api/scans/{scan_id}/walk")
@@ -528,6 +522,7 @@ def walk_edit(scan_id: str, body: dict):
     fp, fr = d / "walk_points.json", d / "walk_result.json"
     points = json.loads(fp.read_text()) if fp.exists() else []
     result = json.loads(fr.read_text()) if fr.exists() else {"points": [], "floor_y": None, "ceiling_y": None}
+    before = elements.snapshot(d, points=True)
     new = body.get("add")
     gone = body.get("delete")
     if gone is not None:          # only when asked by hand. A copy stays in walk_deleted.json
@@ -539,6 +534,7 @@ def walk_edit(scan_id: str, body: dict):
         fp.write_text(json.dumps([p for p in points if p["id"] != gone]))
         result["points"] = [p for p in result["points"] if p["id"] != gone]
         fr.write_text(json.dumps(result))
+        elements.point_changed(d, "delete_point", {"point": gone}, before, gone)
         return {"deleted": gone}
     try:
         if isinstance(new, dict):
@@ -567,6 +563,7 @@ def walk_edit(scan_id: str, body: dict):
         raise HTTPException(422, "a point needs x and z")
     fp.write_text(json.dumps(points))
     fr.write_text(json.dumps(result))
+    elements.point_changed(d, "add_point" if isinstance(new, dict) else "edit_point", {k: v for k, v in body.items()}, before, res["id"])
     return res
 
 
@@ -718,14 +715,40 @@ def put_layout(scan_id: str, body: dict):
         raise HTTPException(422, str(e))
     old = layout_mod.load(d)
     lay.update({k: old[k] for k in ("floor_y", "ceiling_y") if k in old})        # a walked plan's own floor and ceiling
-    (d / "layout.json").write_text(json.dumps(lay))
-    return {"ok": True, "problem": layout_mod.problem(lay)}
+    return {"ok": True, **elements.put_plan(d, lay)}
 
 
 @app.delete("/api/scans/{scan_id}/layout")
 def reset_layout(scan_id: str):
-    (_dir(scan_id) / "layout.json").unlink(missing_ok=True)
+    elements.forget(_dir(scan_id))
     return {"ok": True}
+
+
+@app.get("/api/scans/{scan_id}/layout/state")
+def layout_state(scan_id: str):
+    """The room as it now is, without the heavy readings."""
+    d = _dir(scan_id)
+    return {**elements.view(d), "walk": json.loads((d / "walk_result.json").read_text())["points"] if (d / "walk_result.json").exists() else []}
+
+
+@app.post("/api/scans/{scan_id}/layout/action")
+def layout_action(scan_id: str, body: dict):
+    """One fix to the room: {"op": ..., ...}. See elements.act. Answers with the room as it now is."""
+    d = _dir(scan_id)
+    op = str(body.get("op"))
+    try:
+        return elements.act(d, op, {k: v for k, v in body.items() if k != "op"})
+    except (ValueError, TypeError, KeyError, IndexError) as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/scans/{scan_id}/layout/undo")
+def layout_undo(scan_id: str):
+    """Takes back the last fix, even from an earlier session."""
+    try:
+        return elements.undo(_dir(scan_id))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/api/scans/{scan_id}/layout/export")

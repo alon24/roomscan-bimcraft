@@ -272,7 +272,7 @@ On the Layout page every point is listed. Click one, on the plan or in the list,
 - **Move it:** drag it on the plan, or in 3D, where it moves in the plane facing you.
 - **Add one:** press **Add point**, then click the plan.
 
-Points are never deleted. Anything the server is unsure of is flagged ⚑, such as a point off the plan's walls, or one with nothing solid there, which may be a door or window. Changes to points save at once. Press **Make the plan again from the points** to use them; that replaces corrections made to the plan itself, not to the points.
+Nothing deletes a point by itself. Anything the server is unsure of is flagged ⚑, such as a point off the plan's walls, or one with nothing solid there, which may be a door or window. Changes to points save at once, and walls you haven't fixed follow them by themselves. **Make the walls again from the points** starts the walls over on request, and always keeps confirmed walls and doors you set by hand. You can delete a point by hand; a copy stays on the server.
 
 ## 2. The web page (the server)
 
@@ -365,6 +365,10 @@ at least size + 4 mm across; connectors on strongly curved or thin cuts can fail
 
 ![Marking a door and fixing points on a photo](docs/img/web-layout-mark.jpg)
 
+![Check the room going through the walls](docs/img/web-layout-check.jpg)
+
+How fixes are stored, and the actions behind them: [docs/room-model.md](docs/room-model.md).
+
 **On a phone** the page is built for one hand: the view fills the screen, the tools are along the bottom and the details sit in a sheet.
 
 <img src="docs/img/web-layout-phone.jpg" width="280" alt="The Layout page on a phone, with a point selected"> <img src="docs/img/web-main-phone.jpg" width="280" alt="A scan on the main page on a phone">
@@ -388,11 +392,19 @@ Open a sweep on the web page and press **Layout**. You get the room from above w
 - **Type the length between any two points:** press **Set a length**, click two points, type the number, press Enter.
 - A typed length stretches the room: everything past the far end moves along that line, so the other walls keep their direction. Check the walls that run on a slant, because their lengths can change too.
 - **Add door / Add window:** press it, then click the wall. It starts at a usual size.
+- **Check the room** is the easiest way through: press it, and go through **Walls**, **Doors, windows**, **Tape** and **Finish**. Each wall comes up with its photo, with these choices:
+  - **Correct** confirms it. A confirmed wall never moves by itself, shows a tick, and only moves if you move it or your tape lengths need it to.
+  - **Move it**: click two spots on the real wall in the photo. If that leaves it side by side with its neighbour, a short wall joins them.
+  - **Split it**: click where the wall changes, for example where a hallway stops and a kitchen starts. Each part can then be moved or marked open.
+  - **It's open: no wall** is for a stretch you walk through, like the entrance to a kitchen. **Not a wall** removes it.
+  - **Tape says**: type your measured length. The room adjusts to fit, moving confirmed walls least, and **Finish** warns if your lengths can't all be true.
+- **Which points make a wall:** the points a selected wall rests on show in green. Nearby points are listed so you can tap one to add it, and a selected point has a **Part of** list. Walls you haven't moved or confirmed follow their points by themselves.
+- **Undo** takes back the last change, including point edits, and still works after you close the page.
 - **Mark a door or window on a photo:** click a wall, door or window to see its photos, then click the photo to open it large. Press **Draw a door** or **Draw a window** and click its 4 corners, in any order. A click near a point sticks to it (a green ring shows which), and any other click uses the LiDAR reading there, so the shape goes exactly through those spots, even if the plan's wall is a little off. To refine one, click it and drag a corner or the whole shape. Width and height come from the corners; BIMCraft gets a rectangle of that size with a door's bottom on the floor. Use ‹ › to check it in another photo. It lands on the wall the photo is looking at, so fix a wall that is in the wrong place first.
-- **Fix points on a photo:** the large photo shows the points it can really see. Press **Add a point**, pick what it is, and click spots in the photo: each lands where the phone's LiDAR read that spot, or on the wall if it has no reading there. Drag a point to move it. Click a point to change what it is, or to delete it. **Make the plan again from the points** then uses them. It keeps doors and windows you marked or changed by hand, but replaces other hand corrections to the plan.
-- **Fix walls on a photo:** the large photo shows the plan's walls as lines at the floor and ceiling, with square plan corners. Drag a corner onto the real spot, or press **Draw a wall** and click two spots on the wall. Both stick to your points. A similar wall nearby moves there and its neighbours stretch to meet it; otherwise it becomes a new stretch of the outline. Do this last, because **Make the plan again** replaces wall corrections.
+- **Fix points on a photo:** the large photo shows the points it can really see. Press **Add a point**, pick what it is, and click spots in the photo: each lands where the phone's LiDAR read that spot, or on the wall if it has no reading there. Drag a point to move it. Click a point to change what it is, or to delete it. Walls you haven't fixed follow them by themselves.
+- **Fix walls on a photo:** the large photo shows the plan's walls as lines at the floor and ceiling, with square plan corners. Drag a corner onto the real spot, or press **Draw a wall** and click two spots on the wall. Both stick to your points. A similar wall nearby moves there and its neighbours stretch to meet it; otherwise it becomes a new stretch of the outline. These are kept, like every other fix.
 - **Get out:** **Esc** closes the photo or lets go of what is selected. **Done** does the same.
-- **Change a door or window:** click its shape, in 3D or on the plan. Pick **Door** or **Window**, type its width and height, or drag it along the wall. BIMCraft gets that size. **Make the plan again** keeps them. If a shape is really just wall, pick **It's a wall: nothing here** or press **Delete it**: the shape goes and the clicks that made it become **On a wall**, so it doesn't come back.
+- **Change a door or window:** click its shape, in 3D or on the plan. Pick **Door** or **Window**, type its width and height, or drag it along the wall. BIMCraft gets that size. They're kept when the walls are made again. If a shape is really just wall, pick **It's a wall: nothing here** or press **Delete it**: the shape goes and the clicks that made it become **On a wall**, so it doesn't come back.
 - **Tidy** takes out very short walls and nearly straight corners, then straightens walls that are nearly along the grid. **Undo** takes back any step, and **Back to the scan's walls** starts again.
 
 **Into BIMCraft:** press **Build BIMCraft and Blender files**, download `room.bimcraft`, then run `bimcraft ~/Downloads/room.bimcraft`. The file has the walls, doors, windows, floor, ceiling and room. `room.ifc` is there for other BIM programs, and `plan.png` is BIMCraft's drawing of the plan.
@@ -453,8 +465,9 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.65.0 | Walls, doors and windows are now things you can confirm, and a fix can't be undone by a rebuild. **Check the room** goes through walls, doors and windows, tape lengths and the build. Walls can be moved, split, marked open or removed, and you can say which points belong to which. **Undo** now works across sessions and includes points. Fixed: **Undo**, **Height**, **Back to the scan's walls** and **Build BIMCraft and Blender files** had stopped working in 0.60. |
 | 0.64.1 | Main page on a phone: the scan list and a scan are separate screens, with a back arrow and the phone's back gesture. The main action stays out and the rest are under **More**, the 3D model comes up sooner, and the photos are collapsed until you ask for them. |
-| 0.64.0 | Layout page rebuilt for phones first: full-screen view, tools along the bottom, details in a sheet, pinch to zoom, select before moving, and photos you can zoom with a magnifier for aiming. **Back to the scan's walls** now works; it asks with a second press, and a walk uses **Make the plan again** instead. |
+| 0.64.0 | Layout page rebuilt for phones first: full-screen view, tools along the bottom, details in a sheet, pinch to zoom, select before moving, and photos you can zoom with a magnifier for aiming. **Back to the scan's walls** asks with a second press, and a walk uses **Make the walls again** instead. |
 | 0.63.3 | Layout page: draw a door or window by its **4 corners**, each going exactly where you click or onto your point, and drag any corner to refine it. |
 | 0.63.2 | Layout page: a door or window drawn on a photo sticks to your points and takes the angle of the real spots, not the plan's wall. Doors and windows made from clicks sit at the clicks too. **Draw a wall** on a photo, and drag the plan's corners on it, sticking to your points. |
 | 0.63.1 | Layout page: a door or window shape that is really wall can be marked **It's a wall**, and it stays gone when the plan is made again. |
