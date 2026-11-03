@@ -2,105 +2,216 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Room layout</title>
 <link rel="icon" href="/icons/photo-192.png">
 <style>
   :root { --bg:#f6f7f8; --card:#fff; --ink:#15191c; --mute:#66707a; --line:#d9dee2; --acc:#0f9d8f; --read:#9aa4ad; --read2:#d3d8dc; --warn:#c0392b; --door:#c0641a; --win:#2478c8; --sel:#e0226e; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111416; --card:#1b1f22; --ink:#eef1f3; --mute:#9aa4ad; --line:#2d3338; --read:#6c767e; --read2:#343b40; } }
   :root[data-theme="dark"] { --bg:#111416; --card:#1b1f22; --ink:#eef1f3; --mute:#9aa4ad; --line:#2d3338; --read:#6c767e; --read2:#343b40; }
-  * { box-sizing:border-box; }
-  html, body { height:100%; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,sans-serif; display:flex; flex-direction:column; }
-  header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); }
-  h1 { font-size:16px; margin:0 10px 0 0; }
+  :root { --tools:calc(60px + env(safe-area-inset-bottom)); --peek:52px; --top:52px; accent-color:var(--acc); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  ::selection { background:var(--acc); color:#fff; }
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
+  body { margin:0; height:100dvh; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,sans-serif; display:flex; flex-direction:column; }
   a { color:var(--acc); }
-  button, .dl { font:inherit; padding:6px 11px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink); cursor:pointer; text-decoration:none; }
-  button:hover, .dl:hover { border-color:var(--acc); }
+  .i { width:22px; height:22px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  button, .dl { font:inherit; min-height:44px; padding:8px 13px; border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--ink); cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:6px; touch-action:manipulation; }
+  [hidden] { display:none !important; }
   button:disabled { opacity:.45; cursor:default; }
   button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
   button.main { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
-  .gap { flex:1; }
-  main { flex:1; min-height:0; display:flex; }
-  #wrap { flex:1; min-width:0; position:relative; }
-  #gl { position:absolute; inset:0; } #gl canvas { display:block; touch-action:none; }
-  .v3 { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
-  svg { position:absolute; inset:0; width:100%; height:100%; touch-action:none; user-select:none; display:block; }
-  aside { width:310px; flex:none; border-left:1px solid var(--line); background:var(--card); padding:14px 16px; overflow:auto; }
-  aside h2 { font-size:13px; margin:18px 0 6px; }
-  aside h2:first-child { margin-top:0; }
-  #photo { display:block; width:100%; height:190px; border-radius:7px; background:var(--bg); margin-bottom:4px; }
-  select { font:inherit; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
+  button.ico { width:44px; padding:0; }
+  select { font:inherit; font-size:16px; min-height:44px; padding:4px 8px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
   input[type=range] { flex:1; min-width:80px; }
-  input[type=number] { font:inherit; width:90px; padding:5px 7px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
-  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0; }
+  input[type=number] { font:inherit; font-size:16px; width:96px; min-height:44px; padding:5px 9px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); font-variant-numeric:tabular-nums; }
+  input[type=checkbox] { width:20px; height:20px; flex:none; }
+  label:has(input[type=checkbox]) { display:flex; align-items:center; gap:10px; min-height:36px; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .v3 { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
   .mute { color:var(--mute); }
   ol { margin:6px 0; padding-left:20px; } li { margin:4px 0; }
-  #tip { position:absolute; left:12px; top:12px; right:12px; pointer-events:none; }
-  #tip span { display:inline-block; background:var(--card); border:1px solid var(--line); border-radius:7px; padding:5px 10px; }
-  #prob { color:var(--warn); font-weight:600; }
-  #files { display:flex; flex-wrap:wrap; gap:6px; }
-  table { width:100%; border-collapse:collapse; } td { padding:2px 4px; cursor:pointer; } td:last-child { text-align:right; font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; } td { padding:9px 4px; cursor:pointer; border-top:1px solid var(--line); } td:last-child { text-align:right; font-weight:600; }
   tr.sel td { color:var(--sel); }
-  #mk { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; background:#15191c; }
+  #files { display:flex; flex-wrap:wrap; gap:6px; }
+  #prob { color:var(--warn); font-weight:600; }
+
+  header { flex:none; height:var(--top); display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--card); border-bottom:1px solid var(--line); }
+  h1 { flex:1; min-width:0; margin:0; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #back { width:44px; height:44px; flex:none; display:flex; align-items:center; justify-content:center; }
+  #back span { display:none; }
+  #v3d { min-width:58px; font-weight:600; }
+  #tools { position:fixed; left:0; right:0; bottom:0; height:var(--tools); padding-bottom:env(safe-area-inset-bottom); display:flex; background:var(--card); border-top:1px solid var(--line); z-index:8; }
+  #tools button { flex:1; min-width:0; height:100%; padding:0 2px; flex-direction:column; gap:2px; border:0; border-radius:0; background:none; color:var(--mute); font-size:11.5px; }
+  #tools button[hidden] { display:none; }
+  #tools button.on { color:var(--acc); font-weight:700; }
+  #tools .long { display:none; }
+
+  main { flex:1; min-height:0; padding-bottom:calc(var(--tools) + var(--peek)); }
+  #wrap { height:100%; position:relative; overflow:hidden; }
+  #gl { position:absolute; inset:0; } #gl canvas { display:block; touch-action:none; }
+  #svg, #mkSvg { position:absolute; inset:0; width:100%; height:100%; touch-action:none; user-select:none; -webkit-user-select:none; display:block; overflow:visible; }
+  #tip { position:absolute; left:10px; right:10px; bottom:10px; pointer-events:none; text-align:center; transition:opacity .3s; font-size:13px; }
+  #tip span { display:inline-block; background:var(--card); border:1px solid var(--line); border-radius:9px; padding:5px 10px; box-shadow:0 2px 8px rgba(0,0,0,.18); }
+  #tip.quiet { opacity:0; }
+  #tipText:empty { display:none; }
+  #fit { position:absolute; right:10px; top:10px; box-shadow:0 2px 8px rgba(0,0,0,.18); }
+
+  #side { position:fixed; left:0; right:0; bottom:var(--tools); height:calc(100dvh - var(--top) - var(--tools)); display:flex; flex-direction:column; background:var(--card); border-radius:14px 14px 0 0; box-shadow:0 -4px 18px rgba(0,0,0,.22); z-index:7; transform:translateY(calc(100% - var(--peek))); transition:transform .26s cubic-bezier(.16,1,.3,1); }
+  #side[data-sheet=half] { transform:translateY(45%); }
+  #side[data-sheet=full] { transform:none; }
+  #sheetHead { flex:none; min-height:52px; padding:6px 16px 8px; cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none; text-align:center; font-size:13.5px; }
+  #sheetHead::before { content:""; display:block; width:40px; height:4px; margin:0 auto 6px; border-radius:2px; background:var(--line); }
+  #sheetBody { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:0 16px calc(16px + env(safe-area-inset-bottom)); }
+  #side[data-sheet=half] #sheetBody { flex:none; height:calc(55% - var(--peek)); }
+  #side h2 { font-size:14px; margin:0; }
+  #side section, #side details { border-top:1px solid var(--line); padding:10px 0; }
+  #panel:not(:empty) { padding-bottom:10px; } #panel h2 { margin:6px 0; }
+  summary { list-style:none; display:flex; align-items:center; justify-content:space-between; min-height:30px; cursor:pointer; }
+  summary::-webkit-details-marker { display:none; }
+  summary::after { content:""; width:9px; height:9px; margin-right:4px; border-right:2px solid var(--mute); border-bottom:2px solid var(--mute); transform:rotate(45deg) translate(-2px,-2px); }
+  details[open] > summary { margin-bottom:6px; } details[open] > summary::after { transform:rotate(-135deg) translate(-2px,-2px); }
+  #photo { display:block; width:100%; height:190px; border-radius:9px; background:var(--bg); margin-bottom:4px; }
+  #pointPhotos { padding-bottom:6px; } #pointPhotos h2 { margin:0 0 6px; }
+  #ppFrame { position:relative; width:fit-content; max-width:100%; margin:0 auto; border-radius:9px; overflow:hidden; background:var(--bg); }
+  #ppImg { display:block; max-width:100%; max-height:30dvh; cursor:zoom-in; }
+  #ppMark { width:100%; }
+
+  #mk { position:fixed; inset:0; z-index:9; display:flex; flex-direction:column; background:#15191c; }
   #mk[hidden] { display:none; }
-  #mkBar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; background:var(--card); border-bottom:1px solid var(--line); }
-  #mkStage { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-  #mkInner { position:relative; }
-  #mkInner img { display:block; width:100%; height:100%; user-select:none; -webkit-user-drag:none; }
-  #ppImg { cursor:zoom-in; }
-  @media (max-width:760px) { main { flex-direction:column; } #wrap { min-height:60vh; } aside { width:auto; border-left:0; border-top:1px solid var(--line); } }
+  #mkTop { flex:none; height:var(--top); display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--card); color:var(--ink); border-bottom:1px solid var(--line); }
+  #mkCount { flex:1; text-align:center; font-variant-numeric:tabular-nums; font-size:13.5px; }
+  #mkInfo { flex:none; display:flex; align-items:center; gap:8px; min-height:44px; padding:4px 12px; background:var(--card); font-size:13.5px; line-height:1.3; }
+  #mkMsg { flex:1; min-width:0; }
+  body:not(.adding) #mkKind { display:none; }
+  #mkStage { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden; touch-action:none; }
+  #mkInner { position:relative; flex:none; transform-origin:0 0; }
+  #mkInner img { display:block; width:100%; height:100%; user-select:none; -webkit-user-select:none; -webkit-user-drag:none; }
+  #mkLoupe { position:absolute; top:10px; left:10px; width:132px; height:132px; border-radius:50%; border:3px solid #fff; box-shadow:0 3px 12px rgba(0,0,0,.5); background-color:#000; background-repeat:no-repeat; pointer-events:none; z-index:2; }
+  #mkLoupe.right { left:auto; right:10px; }
+  #mkLoupe[hidden] { display:none; }
+  #mkLoupe::before, #mkLoupe::after { content:""; position:absolute; background:#35e06a; }
+  #mkLoupe::before { left:50%; top:30%; bottom:30%; width:2px; margin-left:-1px; }
+  #mkLoupe::after { top:50%; left:30%; right:30%; height:2px; margin-top:-1px; }
+  #mkTools { flex:none; height:var(--tools); padding-bottom:env(safe-area-inset-bottom); display:flex; background:var(--card); border-top:1px solid var(--line); }
+  #mkTools button { flex:1; min-width:0; height:100%; padding:0 2px; flex-direction:column; gap:2px; border:0; border-radius:0; background:none; color:var(--mute); font-size:11.5px; }
+  #mkTools button.on { color:var(--acc); font-weight:700; }
+  body.marking #side { z-index:10; bottom:0; height:auto; max-height:48dvh; transform:none; transition:none; }
+  body.marking:not(.picked) #side, body.marking:not(.has-sel) #side { display:none; }
+  body.marking #sheetHead, body.marking #pointPhotos, body.marking #sheetBody > section, body.marking #sheetBody > details, body.marking #photoBox { display:none; }
+  body.marking #sheetBody { height:auto !important; padding-top:10px; }
+
+  @media (min-width:761px) {
+    :root { --top:auto; --peek:0px; --tools:0px; }
+    body { font-size:14px; }
+    button, .dl { min-height:34px; padding:6px 11px; border-radius:7px; }
+    button:hover, .dl:hover { border-color:var(--acc); }
+    button.ico { width:34px; }
+    select { font-size:14px; min-height:32px; border-radius:6px; } input[type=number] { font-size:14px; min-height:32px; border-radius:6px; }
+    input[type=checkbox] { width:16px; height:16px; } label:has(input[type=checkbox]) { min-height:24px; gap:8px; }
+    td { padding:3px 4px; border-top:0; }
+    header { min-height:52px; padding:8px 16px; gap:8px; }
+    h1 { flex:0 1 auto; font-size:16px; }
+    #back { width:auto; height:auto; } #back .i { display:none; } #back span { display:inline; white-space:nowrap; }
+    .gap { flex:1; }
+    #tools { position:static; height:auto; padding:0; gap:8px; border:0; background:none; }
+    #tools button { flex:none; flex-direction:row; height:auto; min-height:34px; padding:6px 11px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink); font-size:14px; }
+    #tools button.on { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:400; }
+    #tools .i { width:18px; height:18px; } #tools .short { display:none; } #tools .long { display:inline; }
+    main { display:flex; padding:0; }
+    #wrap { flex:1; min-width:0; height:auto; }
+    #tip { top:12px; bottom:auto; right:60px; text-align:left; font-size:14px; }
+    #side { position:static; width:310px; flex:none; height:auto; border-left:1px solid var(--line); border-radius:0; box-shadow:none; transform:none !important; transition:none; }
+    #sheetHead { min-height:0; padding:12px 16px; cursor:default; touch-action:auto; user-select:text; -webkit-user-select:text; text-align:left; border-bottom:1px solid var(--line); }
+    #sheetHead::before { display:none; }
+    #side h2 { font-size:13px; }
+    #side[data-sheet=half] #sheetBody { flex:1; height:auto; }
+    #sheetBody { padding-top:10px; }
+    #mk { position:absolute; z-index:5; }
+    #mkTop { order:1; height:auto; padding:6px 12px; } #mkCount { flex:0 auto; } #mkClose { margin-left:auto; }
+    #mkTools { order:2; height:auto; padding:6px 12px; gap:8px; border-top:0; border-bottom:1px solid var(--line); }
+    #mkTools button { flex:none; flex-direction:row; height:auto; min-height:34px; padding:6px 11px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink); font-size:14px; }
+    #mkTools button.on { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:400; }
+    #mkTools .i { width:18px; height:18px; }
+    #mkInfo { order:3; font-size:14px; border-bottom:1px solid var(--line); } #mkStage { order:4; }
+    body.marking #side { position:static; display:flex !important; height:auto; max-height:none; z-index:auto; }
+    body.marking #sheetHead, body.marking #sheetBody > section, body.marking #sheetBody > details { display:block; }
+    body.marking #pointPhotos { display:block; } body.marking #pointPhotos[hidden] { display:none; }
+    body.marking #sheetBody { padding-top:10px; }
+    #ppImg { max-height:none; width:100%; } #ppFrame { width:auto; }
+  }
+  @media (min-width:761px) and (max-width:1180px) { #tools button span { display:none !important; } #tools button { padding:6px 8px; } #tools .i { width:20px; height:20px; } #side { width:280px; } }
 </style>
 </head>
 <body>
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7L4 12l5 5"/><path d="M4 12h10a5 5 0 0 1 5 5v1"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="M6 3l13 7.5-5.5 1.8L11 18z"/></symbol>
+  <symbol id="i-ruler" viewBox="0 0 24 24"><path d="M3 16L16 3l5 5L8 21z"/><path d="M7.5 11.5l2 2M11 8l2 2M14.500 4.500l2 2"/></symbol>
+  <symbol id="i-door" viewBox="0 0 24 24"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17M3 21h18"/><path d="M14.500 12v1"/></symbol>
+  <symbol id="i-window" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M12 3v18M4 12h16"/></symbol>
+  <symbol id="i-point" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.500"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></symbol>
+  <symbol id="i-wall" viewBox="0 0 24 24"><path d="M3 5h18v14H3zM3 12h18M9 5v7M15 12v7"/></symbol>
+</svg>
 <header>
+  <a id="back" href="/" aria-label="Back to the scan"><svg class="i"><use href="#i-back"/></svg><span>Back to the scan</span></a>
   <h1 id="name">Layout</h1>
-  <a id="back" href="/">Back to the scan</a>
   <span class="gap"></span>
-  <button id="v3d" title="Turn the plan and the scan around together in 3D">3D</button>
-  <span style="width:8px"></span>
-  <button id="tSelect" class="on">Move</button>
-  <button id="tMeasure">Set a length</button>
-  <button id="tDoor">Add door</button>
-  <button id="tWindow">Add window</button>
-  <button id="tPoint" hidden title="Add a point of the walk: click where it goes">Add point</button>
-  <span style="width:8px"></span>
-  <button id="undo" disabled>Undo</button>
-  <button id="tidy" title="Takes out very short walls and corners that are nearly straight, then straightens walls that are nearly along the axes">Tidy</button>
-  <button id="reset">Back to the scan's walls</button>
-  <button id="fit">Fit</button>
+  <nav id="tools" aria-label="Tools">
+    <button id="tSelect" title="Move" aria-label="Move" class="on"><svg class="i"><use href="#i-move"/></svg><span class="long">Move</span><span class="short">Move</span></button>
+    <button id="tMeasure" title="Set a length" aria-label="Set a length"><svg class="i"><use href="#i-ruler"/></svg><span class="long">Set a length</span><span class="short">Length</span></button>
+    <button id="tDoor" title="Add door" aria-label="Add door"><svg class="i"><use href="#i-door"/></svg><span class="long">Add door</span><span class="short">Door</span></button>
+    <button id="tWindow" title="Add window" aria-label="Add window"><svg class="i"><use href="#i-window"/></svg><span class="long">Add window</span><span class="short">Window</span></button>
+    <button id="tPoint" title="Add point" aria-label="Add point" hidden><svg class="i"><use href="#i-point"/></svg><span class="long">Add point</span><span class="short">Point</span></button>
+  </nav>
+  <button id="undo" class="ico" disabled title="Undo" aria-label="Undo"><svg class="i"><use href="#i-undo"/></svg></button>
+  <button id="v3d" title="Switch between the plan and 3D">3D</button>
 </header>
 <main>
   <div id="wrap"><svg id="svg"></svg><div id="gl" hidden></div><div id="tip"><span id="tipText"></span></div>
+    <button id="fit" class="ico" title="Fit the view" aria-label="Fit the view"><svg class="i"><use href="#i-fit"/></svg></button>
     <div id="mk" hidden>
-      <div id="mkBar">
-        <button id="mkPoint">Add a point</button><select id="mkKind" aria-label="What the new point is"></select><button id="mkWall">Draw a wall</button><button id="mkDoor">Draw a door</button><button id="mkWindow">Draw a window</button>
-        <span id="mkMsg" class="mute" style="flex:1;min-width:160px"></span>
-        <button id="mkPrev" aria-label="Previous photo">‹</button><span id="mkCount" class="mute"></span><button id="mkNext" aria-label="Next photo">›</button>
-        <button id="mkClose" class="main">Close (Esc)</button>
+      <div id="mkTop">
+        <button id="mkClose" class="main" title="Esc">Close</button>
+        <button id="mkPrev" class="ico" aria-label="Previous photo"><svg class="i"><use href="#i-back"/></svg></button><span id="mkCount" class="mute"></span><button id="mkNext" class="ico" aria-label="Next photo"><svg class="i"><use href="#i-next"/></svg></button>
       </div>
-      <div id="mkStage"><div id="mkInner"><img id="mkImg" alt="Photo to mark" draggable="false"><svg id="mkSvg"></svg></div></div>
+      <div id="mkInfo"><select id="mkKind" aria-label="What the new point is"></select><span id="mkMsg" class="mute"></span></div>
+      <div id="mkStage"><div id="mkInner"><img id="mkImg" alt="Photo to mark" draggable="false"><svg id="mkSvg"></svg></div><div id="mkLoupe" hidden></div></div>
+      <div id="mkTools">
+        <button id="mkPoint"><svg class="i"><use href="#i-point"/></svg><span>Add a point</span></button><button id="mkWall"><svg class="i"><use href="#i-wall"/></svg><span>Draw a wall</span></button><button id="mkDoor"><svg class="i"><use href="#i-door"/></svg><span>Draw a door</span></button><button id="mkWindow"><svg class="i"><use href="#i-window"/></svg><span>Draw a window</span></button>
+      </div>
     </div>
   </div>
-  <aside>
+  <aside id="side" data-sheet="peek">
+    <div id="sheetHead" role="button" tabindex="0" aria-label="Show or hide the details">
+      <div class="mute" id="stats"></div>
+      <div id="prob"></div>
+    </div>
+    <div id="sheetBody">
+    <div id="panel"></div>
     <div id="pointPhotos" hidden>
       <h2 id="ppHead">Photos of this point</h2>
-      <div id="ppFrame" style="position:relative;border-radius:7px;overflow:hidden;background:var(--bg)"><img id="ppImg" alt="Photo of this point" style="display:block;width:100%"><div id="ppDot" style="position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid #35e06a;border-radius:50%;box-shadow:0 0 0 2px rgba(0,0,0,.6);pointer-events:none"></div></div>
+      <div id="ppFrame"><img id="ppImg" alt="Photo of this point"><div id="ppDot" style="position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid #35e06a;border-radius:50%;box-shadow:0 0 0 2px rgba(0,0,0,.6);pointer-events:none"></div></div>
       <div class="row" id="ppIn3d" hidden><label><input type="checkbox" id="ppShow" checked> Put this photo in the 3D view</label><button id="ppStand">Stand where it was taken</button></div>
       <div class="row"><button id="ppMark" class="main">Mark a door or window on this photo</button></div>
-      <div class="row"><button id="ppPrev">‹</button><span id="ppText" class="mute" style="flex:1;text-align:center"></span><button id="ppNext">›</button></div>
+      <div class="row"><button id="ppPrev" class="ico" aria-label="Previous photo"><svg class="i"><use href="#i-back"/></svg></button><span id="ppText" class="mute" style="flex:1;text-align:center"></span><button id="ppNext" class="ico" aria-label="Next photo"><svg class="i"><use href="#i-next"/></svg></button></div>
     </div>
     <div id="photoBox" hidden>
       <h2>What the phone saw here</h2>
       <canvas id="photo"></canvas>
       <div class="mute" id="photoNote"></div>
     </div>
-    <div id="panel"></div>
+    <section>
     <h2>Room</h2>
     <div class="row"><label for="height">Height</label> <input id="height" type="number" step="0.01" min="1" max="10"> m</div>
-    <div class="mute" id="stats"></div>
-    <div id="prob"></div>
-    <h2>What is under the plan</h2>
+    <div class="row"><button id="tidy" title="Takes out very short walls and corners that are nearly straight, then straightens walls that are nearly along the axes">Tidy</button><button id="reset">Back to the scan's walls</button></div>
+    </section>
+    <details class="sec"><summary><h2>What you see</h2></summary>
     <div class="row"><label><input type="checkbox" id="showScan" checked> The scan from above</label></div>
     <div class="row"><label for="scanCut">Take off above</label> <select id="scanCut"><option value="off">Nothing</option><option value="" selected>Ceiling only</option><option value="2">2 m</option><option value="1.5">1.5 m</option><option value="1">1 m</option></select></div>
     <div class="row"><label for="scanFade">Strength</label> <input id="scanFade" type="range" min="0.15" max="1" step="0.05" value="0.85"></div>
@@ -113,40 +224,49 @@
       <div class="row"><label><input type="checkbox" id="panels3d" checked> Wall panels</label></div>
       <div class="v3"><button id="vAbove">From above</button><button id="vPhone">From the phone's spot</button></div>
     </div>
-    <div id="walkBox" hidden>
-      <h2>Points from the walk</h2>
+    </details>
+    <details class="sec" id="walkBox" hidden><summary><h2>Points from the walk</h2></summary>
       <div id="walkKey" class="mute"></div>
       <table id="walkList" style="margin-top:6px"></table>
       <button id="walkRebuild" style="margin-top:6px">Make the plan again from the points</button>
       <div class="mute" style="margin-top:4px">Points are never deleted. "Ignore it" leaves one off the plan. Making the plan again replaces corrections to the plan itself, not to the points.</div>
       <div id="walkMsg" class="mute" style="margin-top:4px"></div>
-    </div>
-    <h2>Scans in this plan</h2>
+    </details>
+    <details class="sec"><summary><h2>Scans in this plan</h2></summary>
     <div id="joinList"></div>
     <div class="row"><select id="joinPick" style="flex:1;min-width:0"></select> <button id="joinAdd">Add</button></div>
     <div id="joinMsg" class="mute"></div>
-    <h2>Walls</h2>
+    </details>
+    <details class="sec"><summary><h2>Walls</h2></summary>
     <table id="walls"></table>
-    <h2>Make the files</h2>
+    </details>
+    <details class="sec"><summary><h2>Make the files</h2></summary>
     <button class="main" id="export">Build BIMCraft and Blender files</button>
     <div id="exportMsg" class="mute" style="margin:6px 0"></div>
     <div id="files"></div>
-    <h2>Open it in BIMCraft</h2>
+    </details>
+    <details><summary><h2>Open it in BIMCraft</h2></summary>
     <ol>
       <li>Correct the plan here. It saves by itself.</li>
       <li>Press <b>Build BIMCraft and Blender files</b>.</li>
       <li>Download <b>room.bimcraft</b>.</li>
       <li>In a terminal: <code>bimcraft ~/Downloads/room.bimcraft</code></li>
     </ol>
-    <h2>Open it in Blender</h2>
+    </details>
+    <details><summary><h2>Open it in Blender</h2></summary>
     <ol>
       <li>Download <b>layout.glb</b>.</li>
       <li>File → Import → glTF 2.0, and pick it. Sizes are in metres. Doors and windows aren't cut out.</li>
     </ol>
+    </details>
+    </div>
   </aside>
 </main>
 <script>
 const $ = id => document.getElementById(id);
+const hold = (el, e) => { try { el.setPointerCapture(e.pointerId); } catch {} };
+const narrow = matchMedia("(max-width:760px)"), coarse = matchMedia("(pointer:coarse)").matches;
+const gap2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const id = new URLSearchParams(location.search).get("scan");
 const svg = $("svg"), NS = "http://www.w3.org/2000/svg";
 let L = null, pts = { top: [], all: [] }, tool = "select", sel = null, measure = [], history = [];
@@ -290,7 +410,7 @@ function photo() {
     g.strokeStyle = "#35e06a"; g.lineWidth = 2 * dpr; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, cv.height); g.stroke();
   }
 }
-function select(s) { sel = s; draw(); pointPhotos(); if (s?.wall != null) { $("wallLen")?.focus(); $("wallLen")?.select(); } }
+function select(s) { sel = s; draw(); pointPhotos(); if (s?.wall != null && !coarse) { $("wallLen")?.focus(); $("wallLen")?.select(); } }
 
 // A typed length stretches the room: everything past the far end moves along the line, so walls that cross it get longer and the rest keep their shape.
 function stretch(a, b, to, from = null) {
@@ -301,8 +421,13 @@ function stretch(a, b, to, from = null) {
   L.vertices = L.vertices.map(move);
   L.openings = L.openings.map(o => ({ ...o, at: move(o.at) }));
 }
+// the details as a sheet on a phone: a line at the bottom, half way up, or all the way
+let lastSel = "null";
+function sheet(state) { $("side").dataset.sheet = state; if (state !== "peek") $("sheetBody").scrollTop = 0; }
 function panel() {
-  const P = $("panel");
+  const P = $("panel"), key = JSON.stringify(sel) + (measure.length === 2);
+  document.body.classList.toggle("has-sel", !!sel);
+  if (key !== lastSel) { lastSel = key; const on = sel || measure.length === 2; if (on && $("side").dataset.sheet === "peek") sheet("half"); else if (!on && $("side").dataset.sheet === "half") sheet("peek"); }
   if (document.activeElement && P.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // don't remove what is being typed in
   P.replaceChildren();
   const head = t => { const h = document.createElement("h2"); h.textContent = t; P.append(h); };
@@ -325,8 +450,11 @@ function panel() {
     askLength("Real length", len(w), v => stretch(w.a, w.b, v, len(w) - .05));
     const o = document.createElement("div"); o.className = "row";
     const ob = document.createElement("button"); ob.textContent = L.open[w.i] ? "There is a wall here" : "No wall here: it's open";
-    ob.onclick = () => { remember(); L.open[w.i] = !L.open[w.i]; changed(); }; o.append(ob); P.append(o);
-    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past this wall's end moves to match. Double-click a wall to add a corner."; P.append(n);
+    ob.onclick = () => { remember(); L.open[w.i] = !L.open[w.i]; changed(); }; o.append(ob);
+    const add = document.createElement("button"); add.textContent = "Add a corner in the middle";
+    add.onclick = () => { remember(); L.vertices.splice(w.i + 1, 0, [+((w.a[0] + w.b[0]) / 2).toFixed(3), +((w.a[1] + w.b[1]) / 2).toFixed(3)]); L.open.splice(w.i + 1, 0, L.open[w.i]); sel = { corner: w.i + 1 }; changed(); };
+    o.append(add); P.append(o);
+    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Everything past this wall's end moves to match."; P.append(n);
   } else if (sel?.point != null && walk[sel.point]) {
     const w = walk[sel.point], k = w.kind;
     head(`Point ${sel.point + 1}: ${WALK_NAME[k] || k}`);
@@ -374,7 +502,7 @@ function panel() {
     const n = document.createElement("div"); n.className = "mute"; n.textContent = "Typing a size makes it a plain rectangle again. Drag it to slide it along the wall."; P.append(n);
     const b = document.createElement("button"); b.textContent = "Delete it"; b.onclick = removeSelected; P.append(b);
   }
-  if (sel) { const b = document.createElement("button"); b.textContent = "Done (Esc)"; b.style.marginTop = "8px"; b.onclick = letGo; P.append(b); }
+  if (sel) { const b = document.createElement("button"); b.textContent = coarse ? "Done" : "Done (Esc)"; b.style.marginTop = "8px"; b.onclick = letGo; P.append(b); }
   tip();
 }
 function letGo() { document.activeElement?.blur?.(); measure = []; setTool("select"); sel = null; draw(); if ($("mk").hidden) pointPhotos(); }
@@ -383,10 +511,15 @@ async function deletePoint(w) {
   if (!r.ok) return;
   walk.splice(walk.indexOf(w), 1); sel = null; renderWalk(); $("walkMsg").textContent = "Deleted. Make the plan again to use it."; draw(); if ($("mk").hidden) pointPhotos();
 }
+let tipSeen = false;
 function tip() {
+  const touchView = is3d ? "One finger turns · two fingers move and zoom · tap anything to select it" : "One finger moves · pinch to zoom · tap a corner or wall to select it";
+  $("tip").classList.toggle("quiet", tool === "select" && tipSeen && (coarse || narrow.matches));
+  if (tool === "select" && (coarse || narrow.matches) && !tipSeen) setTimeout(() => { tipSeen = true; $("tip").classList.add("quiet"); }, 6000);
+  if (tool === "select" && coarse) { $("tipText").textContent = touchView; return; }
   $("tipText").textContent = {
     select: is3d ? "Drag to turn · right-drag to move sideways · scroll to zoom · click a point to see its photos · drag a point or corner to move it · click a door, window or wall to select it" : "Drag a corner · click a wall to type its real length · double-click a wall to add a corner · scroll to zoom, drag the background to move",
-    measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : "Type the real length on the right",
+    measure: measure.length === 0 ? "Click the first point" : measure.length === 1 ? "Click the second point" : `Type the real length ${narrow.matches ? "below" : "on the right"}`,
     point: "Click where the new point goes", door: "Click a wall where the door is", window: "Click a wall where the window is",
   }[tool];
 }
@@ -453,8 +586,18 @@ function tidy() {
 }
 
 svg.addEventListener("mousedown", e => e.preventDefault());   // a click on the plan must not take the focus off the length box it just opened
+const planFingers = new Map(); let planPinch = null;
+function planCancel() { if (drag?.corner != null || drag?.opening != null) { history.pop(); $("undo").disabled = !history.length; } drag = null; }
 svg.addEventListener("pointerdown", e => {
-  const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, t = e.target.dataset, p = toPlan(x, y);
+  planFingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (planFingers.size === 2) { planCancel(); const [a, b] = planFingers.values(); planPinch = { d: gap2(a, b), s: view.s, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, vx: view.x, vy: view.y }; hold(svg, e); return; }
+  const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, p = toPlan(x, y), touch = e.pointerType === "touch";
+  let t = e.target.dataset;
+  if (touch && t.point == null && t.corner == null && tool === "select") {      // a finger is wide: the nearest corner or point
+    let best = 26;
+    L.vertices.forEach((v, i) => { const q = toScreen(v), d = Math.hypot(q[0] - x, q[1] - y); if (d < best) { best = d; t = { corner: i }; } });
+    walk.forEach((w, i) => { const q = toScreen(worldToPlan(w.x, w.z)), d = Math.hypot(q[0] - x, q[1] - y); if (d < best) { best = d; t = { point: i }; } });
+  }
   if (document.activeElement?.tagName === "INPUT") document.activeElement.blur();
   if (tool === "measure") {
     if (measure.length === 2) measure = [];
@@ -476,13 +619,21 @@ svg.addEventListener("pointerdown", e => {
     if (n && n.d * view.s < 30) { remember(); L.openings.push({ kind: tool, at: n.q }); setTool("select"); changed(); }
     return;
   }
-  if (t.point != null) { select({ point: +t.point }); drag = { point: +t.point, moved: false }; svg.setPointerCapture(e.pointerId); return; }
-  if (t.corner != null) { remember(); drag = { corner: +t.corner, moved: false }; sel = { corner: +t.corner }; svg.setPointerCapture(e.pointerId); draw(); return; }
-  if (t.opening != null) { remember(); select({ opening: +t.opening }); drag = { opening: +t.opening, moved: false }; svg.setPointerCapture(e.pointerId); return; }
+  if (touch && t.point != null && sel?.point !== +t.point) { select({ point: +t.point }); return; }     // a finger selects first, then moves: scrolling mustn't shift a corner
+  if (touch && t.corner != null && sel?.corner !== +t.corner) { select({ corner: +t.corner }); return; }
+  if (touch && t.opening != null && sel?.opening !== +t.opening) { select({ opening: +t.opening }); return; }
+  if (t.point != null) { select({ point: +t.point }); drag = { point: +t.point, moved: false }; hold(svg, e); return; }
+  if (t.corner != null) { remember(); drag = { corner: +t.corner, moved: false }; sel = { corner: +t.corner }; hold(svg, e); draw(); return; }
+  if (t.opening != null) { remember(); select({ opening: +t.opening }); drag = { opening: +t.opening, moved: false }; hold(svg, e); return; }
   if (t.wall != null) { const q = planToWorld(p); select({ wall: +t.wall, spot: [q[0], (scene?.floor ?? 0) + 1.2, q[1]] }); return; }
-  sel = null; drag = { pan: [x - view.x, y - view.y] }; svg.setPointerCapture(e.pointerId); draw();
+  sel = null; drag = { pan: [x - view.x, y - view.y] }; hold(svg, e); draw();
 });
 svg.addEventListener("pointermove", e => {
+  if (planFingers.has(e.pointerId)) planFingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (planPinch && planFingers.size === 2) {
+    const [a, b] = planFingers.values(), r = svg.getBoundingClientRect(), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, k = Math.max(15, Math.min(800, planPinch.s * gap2(a, b) / planPinch.d)) / planPinch.s;
+    view.s = planPinch.s * k; view.x = mx - r.left - (planPinch.x - r.left - planPinch.vx) * k; view.y = my - r.top - (planPinch.y - r.top - planPinch.vy) * k; draw(); return;
+  }
   if (!drag) return;
   const r = svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   if (drag.pan) { view.x = x - drag.pan[0]; view.y = y - drag.pan[1]; draw(); return; }
@@ -493,7 +644,10 @@ svg.addEventListener("pointermove", e => {
   if (drag.opening != null) { const q = toPlan(x, y); moveOpening(L.openings[drag.opening], q); drag.moved = true; draw(); return; }
   const p = toPlan(x, y); L.vertices[drag.corner] = [+p[0].toFixed(3), +p[1].toFixed(3)]; drag.moved = true; draw();
 });
-svg.addEventListener("pointerup", async () => {
+svg.addEventListener("pointercancel", e => { planFingers.delete(e.pointerId); planPinch = null; planCancel(); });
+svg.addEventListener("pointerup", async e => {
+  planFingers.delete(e.pointerId);
+  if (planPinch) { if (planFingers.size < 2) planPinch = null; drag = null; return; }
   if (drag?.point != null && drag.moved) {
     const w = walk[drag.point]; drag = null;
     const r = await fetch(`/api/scans/${id}/walk/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: w.id, x: w.x, z: w.z }) });
@@ -524,8 +678,32 @@ window.addEventListener("keydown", e => {            // works from inside a box 
   letGo();
 }, true);
 window.addEventListener("resize", draw);
-$("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => setTool("measure");
-$("tPoint").onclick = () => setTool("point"); $("tDoor").onclick = () => setTool("door"); $("tWindow").onclick = () => setTool("window");
+const planTool = async t => { if (is3d) await set3d(false); setTool(t); };     // these work on the plan, so it goes there
+$("tSelect").onclick = () => setTool("select"); $("tMeasure").onclick = () => planTool("measure");
+$("tPoint").onclick = () => planTool("point"); $("tDoor").onclick = () => planTool("door"); $("tWindow").onclick = () => planTool("window");
+new ResizeObserver(() => { if (!L) return; if (is3d) resize3d(); else draw(); }).observe($("wrap"));
+if (!narrow.matches) for (const d of document.querySelectorAll("details.sec")) d.open = true;
+(() => {          // dragging the sheet
+  const head = $("sheetHead"), side = $("side"); let d = null;
+  new ResizeObserver(() => { if (narrow.matches && !document.body.classList.contains("marking")) document.documentElement.style.setProperty("--peek", head.offsetHeight + "px"); else document.documentElement.style.removeProperty("--peek"); }).observe(head);
+  const place = () => ({ peek: side.offsetHeight - head.offsetHeight, half: side.offsetHeight * .45, full: 0 });
+  head.addEventListener("pointerdown", e => { if (!narrow.matches) return; const p = place(); d = { y: e.clientY, from: p[side.dataset.sheet], moved: false }; hold(head, e); });
+  head.addEventListener("pointermove", e => { if (!d) return; const y = e.clientY - d.y; if (Math.abs(y) > 6) d.moved = true; if (d.moved) { side.style.transition = "none"; side.style.transform = `translateY(${Math.max(0, d.from + y)}px)`; } });
+  const end = e => {
+    if (!d) return; const was = d; d = null; side.style.transition = ""; side.style.transform = "";
+    if (!was.moved) return sheet({ peek: "half", half: "full", full: "peek" }[side.dataset.sheet]);
+    const y = was.from + e.clientY - was.y, p = place();
+    sheet(Object.keys(p).sort((a, b) => Math.abs(p[a] - y) - Math.abs(p[b] - y))[0]);
+  };
+  head.addEventListener("pointerup", end); head.addEventListener("pointercancel", end);
+  head.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sheet({ peek: "half", half: "full", full: "peek" }[side.dataset.sheet]); } });
+})();
+$("reset").onclick = () => {        // starting again throws away hand corrections, so it asks with a second press
+  const b = $("reset");
+  if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "Press again to lose your corrections"; setTimeout(() => { delete b.dataset.sure; b.textContent = "Back to the scan's walls"; }, 4000); return; }
+  delete b.dataset.sure; b.textContent = "Back to the scan's walls";
+  fetch(`/api/scans/${id}/layout`, { method: "DELETE" }).then(() => reload());
+};
 $("fit").onclick = () => is3d ? view3d("start") : fit(); $("tidy").onclick = tidy;
 $("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw; $("labels3d").onchange = draw; $("panels3d").onchange = draw;
 $("vAbove").onclick = () => view3d("above"); $("vPhone").onclick = () => view3d("phone");
@@ -592,7 +770,7 @@ $("ppShow").onchange = photo3d;
 let mkDraw = null, mkStart = null, mkHold = null, mkW = 0, mkH = 0, mkSeen = new Set(), mkSnap = null;
 // the point this spot in the photo is on, if it is close enough to mean it
 function pointNear(f, a, b) {
-  let best = null, bd = 20;
+  let best = null, bd = (coarse ? 28 : 20) / mkZoom;
   walk.forEach((w, i) => { if (!mkSeen.has(w.id)) return; const q = camPoint(f, [w.x, w.y, w.z]); if (!q) return; const d = Math.hypot((q[0] - a) * mkW, (q[1] - b) * mkH); if (d < bd) { bd = d; best = i; } });
   return best;
 }
@@ -689,11 +867,42 @@ function setOpening(o, b) {
   o.sill = o.kind === "door" ? 0 : +Math.max(0, b.h0).toFixed(3);
   o.head = +Math.max(o.sill + .1, b.h1).toFixed(3); o.height_known = true;
 }
-function mkOpen() { if (!mkF()) return; $("mk").hidden = false; mkMode(null); mkLoad(); }
-function mkClose() { $("mk").hidden = true; mkDraw = null; mkStart = null; mkHold = null; }
+let mkZoom = 1, mkX = 0, mkY = 0, mkAim = null;
+function mkOpen() { if (!mkF()) return; document.body.classList.add("marking"); document.body.classList.remove("picked"); $("mk").hidden = false; mkMode(null); mkLoad(); }
+function mkClose() { $("mk").hidden = true; document.body.classList.remove("marking"); mkDraw = null; mkStart = null; mkHold = null; mkAim = null; $("mkLoupe").hidden = true; document.body.classList.remove("adding"); draw(); }
+function mkView() { $("mkInner").style.transform = mkZoom > 1 ? `translate(${mkX}px,${mkY}px) scale(${mkZoom})` : ""; }
+function mkLoupe(a, b) {          // what is under the finger, larger, out of its way
+  const L2 = $("mkLoupe"), k = 3 * Math.max(mkZoom, 1), w = mkW * k, h = mkH * k;
+  L2.hidden = false; L2.classList.toggle("right", a < .5 && b < .4);
+  L2.style.backgroundImage = `url("${$("mkImg").src}")`; L2.style.backgroundSize = `${w}px ${h}px`; L2.style.backgroundPosition = `${66 - a * w}px ${66 - b * h}px`;
+}
+(() => {          // two fingers zoom into the photo and move it
+  const st = $("mkStage"), on = new Map(); let p = null;
+  const stop = e => { e.stopPropagation(); };
+  st.addEventListener("pointerdown", e => {
+    on.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (on.size !== 2) return;
+    if (mkHold?.grab) { history.pop(); $("undo").disabled = !history.length; }
+    mkHold = null; mkAim = null; $("mkLoupe").hidden = true;
+    const [a, b] = on.values(), r = st.getBoundingClientRect(), base = $("mkInner").offsetLeft, top = $("mkInner").offsetTop;
+    p = { d: gap2(a, b), z: mkZoom, mx: (a.x + b.x) / 2 - r.left - base, my: (a.y + b.y) / 2 - r.top - top, x: mkX, y: mkY };
+    stop(e);
+  }, true);
+  st.addEventListener("pointermove", e => {
+    if (on.has(e.pointerId)) on.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!p || on.size !== 2) return;
+    const [a, b] = on.values(), r = st.getBoundingClientRect(), base = $("mkInner").offsetLeft, top = $("mkInner").offsetTop, z = Math.max(1, Math.min(8, p.z * gap2(a, b) / p.d)), k = z / p.z, mx = (a.x + b.x) / 2 - r.left - base, my = (a.y + b.y) / 2 - r.top - top;
+    mkZoom = z; mkX = z === 1 ? 0 : mx - (p.mx - p.x) * k; mkY = z === 1 ? 0 : my - (p.my - p.y) * k; mkView(); mkRender(); stop(e);
+  }, true);
+  const up = e => { on.delete(e.pointerId); if (p) { if (on.size < 2) p = null; stop(e); } };
+  st.addEventListener("pointerup", up, true); st.addEventListener("pointercancel", up, true);
+})();
+// messages speak of tapping on a touch screen, and there's no Esc key there
+if (coarse) for (const box of ["mkMsg", "tipText"]) new MutationObserver(() => { const el = $(box), t = el.textContent, n = t.replace(/\bClick\b/g, "Tap").replace(/\bclick\b/g, "tap").replace(/ Esc starts again\.| Esc when you've finished\./g, "").replace(/, or Esc to stop/, ""); if (n !== t) el.textContent = n; }).observe($(box), { childList: true });
 function mkLoad() {
   const f = mkF(); if (!f) return;
   const box = $("mkStage").getBoundingClientRect(), k = Math.min(box.width / f.aspect, box.height);
+  mkZoom = 1; mkX = mkY = 0; mkView();
   mkH = k; mkW = k * f.aspect; $("mkInner").style.width = mkW + "px"; $("mkInner").style.height = mkH + "px";
   $("mkImg").src = `/api/scans/${id}/photos/${f.file}?up=1`;
   $("mkCount").textContent = `Photo ${ppAt + 1} of ${ppList.length}`;
@@ -701,7 +910,8 @@ function mkLoad() {
   fetch(`/api/scans/${id}/walk/seen?file=${encodeURIComponent(f.file)}`).then(r => r.ok ? r.json() : { ids: [] }).then(j => { if (mkF() === f) { mkSeen = new Set(j.ids); mkRender(); } }).catch(() => {});
 }
 function mkMode(kind) {
-  mkDraw = kind; mkStart = null; mkSnap = null;
+  if (kind) document.body.classList.remove("picked");          // the photo stays clear while drawing on it
+  mkDraw = kind; mkStart = null; mkSnap = null; document.body.classList.toggle("adding", kind === "point" || !narrow.matches);
   $("mkWall").classList.toggle("on", kind === "wall"); $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
   $("mkSvg").style.cursor = kind ? "crosshair" : "default";
   $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind === "wall" ? "Click two spots on the wall, at any height. A click on a point sticks to it." : kind ? `Click the ${kind}'s 4 corners, in any order. A click on a point sticks to it.` : "Press Add a point to add one. Click a point, door or window to select it. Drag a point, a white corner or a square plan corner to where it really is.";
@@ -709,7 +919,8 @@ function mkMode(kind) {
 }
 function mkRender() {
   const svgM = $("mkSvg"), f = mkF(); svgM.replaceChildren(); if (!f) return;
-  const el = (n, at) => { const e = document.createElementNS(NS, n); for (const k in at) e.setAttribute(k, at[k]); svgM.append(e); return e; };
+  const zk = 1 / mkZoom, sized = ["r", "stroke-width", "font-size"];           // markers keep their size on the screen when the photo is zoomed
+  const el = (n, at) => { const e = document.createElementNS(NS, n); for (const k in at) e.setAttribute(k, sized.includes(k) ? at[k] * zk : at[k]); svgM.append(e); return e; };
   const fl = scene?.floor ?? 0, inPhoto = (x, z, y) => { const q = camPoint(f, [x, y, z]); return q && [q[0] * mkW, q[1] * mkH]; };
   for (const w of wallsOf()) {
     const A = planToWorld(w.a), B = planToWorld(w.b), on = sel?.wall === w.i, colour = on ? "#ff2f86" : L.open[w.i] ? "#ffb066" : "#2fe0cf";
@@ -722,7 +933,7 @@ function mkRender() {
     const A = planToWorld(v), held = mkHold?.corner === k && mkHold.at, bits = held ? [[held[0] * mkW, held[1] * mkH]] : [inPhoto(A[0], A[1], fl), inPhoto(A[0], A[1], fl + L.height_m)];
     bits.forEach(p => {
       if (!p || p[0] < 0 || p[1] < 0 || p[0] > mkW || p[1] > mkH) return;
-      el("rect", { x: p[0] - 7, y: p[1] - 7, width: 14, height: 14, fill: "#2fe0cf", stroke: "#000", "stroke-width": 2, "data-corner": k, style: "cursor:move" });
+      el("rect", { x: p[0] - 7 * zk, y: p[1] - 7 * zk, width: 14 * zk, height: 14 * zk, fill: "#2fe0cf", stroke: "#000", "stroke-width": 2, "data-corner": k, style: "cursor:move" });
       const t = el("text", { x: p[0] + 11, y: p[1] - 9, fill: "#2fe0cf", "font-size": 13, "font-weight": 700, "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
       t.textContent = `Plan corner ${k + 1}`;
     });
@@ -737,7 +948,7 @@ function mkRender() {
     const lab = el("text", { x: (c[2][0] + c[3][0]) / 2, y: (c[2][1] + c[3][1]) / 2 - 7, fill: "#fff", "font-size": 13, "font-weight": 700, "text-anchor": "middle", "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
     lab.textContent = `${o.kind === "door" ? "Door" : "Window"} ${(b.s1 - b.s0).toFixed(2)} × ${(b.h1 - b.h0).toFixed(2)} m`;
     if (!on || mkDraw) return;
-    handles = () => c.forEach((p, i) => el("circle", { cx: p[0], cy: p[1], r: 9, fill: "#fff", stroke: colour, "stroke-width": 3, "data-opening": k, "data-grab": `c${i}`, style: "cursor:move" }));
+    handles = () => c.forEach((p, i) => el("circle", { cx: p[0], cy: p[1], r: coarse ? 13 : 9, fill: "#fff", stroke: colour, "stroke-width": 3, "data-opening": k, "data-grab": `c${i}`, style: "cursor:move" }));
   });
   walk.forEach((w, i) => {
     if (!mkSeen.has(w.id)) return;
@@ -770,7 +981,7 @@ function mkFinish(q) {
   remember();
   const o = { kind: mkDraw, at: [0, 0] };
   fromCorners(o, [b0, b1, t1, t0]);
-  L.openings.push(o); sel = { opening: L.openings.length - 1 }; mkMode(null); changed();
+  L.openings.push(o); sel = { opening: L.openings.length - 1 }; mkMode(null); document.body.classList.add("picked"); changed();
 }
 // A wall through two real spots. If the plan has a wall like it, that wall moves there and its neighbours stretch to meet it, so the outline stays closed; if not, it is a new stretch of the outline.
 function mkWallDone(A, B) {
@@ -811,9 +1022,7 @@ async function mkCorner(f, a, b) {
   if (near != null) { const w = walk[near]; return { x: w.x, y: w.y, z: w.z, how: `on point ${near + 1}` }; }
   return mkPlace(f, a, b);
 }
-$("mkSvg").addEventListener("pointerdown", async e => {
-  e.preventDefault(); document.activeElement?.blur?.();
-  const f = mkF(), [a, b] = mkAt(e), ray = camRay(f, a, b);
+async function mkPress(f, a, b) {
   if (mkDraw === "point") {
     const q = await mkPlace(f, a, b), kind = $("mkKind").value;
     if (!q) { $("mkMsg").textContent = "No LiDAR reading and no wall there, so I can't place it. Try another photo."; return; }
@@ -823,10 +1032,6 @@ $("mkSvg").addEventListener("pointerdown", async e => {
     $("walkMsg").textContent = "Saved. Make the plan again to use it.";
     $("mkMsg").textContent = `Point ${walk.length} placed ${q.how}. Click the next, or Esc to stop.`; draw(); return;
   }
-  const cn = e.target.dataset?.corner;
-  if (!mkDraw && cn != null) { sel = { corner: +cn }; mkHold = { corner: +cn, at: null }; $("mkSvg").setPointerCapture(e.pointerId); draw(); return; }
-  const pt = e.target.dataset?.point;
-  if (!mkDraw && pt != null) { sel = { point: +pt }; mkHold = { point: +pt, at: null }; $("mkSvg").setPointerCapture(e.pointerId); draw(); return; }
   if (mkDraw) {
     const q = await mkCorner(f, a, b);
     if (!q) { $("mkMsg").textContent = "No point, LiDAR reading or wall there, so I can't place that corner. Try another spot or photo."; return; }
@@ -843,19 +1048,34 @@ $("mkSvg").addEventListener("pointerdown", async e => {
     $("mkMsg").textContent = `Corner ${mkStart.qs.length} of 4 placed ${q.how}. Click the next. Esc starts again.`; mkRender();
     return;
   }
+}
+$("mkSvg").addEventListener("pointerdown", e => {
+  e.preventDefault(); document.activeElement?.blur?.();
+  const f = mkF(), [a, b] = mkAt(e), ray = camRay(f, a, b);
+  if (mkDraw) {
+    if (e.pointerType === "touch") { mkAim = { at: [a, b] }; hold($("mkSvg"), e); mkLoupe(a, b); if (mkDraw !== "point") { mkSnap = pointNear(f, a, b); mkRender(); } return; }     // a finger aims, and places when it lifts
+    mkPress(f, a, b); return;
+  }
+  document.body.classList.add("picked");           // the details of what's tapped come up
+  const cn = e.target.dataset?.corner;
+  if (!mkDraw && cn != null) { sel = { corner: +cn }; mkHold = { corner: +cn, at: null, sx: e.clientX, sy: e.clientY }; hold($("mkSvg"), e); draw(); return; }
+  const pt = e.target.dataset?.point;
+  if (!mkDraw && pt != null) { sel = { point: +pt }; mkHold = { point: +pt, at: null, sx: e.clientX, sy: e.clientY }; hold($("mkSvg"), e); draw(); return; }
   const k = e.target.dataset?.opening;
   if (k == null) { if (sel?.opening != null) { sel = null; draw(); } return; }
   if (sel?.opening !== +k) { sel = { opening: +k }; draw(); return; }
-  if (e.target.dataset.grab?.[0] === "c") { mkHold = { k: +k, c: +e.target.dataset.grab.slice(1), at: null }; $("mkSvg").setPointerCapture(e.pointerId); return; }
+  if (e.target.dataset.grab?.[0] === "c") { mkHold = { k: +k, c: +e.target.dataset.grab.slice(1), at: null, sx: e.clientX, sy: e.clientY }; hold($("mkSvg"), e); return; }
   const box = openingBox(L.openings[+k]), m = onWall(box.fr, ray); if (!m) return;
   remember(); mkHold = { k: +k, grab: e.target.dataset.grab, box, from: m, base: { ...box }, moved: false };
-  $("mkSvg").setPointerCapture(e.pointerId);
+  hold($("mkSvg"), e);
 });
 $("mkSvg").addEventListener("pointermove", e => {
   const f = mkF(); if (!f || (!mkHold && !mkStart && !mkDraw)) return;
-  const [a, b] = mkAt(e), ray = camRay(f, a, b);
-  if (mkHold?.point != null) { mkHold.at = [a, b]; mkRender(); return; }
-  if (mkHold?.corner != null || mkHold?.c != null) { mkHold.at = [a, b]; mkSnap = pointNear(f, a, b); mkRender(); return; }
+  const [a, b] = mkAt(e), ray = camRay(f, a, b), touch = e.pointerType === "touch";
+  if (mkAim) { mkAim.at = [a, b]; mkLoupe(a, b); if (mkDraw !== "point") { mkSnap = pointNear(f, a, b); if (mkStart) mkStart.now = [a, b]; } mkRender(); return; }
+  if (mkHold && mkHold.sx != null && !mkHold.at && Math.hypot(e.clientX - mkHold.sx, e.clientY - mkHold.sy) < 6) return;       // a tap with a little wobble is still a tap
+  if (mkHold?.point != null) { mkHold.at = [a, b]; if (touch) mkLoupe(a, b); mkRender(); return; }
+  if (mkHold?.corner != null || mkHold?.c != null) { mkHold.at = [a, b]; mkSnap = pointNear(f, a, b); if (touch) mkLoupe(a, b); mkRender(); return; }
   if (mkDraw && mkDraw !== "point") { mkSnap = pointNear(f, a, b); if (mkStart) mkStart.now = [a, b]; mkRender(); return; }
   if (mkDraw) return;
   const m = onWall(mkHold.box.fr, ray); if (!m) return;
@@ -868,6 +1088,8 @@ $("mkSvg").addEventListener("pointermove", e => {
   setOpening(o, x); h.moved = true; mkRender();
 });
 $("mkSvg").addEventListener("pointerup", async () => {
+  $("mkLoupe").hidden = true;
+  if (mkAim) { const at = mkAim.at; mkAim = null; mkPress(mkF(), at[0], at[1]); return; }
   if (!mkHold) return;
   if (mkHold.c != null) {
     const { k, c, at } = mkHold; mkSnap = null;
@@ -915,7 +1137,7 @@ $("ppPrev").onclick = () => { ppAt = (ppAt + ppList.length - 1) % ppList.length;
 $("ppNext").onclick = () => { ppAt = (ppAt + 1) % ppList.length; showPhotoAt(); };
 function renderWalk() {
   $("walkBox").hidden = !walk.length;
-  $("tPoint").hidden = !walk.length;
+  $("tPoint").hidden = !walk.length; $("reset").hidden = !!walk.length;       // a walk starts again with Make the plan again
   $("walkList").replaceChildren(...walk.map((w, i) => {
     const r = document.createElement("tr"); if (sel?.point === i) r.className = "sel";
     r.innerHTML = `<td><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${WALK[w.kind] || WALK.unknown};margin-right:6px"></span>Point ${i + 1}</td><td style="font-weight:400"></td>`;
@@ -1014,27 +1236,40 @@ async function set3d(on) {
   $("v3d").classList.toggle("on", on); $("v3d").textContent = on ? "Plan" : "3D";
   $("gl").hidden = !on; svg.style.display = on ? "none" : ""; $("only3d").hidden = !on;
   photo3d();
-  for (const b of ["tMeasure", "tDoor", "tWindow", "tPoint"]) $(b).disabled = on;
   setTool("select");
   if (on) { resize3d(); await loadMesh(); clip3d(); view3d(G.placed ? null : "start"); G.placed = true; draw(); } else { loadScan(); }
 }
 function init3d() {
   const box = $("gl"), renderer = new T.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(devicePixelRatio || 1); renderer.localClippingEnabled = true;
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); renderer.localClippingEnabled = true;
   box.appendChild(renderer.domElement);
   const world = new T.Scene(); world.background = new T.Color(getComputedStyle(document.body).backgroundColor);
   const camera = new T.PerspectiveCamera(50, 1, 0.02, 200), overlay = new T.Group(); world.add(overlay);
   G = { renderer, world, camera, overlay, meshes: new Map(), target: new T.Vector3(), az: 0, el: .8, r: 10, labels: new Map(), hits: [], dirty: true };
   const dom = renderer.domElement, ray = new T.Raycaster();
-  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); const all = ray.intersectObjects(G.hits.filter(o => o.visible), false), first = all[0], u = first?.object.userData;
+  const fingers = new Map(); let pinch = null;
+  const pick = e => { const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera); if (e.pointerType === "touch") {     // a finger is wide: the nearest point or corner on the screen
+      let best = null, bd = 26; const v = new T.Vector3();
+      for (const o of G.hits) { if (!o.visible || (o.userData.point == null && o.userData.corner == null)) continue; v.copy(o.position).project(camera); if (v.z > 1) continue; const d = Math.hypot((v.x + 1) / 2 * b.width + b.left - e.clientX, (1 - v.y) / 2 * b.height + b.top - e.clientY); if (d < bd) { bd = d; best = o; } }
+      if (best) return { object: best, point: best.position.clone(), distance: 0 };
+    }
+    const all = ray.intersectObjects(G.hits.filter(o => o.visible), false), first = all[0], u = first?.object.userData;
     if (!first || (u.opening == null && u.wall == null)) return first;                 // a door or window lies on its wall: a point close by still comes first, then the door or window
     return all.find(h => h.distance < first.distance + .25 && (h.object.userData.point != null || h.object.userData.corner != null)) || all.find(h => h.distance < first.distance + .05 && h.object.userData.opening != null) || first; };
   let act = null;
   dom.addEventListener("contextmenu", e => e.preventDefault());
   dom.addEventListener("pointerdown", e => {
     if (document.activeElement?.tagName === "INPUT") document.activeElement.blur();
-    dom.setPointerCapture(e.pointerId);
-    const hit = e.button === 0 && !e.shiftKey ? pick(e) : null;
+    hold(dom, e);
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (fingers.size === 2) {
+      if (act?.corner != null || act?.opening != null) { history.pop(); $("undo").disabled = !history.length; }
+      const [a, b] = fingers.values(); act = null; pinch = { d: gap2(a, b), r: G.r, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; return;
+    }
+    const hit = e.button === 0 && !e.shiftKey ? pick(e) : null, uh = hit?.object.userData;
+    if (e.pointerType === "touch" && hit && !((uh.point != null && sel?.point === uh.point) || (uh.corner != null && sel?.corner === uh.corner) || (uh.opening != null && sel?.opening === uh.opening))) {
+      act = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, pan: false, hit, touch: true }; return;     // a finger selects first, then moves: turning the view mustn't shift a point
+    }
     if (hit?.object.userData.point != null) {          // moved in the plane facing you: turn the view to move it another way
       const i = hit.object.userData.point, dir = camera.getWorldDirection(new T.Vector3());
       act = { point: i, plane: new T.Plane().setFromNormalAndCoplanarPoint(dir, hit.object.position), moved: false, sx: e.clientX, sy: e.clientY };
@@ -1045,6 +1280,12 @@ function init3d() {
     act = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, pan: e.button !== 0 || e.shiftKey, hit };
   });
   dom.addEventListener("pointermove", e => {
+    if (fingers.has(e.pointerId)) fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && fingers.size === 2) {
+      const [a, b] = fingers.values(), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, k = G.r * .0016, right = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), up = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+      G.r = Math.max(.05, Math.min(60, pinch.r * pinch.d / Math.max(gap2(a, b), 1)));
+      G.target.addScaledVector(right, -(mx - pinch.x) * k).addScaledVector(up, (my - pinch.y) * k); pinch.x = mx; pinch.y = my; place3d(); return;
+    }
     if (!act) return;
     if (act.point != null) {
       const b = dom.getBoundingClientRect(); ray.setFromCamera(new T.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), camera);
@@ -1071,7 +1312,10 @@ function init3d() {
     } else { G.az -= dx * .006; G.el = Math.max(-1.5, Math.min(1.54, G.el + dy * .006)); }
     place3d();
   });
+  dom.addEventListener("pointercancel", e => { fingers.delete(e.pointerId); pinch = null; act = null; });
   dom.addEventListener("pointerup", e => {
+    fingers.delete(e.pointerId);
+    if (pinch) { if (fingers.size < 2) pinch = null; act = null; return; }
     if (act?.point != null) {
       if (act.moved) {
         const w = walk[act.point];
@@ -1079,7 +1323,7 @@ function init3d() {
       }
     }
     else if (act?.corner != null || act?.opening != null) { if (act.moved) changed(); else { history.pop(); $("undo").disabled = !history.length; } }
-    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < 4) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.wall != null ? { wall: u.wall, spot: act.hit.point.toArray() } : null); }
+    else if (act && Math.hypot(e.clientX - act.sx, e.clientY - act.sy) < (act.touch ? 12 : 4)) { const u = act.hit?.object.userData || {}; select(u.point != null ? { point: u.point } : u.corner != null ? { corner: u.corner } : u.opening != null ? { opening: u.opening } : u.wall != null ? { wall: u.wall, spot: act.hit.point.toArray() } : null); }
     act = null;
   });
   dom.addEventListener("wheel", e => { e.preventDefault(); G.r = Math.max(.05, Math.min(60, G.r * Math.exp(e.deltaY * .0012))); place3d(); }, { passive: false });

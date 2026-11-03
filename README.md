@@ -365,6 +365,17 @@ at least size + 4 mm across; connectors on strongly curved or thin cuts can fail
 
 ![Marking a door and fixing points on a photo](docs/img/web-layout-mark.jpg)
 
+**On a phone** the page is built for one hand: the view fills the screen, the tools are along the bottom and the details sit in a sheet.
+
+<img src="docs/img/web-layout-phone.jpg" width="280" alt="The Layout page on a phone, with a point selected">
+
+- **Move around:** one finger turns the 3D view or moves the plan. Pinch zooms and two fingers move sideways.
+- **Select, then move:** the first tap selects a point, corner, door or window, and only then can you drag it, so moving the view can't shift anything by accident.
+- **Details:** tap or drag the bar above the tools to bring the sheet up. It opens by itself when you select something. **Done** lets go.
+- **Tools:** **Length**, **Door**, **Window** and **Point** work on the plan, so pressing one in 3D switches there.
+- **Mark on a photo:** tap the photo in the sheet to open it full screen. Pinch to zoom in. When drawing, press and slide your finger with the magnifier to aim: the corner lands where you lift it.
+- **Add a corner:** select a wall and press **Add a corner in the middle**. This button works on a computer too, as does double-clicking a wall.
+
 Open a sweep on the web page and press **Layout**. You get the room from above with no pictures: the walls with their lengths, on a 1 m grid, over the grey readings the scan took at the walls. Your changes save by themselves and stay when the scan is re-converted.
 
 - **See what is real:** the scan lies under the plan, seen from above in its real colours, so you can tell a wall from a sofa. **Take off above** removes everything higher than 2, 1.5 or 1 m, which lets you see under a lowered ceiling. **Strength** fades it, and you can turn it off.
@@ -441,6 +452,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.64.0 | Layout page rebuilt for phones first: full-screen view, tools along the bottom, details in a sheet, pinch to zoom, select before moving, and photos you can zoom with a magnifier for aiming. **Back to the scan's walls** now works; it asks with a second press, and a walk uses **Make the plan again** instead. |
 | 0.63.3 | Layout page: draw a door or window by its **4 corners**, each going exactly where you click or onto your point, and drag any corner to refine it. |
 | 0.63.2 | Layout page: a door or window drawn on a photo sticks to your points and takes the angle of the real spots, not the plan's wall. Doors and windows made from clicks sit at the clicks too. **Draw a wall** on a photo, and drag the plan's corners on it, sticking to your points. |
 | 0.63.1 | Layout page: a door or window shape that is really wall can be marked **It's a wall**, and it stays gone when the plan is made again. |
