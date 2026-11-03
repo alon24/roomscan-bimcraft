@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>RoomScan</title>
 <style>
   /* One teal accent, shared with the phone app. Neutrals lean very slightly green so the grey isn't dead. */
@@ -211,6 +211,40 @@
     #cutPanel { flex:none; max-width:none; min-width:0; overflow:visible; }
     .cutbar .hint { display:none; }
   }
+  /* a phone shows one screen at a time: the list, or the scan with a way back */
+  #toList, #actMore, #photosAll { display:none; }
+  #photosAll[hidden] { display:none !important; }
+  #actBar { display:contents; }
+  @media (max-width:760px) {
+    body:not(.embed) { display:block; min-height:100dvh; font-size:15px; }
+    body.showing:not(.embed) aside { display:none; }
+    body:not(.showing):not(.embed) #hint { display:none; }
+    body:not(.showing):not(.embed) main { padding:0; }
+    body:not(.showing):not(.embed) #liveOffer:not([hidden]) { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:20; }
+    aside { padding:14px 12px 12px; }
+    #toList { display:inline-flex; align-items:center; gap:4px; min-height:44px; margin:-6px 0 4px -8px; padding:0 10px 0 2px; border:0; background:none; color:var(--acc); font:inherit; font-weight:600; cursor:pointer; }
+    #toList svg { width:22px; height:22px; }
+    body.embed #toList { display:none; }
+    main { padding:12px 12px calc(24px + env(safe-area-inset-bottom)); }
+    #title { font-size:19px; }
+    .btn, #actions a[download] { min-height:44px; height:auto; }
+    input, select, textarea { font-size:16px; }
+    body:not(.embed) #actBar { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 12px; }
+    body:not(.embed) #actMore { display:inline-flex; margin-left:auto; }
+    body:not(.embed) #actions { display:contents; margin:0; }
+    body:not(.embed) #actions > :not(.act-main) { display:none; }
+    body:not(.embed) #actions.open { display:flex; flex-basis:100%; margin:0; }
+    body:not(.embed) #actions.open ~ #actMore { order:1; }
+    #actions.open .act-main { order:-1; flex-basis:100%; }
+    body:not(.embed) #actions.open > :not(.act-main) { display:inline-flex; }
+    body:not(.embed) #actions .danger { margin-left:0; }
+    #actions .act-main { flex:1; background:var(--acc); border-color:var(--acc); color:var(--acc-fg); font-weight:600; }
+    #modes { display:flex; flex-wrap:nowrap; overflow-x:auto; max-width:100%; margin-bottom:8px; }
+    #modes .btn { flex:none; white-space:nowrap; min-height:38px; }
+    #view { height:clamp(320px, 56dvh, 640px); }
+    #photos.short { max-height:320px; overflow:hidden; }
+    #photosAll { display:flex; width:100%; margin-top:8px; }
+  }
   @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation:none !important; transition:none !important; } }
 </style>
 </head>
@@ -238,8 +272,9 @@
   <button class="btn" id="liveOffer" hidden title="A phone is sending a scan right now">Live capture running: show it</button>
   <div id="hint"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 15l3-7 4 5 3-3"/></svg><p>Pick a scan on the left to see it in 3D.</p></div>
   <div id="detail" hidden>
+    <button id="toList" aria-label="Back to the list of scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Scans</button>
     <div class="head"><h1 id="title"></h1><b id="status"></b><span class="hint" id="appInfo"></span></div>
-    <div class="row" id="actions"></div>
+    <div id="actBar"><div class="row" id="actions"></div><button class="btn" id="actMore" aria-expanded="false">More</button></div>
     <!-- live guided capture (docs/live-guide.md): the map the phone is being sent, watched from here -->
     <div id="livePanel" hidden style="margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:8px">
       <div class="row" style="align-items:center;gap:10px"><b id="liveTitle">Live capture</b><span class="hint" id="livePct"></span>
@@ -265,7 +300,7 @@
             <button class="btn" id="clearMeasure">Clear</button>
           </span>
         </div>
-        <div id="view"></div><p class="hint view-hint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p>
+        <div id="view"></div><p class="hint view-hint" id="viewHint">Drag: rotate · right-drag or two fingers: pan · scroll or pinch: zoom · double-click: reset</p>
         <img id="plan" alt="Plan">
       </div>
       <div class="side-col">
@@ -379,7 +414,7 @@
         <details id="settingsBox" class="panel" hidden><summary><b>Settings used for this model</b></summary><pre id="settingsPre" style="margin:10px 0 0"></pre></details>
       </div>
     </div>
-    <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs"></div></div>
+    <div id="photosBox" hidden><h3>Photos</h3><div id="photos" class="thumbs short"></div><button class="btn" id="photosAll">Show all the photos</button></div>
     <div id="framesBox" hidden>
       <h3>Frames</h3>
       <p class="hint">Every frame has its photo, LiDAR depth and position. The red area is what the app detected as the part (from the LiDAR and your traced outline). Click a frame to correct it, then rebuild.</p>
@@ -2311,6 +2346,35 @@ function connect() {
 }
 connect();
 
+// On a phone the list and the scan are two screens, and the phone's back gesture goes from the scan to the list.
+(() => {
+  const small = matchMedia("(max-width:760px)"), embed = new URLSearchParams(location.search).get("embed");
+  let listY = 0, pushed = false;
+  const update = () => {
+    const on = !$("detail").hidden, was = document.body.classList.contains("showing");
+    if (on === was) return;
+    if (on) listY = scrollY;
+    document.body.classList.toggle("showing", on);
+    if (on && small.matches && !embed) {
+      scrollTo(0, 0);
+      if (!pushed) {
+        if (new URLSearchParams(location.search).get("scan")) history.replaceState(null, "", location.pathname);
+        history.pushState({ scan: current }, "", `${location.pathname}?scan=${current}`); pushed = true;
+      }
+    } else if (!on && small.matches) { scrollTo(0, listY); }
+  };
+  new MutationObserver(update).observe($("detail"), { attributes: true, attributeFilter: ["hidden"] });
+  addEventListener("popstate", () => { pushed = false; if (!$("detail").hidden) { clearDetail(); loadList(); } });
+  // on a phone the scan's main action stays out, the rest are behind More
+  const mainActs = ["Plan", "Layout"];
+  const markActs = () => { for (const b of $("actions").children) b.classList.toggle("act-main", mainActs.includes(b.textContent.trim())); };
+  new MutationObserver(markActs).observe($("actions"), { childList: true });
+  $("actMore").onclick = () => { const open = $("actions").classList.toggle("open"); $("actMore").setAttribute("aria-expanded", open); $("actMore").textContent = open ? "Less" : "More"; };
+  $("photosAll").onclick = () => { $("photos").classList.remove("short"); $("photosAll").hidden = true; };
+  new MutationObserver(() => { $("photos").classList.add("short"); $("photosAll").hidden = false; $("photosAll").textContent = `Show all ${$("photos").children.length} photos`; }).observe($("photos"), { childList: true });
+  if (matchMedia("(pointer:coarse)").matches) $("viewHint").textContent = "One finger turns · two fingers move · pinch zooms";
+  $("toList").onclick = () => { if (pushed) history.back(); else { clearDetail(); loadList(); } };
+})();
 const params = new URLSearchParams(location.search);
 if (params.get("embed")) document.body.classList.add("embed");  // inside the iPhone app: no list, just the viewer
 if (params.get("scan")) pinned = true;   // before the first live event can arrive

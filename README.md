@@ -367,8 +367,9 @@ at least size + 4 mm across; connectors on strongly curved or thin cuts can fail
 
 **On a phone** the page is built for one hand: the view fills the screen, the tools are along the bottom and the details sit in a sheet.
 
-<img src="docs/img/web-layout-phone.jpg" width="280" alt="The Layout page on a phone, with a point selected">
+<img src="docs/img/web-layout-phone.jpg" width="280" alt="The Layout page on a phone, with a point selected"> <img src="docs/img/web-main-phone.jpg" width="280" alt="A scan on the main page on a phone">
 
+- **Main page:** the list of scans and a scan are separate screens. The arrow or the phone's back gesture returns to the list. A scan's **Plan** or **Layout** button stays out, and everything else is under **More**.
 - **Move around:** one finger turns the 3D view or moves the plan. Pinch zooms and two fingers move sideways.
 - **Select, then move:** the first tap selects a point, corner, door or window, and only then can you drag it, so moving the view can't shift anything by accident.
 - **Details:** tap or drag the bar above the tools to bring the sheet up. It opens by itself when you select something. **Done** lets go.
@@ -452,6 +453,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.64.1 | Main page on a phone: the scan list and a scan are separate screens, with a back arrow and the phone's back gesture. The main action stays out and the rest are under **More**, the 3D model comes up sooner, and the photos are collapsed until you ask for them. |
 | 0.64.0 | Layout page rebuilt for phones first: full-screen view, tools along the bottom, details in a sheet, pinch to zoom, select before moving, and photos you can zoom with a magnifier for aiming. **Back to the scan's walls** now works; it asks with a second press, and a walk uses **Make the plan again** instead. |
 | 0.63.3 | Layout page: draw a door or window by its **4 corners**, each going exactly where you click or onto your point, and drag any corner to refine it. |
 | 0.63.2 | Layout page: a door or window drawn on a photo sticks to your points and takes the angle of the real spots, not the plan's wall. Doors and windows made from clicks sit at the clicks too. **Draw a wall** on a photo, and drag the plan's corners on it, sticking to your points. |
