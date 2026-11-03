@@ -365,13 +365,13 @@ function panel() {
       const l = document.createElement("label"); l.textContent = label;
       const i = Object.assign(document.createElement("input"), { type: "number", step: "0.01", min: "0", value: value.toFixed(2) });
       i.onkeydown = e => { if (e.key === "Enter") i.blur(); e.stopPropagation(); };
-      i.onchange = () => { const v = parseFloat(i.value); if (!(v >= 0)) return; i.blur(); remember(); apply(v); o.marked = true; changed(); };
+      i.onchange = () => { const v = parseFloat(i.value); if (!(v >= 0)) return; i.blur(); remember(); delete o.corners; apply(v); o.marked = true; changed(); };
       r.append(l, " ", i, " m"); P.append(r);
     };
     size("Width", o.width || (door ? .9 : 1.2), v => { if (v > .04) { const b = openingBox(o), m = (b.s0 + b.s1) / 2; b.s0 = m - v / 2; b.s1 = m + v / 2; const sill = o.sill, head = o.head; setOpening(o, { ...b, h0: sill ?? b.h0, h1: head ?? b.h1 }); o.height_known = !!o.height_known; } });
     if (!door) size("Bottom above the floor", o.sill ?? .9, v => { o.sill = v; o.head = Math.max(o.head ?? 2.1, v + .05); o.height_known = true; });
     size(door ? "Height" : "Top above the floor", o.head ?? 2.1, v => { if (v > (o.sill ?? (door ? 0 : .9))) { o.head = v; if (door) o.sill = 0; o.sill ??= .9; o.height_known = true; } });
-    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Drag it to slide it along the wall."; P.append(n);
+    const n = document.createElement("div"); n.className = "mute"; n.textContent = "Typing a size makes it a plain rectangle again. Drag it to slide it along the wall."; P.append(n);
     const b = document.createElement("button"); b.textContent = "Delete it"; b.onclick = removeSelected; P.append(b);
   }
   if (sel) { const b = document.createElement("button"); b.textContent = "Done (Esc)"; b.style.marginTop = "8px"; b.onclick = letGo; P.append(b); }
@@ -638,10 +638,33 @@ function wallUnder(ray) {          // the nearest wall that this line actually m
 }
 function moveOpening(o, p) {
   if (o.ends) {
-    const [a, b] = o.ends.map(e => worldToPlan(e[0], e[1])), dx = p[0] - (a[0] + b[0]) / 2, dy = p[1] - (a[1] + b[1]) / 2;
+    const before = o.ends, [a, b] = o.ends.map(e => worldToPlan(e[0], e[1])), dx = p[0] - (a[0] + b[0]) / 2, dy = p[1] - (a[1] + b[1]) / 2;
     o.ends = [a, b].map(q => planToWorld([q[0] + dx, q[1] + dy]).map(v => +v.toFixed(3)));
+    shiftCorners(o, before);
   }
   o.at = [+p[0].toFixed(3), +p[1].toFixed(3)];
+}
+function shiftCorners(o, before) {          // its corners follow when the whole thing is moved
+  if (!o.corners || !before || !o.ends) return;
+  const mid = e => [(e[0][0] + e[1][0]) / 2, (e[0][1] + e[1][1]) / 2], a = mid(before), b = mid(o.ends);
+  o.corners = o.corners.map(c => [+(c[0] + b[0] - a[0]).toFixed(3), c[1], +(c[2] + b[1] - a[1]).toFixed(3)]);
+}
+function cornersOf(o) {
+  if (o.corners) return o.corners;
+  const b = openingBox(o);
+  return [[b.s0, b.h0], [b.s1, b.h0], [b.s1, b.h1], [b.s0, b.h1]].map(([s, h]) => wallSpot(b.fr, s, h));
+}
+// Size and place in the plan follow from the 4 corners: the two sides are the ends, the middle of the top is the height.
+function fromCorners(o, c) {
+  const fl = scene?.floor ?? 0, side = (p, q) => [+((p[0] + q[0]) / 2).toFixed(3), +((p[2] + q[2]) / 2).toFixed(3)];
+  o.corners = c.map(p => p.map(v => +v.toFixed(3)));
+  o.ends = [side(c[0], c[3]), side(c[1], c[2])];
+  const mid = worldToPlan((o.ends[0][0] + o.ends[1][0]) / 2, (o.ends[0][1] + o.ends[1][1]) / 2), q = nearestOnWall(mid).q;
+  o.at = [+q[0].toFixed(3), +q[1].toFixed(3)];
+  o.width = +Math.max(.1, Math.hypot(o.ends[1][0] - o.ends[0][0], o.ends[1][1] - o.ends[0][1])).toFixed(3);
+  o.sill = o.kind === "door" ? 0 : +Math.max(0, (c[0][1] + c[1][1]) / 2 - fl).toFixed(3);
+  o.head = +Math.max(o.sill + .1, (c[2][1] + c[3][1]) / 2 - fl).toFixed(3);
+  o.width_known = o.height_known = o.marked = true;
 }
 function endsFrame(ends) {
   const a = worldToPlan(ends[0][0], ends[0][1]), b = worldToPlan(ends[1][0], ends[1][1]), l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-9;
@@ -655,7 +678,9 @@ function openingBox(o) {
 function setOpening(o, b) {
   const planAt = s => [b.fr.a[0] + b.fr.ux * s, b.fr.a[1] + b.fr.uy * s];
   if (b.own) {
+    const before = o.ends;
     o.ends = [planAt(b.s0), planAt(b.s1)].map(q => planToWorld(q).map(v => +v.toFixed(3)));
+    shiftCorners(o, before);
     const q = nearestOnWall(planAt((b.s0 + b.s1) / 2)).q; o.at = [+q[0].toFixed(3), +q[1].toFixed(3)];
   } else {
     const q = planAt(Math.max(0, Math.min(b.fr.l, (b.s0 + b.s1) / 2))); o.at = [+q[0].toFixed(3), +q[1].toFixed(3)];
@@ -679,14 +704,12 @@ function mkMode(kind) {
   mkDraw = kind; mkStart = null; mkSnap = null;
   $("mkWall").classList.toggle("on", kind === "wall"); $("mkPoint").classList.toggle("on", kind === "point"); $("mkDoor").classList.toggle("on", kind === "door"); $("mkWindow").classList.toggle("on", kind === "window");
   $("mkSvg").style.cursor = kind ? "crosshair" : "default";
-  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind === "wall" ? "Click two spots on the wall, at any height. A click on a point sticks to it." : kind ? `Click one corner of the ${kind}, then the opposite corner. A click on a point sticks to it.` : "Press Add a point to add one. Click a point, door or window to select it. Drag a point, an edge or a square plan corner to where it really is.";
+  $("mkMsg").textContent = kind === "point" ? "Click each spot in the photo. Esc when you've finished." : kind === "wall" ? "Click two spots on the wall, at any height. A click on a point sticks to it." : kind ? `Click the ${kind}'s 4 corners, in any order. A click on a point sticks to it.` : "Press Add a point to add one. Click a point, door or window to select it. Drag a point, a white corner or a square plan corner to where it really is.";
   mkRender();
 }
 function mkRender() {
   const svgM = $("mkSvg"), f = mkF(); svgM.replaceChildren(); if (!f) return;
   const el = (n, at) => { const e = document.createElementNS(NS, n); for (const k in at) e.setAttribute(k, at[k]); svgM.append(e); return e; };
-  const px = (fr, s, h) => { const q = camPoint(f, wallSpot(fr, s, h)); return q && [q[0] * mkW, q[1] * mkH]; };
-  const quad = b => { const c = [px(b.fr, b.s0, b.h0), px(b.fr, b.s1, b.h0), px(b.fr, b.s1, b.h1), px(b.fr, b.s0, b.h1)]; return c.every(Boolean) ? c : null; };
   const fl = scene?.floor ?? 0, inPhoto = (x, z, y) => { const q = camPoint(f, [x, y, z]); return q && [q[0] * mkW, q[1] * mkH]; };
   for (const w of wallsOf()) {
     const A = planToWorld(w.a), B = planToWorld(w.b), on = sel?.wall === w.i, colour = on ? "#ff2f86" : L.open[w.i] ? "#ffb066" : "#2fe0cf";
@@ -704,19 +727,17 @@ function mkRender() {
       t.textContent = `Plan corner ${k + 1}`;
     });
   });
+  let handles = null;
   L.openings.forEach((o, k) => {
-    const b = openingBox(o), c = quad(b); if (!c) return;
+    const b = openingBox(o), c = cornersOf(o).map(p => { const q = camPoint(f, p); return q && [q[0] * mkW, q[1] * mkH]; }); if (!c.every(Boolean)) return;
+    if (mkHold?.k === k && mkHold.c != null && mkHold.at) c[mkHold.c] = [mkHold.at[0] * mkW, mkHold.at[1] * mkH];
     const on = sel?.opening === k, colour = on ? "#ff2f86" : o.kind === "door" ? "#ff9a4d" : "#b98cff";
     const body = el("polygon", { points: c.map(p => p.join(",")).join(" "), fill: colour, "fill-opacity": on ? .14 : .22, stroke: colour, "stroke-width": on ? 3 : 2 });
     body.style.cursor = mkDraw ? "crosshair" : on ? "move" : "pointer"; body.dataset.opening = k; body.dataset.grab = "body";
     const lab = el("text", { x: (c[2][0] + c[3][0]) / 2, y: (c[2][1] + c[3][1]) / 2 - 7, fill: "#fff", "font-size": 13, "font-weight": 700, "text-anchor": "middle", "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
     lab.textContent = `${o.kind === "door" ? "Door" : "Window"} ${(b.s1 - b.s0).toFixed(2)} × ${(b.h1 - b.h0).toFixed(2)} m`;
     if (!on || mkDraw) return;
-    const door = o.kind === "door", grabs = [["s0", [c[0], c[3]]], ["s1", [c[1], c[2]]], ["h1", [c[2], c[3]]], ...(door ? [] : [["h0", [c[0], c[1]]]])];
-    for (const [g, [p, q]] of grabs) {
-      el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: "transparent", "stroke-width": 18, "data-opening": k, "data-grab": g, style: `cursor:${g[0] === "s" ? "ew-resize" : "ns-resize"}` });
-      el("circle", { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: 8, fill: "#fff", stroke: colour, "stroke-width": 3, "data-opening": k, "data-grab": g, style: `cursor:${g[0] === "s" ? "ew-resize" : "ns-resize"}` });
-    }
+    handles = () => c.forEach((p, i) => el("circle", { cx: p[0], cy: p[1], r: 9, fill: "#fff", stroke: colour, "stroke-width": 3, "data-opening": k, "data-grab": `c${i}`, style: "cursor:move" }));
   });
   walk.forEach((w, i) => {
     if (!mkSeen.has(w.id)) return;
@@ -726,12 +747,13 @@ function mkRender() {
     const t = el("text", { x: x + 13, y: y + 5, fill: "#fff", "font-size": 14, "font-weight": 700, "paint-order": "stroke", stroke: "#000", "stroke-width": 3, "pointer-events": "none" });
     t.textContent = `${i + 1} ${WALK_NAME[w.kind] || w.kind}`;
   });
-  if (mkStart?.now) {
-    const [a, b] = mkStart.at, [c, d] = mkStart.now;
-    if (mkDraw === "wall") el("line", { x1: a * mkW, y1: b * mkH, x2: c * mkW, y2: d * mkH, stroke: "#35e06a", "stroke-width": 3, "stroke-dasharray": "6 4", "pointer-events": "none" });
-    else el("rect", { x: Math.min(a, c) * mkW, y: Math.min(b, d) * mkH, width: Math.abs(c - a) * mkW, height: Math.abs(d - b) * mkH, fill: "#35e06a", "fill-opacity": .12, stroke: "#35e06a", "stroke-width": 2, "stroke-dasharray": "6 4", "pointer-events": "none" });
+  handles?.();            // over the points, so a corner sitting on a point can still be taken
+  if (mkStart) {
+    const dots = mkDraw === "wall" ? [mkStart.at] : mkStart.ats, line = [...dots, ...(mkStart.now ? [mkStart.now] : [])];
+    el("polyline", { points: line.map(p => `${p[0] * mkW},${p[1] * mkH}`).join(" "), fill: "none", stroke: "#35e06a", "stroke-width": 3, "stroke-dasharray": "6 4", "pointer-events": "none" });
+    dots.forEach(p => el("circle", { cx: p[0] * mkW, cy: p[1] * mkH, r: 6, fill: "#35e06a", stroke: "#000", "stroke-width": 2, "pointer-events": "none" }));
   }
-  if (((mkDraw && mkDraw !== "point") || mkHold?.corner != null) && mkSnap != null && walk[mkSnap]) {
+  if (((mkDraw && mkDraw !== "point") || mkHold?.corner != null || mkHold?.c != null) && mkSnap != null && walk[mkSnap]) {
     const q = camPoint(f, [walk[mkSnap].x, walk[mkSnap].y, walk[mkSnap].z]);
     if (q) el("circle", { cx: q[0] * mkW, cy: q[1] * mkH, r: 15, fill: "none", stroke: "#35e06a", "stroke-width": 4, "pointer-events": "none" });
   }
@@ -740,11 +762,14 @@ const mkAt = e => { const r = $("mkSvg").getBoundingClientRect(); return [(e.cli
 // Two opposite corners, where they really are in the room: its sides stand at them, so it takes their angle and not the plan wall's.
 function mkFinish(q) {
   if (mkDraw === "wall") return mkWallDone(worldToPlan(mkStart.q.x, mkStart.q.z), worldToPlan(q.x, q.z));
-  const a = mkStart.q, kind = mkDraw, fl = scene?.floor ?? 0, fr = endsFrame([[a.x, a.z], [q.x, q.z]]), h0 = Math.min(a.y, q.y) - fl, h1 = Math.max(a.y, q.y) - fl;
-  if (fr.l < .1 || h1 - h0 < .1) { $("mkMsg").textContent = "Those are too close. Click the opposite corner."; return; }
+  const pts = [...mkStart.qs.map(p => [p.x, p.y, p.z]), [q.x, q.y, q.z]].sort((p, r) => p[1] - r[1]);   // the lower two are the bottom
+  let [b0, b1, t0, t1] = pts;
+  const far = (p, r) => Math.hypot(p[0] - r[0], p[2] - r[2]);
+  if (far(b0, t0) + far(b1, t1) > far(b0, t1) + far(b1, t0)) [t0, t1] = [t1, t0];      // each top corner over its own bottom corner
+  if (far(b0, b1) < .1 || t0[1] - b0[1] < .1 || t1[1] - b1[1] < .1) { mkStart = null; $("mkMsg").textContent = "Those corners don't make a shape: two are too close. Click the 4 corners again."; return; }
   remember();
-  const o = { kind, at: [0, 0] };
-  setOpening(o, { fr, own: true, s0: 0, s1: fr.l, h0, h1 });
+  const o = { kind: mkDraw, at: [0, 0] };
+  fromCorners(o, [b0, b1, t1, t0]);
   L.openings.push(o); sel = { opening: L.openings.length - 1 }; mkMode(null); changed();
 }
 // A wall through two real spots. If the plan has a wall like it, that wall moves there and its neighbours stretch to meet it, so the outline stays closed; if not, it is a new stretch of the outline.
@@ -805,14 +830,23 @@ $("mkSvg").addEventListener("pointerdown", async e => {
   if (mkDraw) {
     const q = await mkCorner(f, a, b);
     if (!q) { $("mkMsg").textContent = "No point, LiDAR reading or wall there, so I can't place that corner. Try another spot or photo."; return; }
-    if (mkStart) { mkFinish(q); mkRender(); return; }
-    mkStart = { q, at: [a, b], now: null };
-    $("mkMsg").textContent = `First corner placed ${q.how}. Now click the opposite corner.`;
+    if (mkDraw === "wall") {
+      if (mkStart) { mkFinish(q); mkRender(); return; }
+      mkStart = { q, at: [a, b], now: null };
+      $("mkMsg").textContent = `First spot placed ${q.how}. Now click a second spot on the wall.`;
+      return;
+    }
+    mkStart ??= { qs: [], ats: [], now: null };
+    if (mkStart.qs.some(p => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) < .03)) { $("mkMsg").textContent = "You already used that corner. Click another."; return; }
+    if (mkStart.qs.length === 3) { mkFinish(q); mkRender(); return; }
+    mkStart.qs.push(q); mkStart.ats.push([a, b]);
+    $("mkMsg").textContent = `Corner ${mkStart.qs.length} of 4 placed ${q.how}. Click the next. Esc starts again.`; mkRender();
     return;
   }
   const k = e.target.dataset?.opening;
   if (k == null) { if (sel?.opening != null) { sel = null; draw(); } return; }
   if (sel?.opening !== +k) { sel = { opening: +k }; draw(); return; }
+  if (e.target.dataset.grab?.[0] === "c") { mkHold = { k: +k, c: +e.target.dataset.grab.slice(1), at: null }; $("mkSvg").setPointerCapture(e.pointerId); return; }
   const box = openingBox(L.openings[+k]), m = onWall(box.fr, ray); if (!m) return;
   remember(); mkHold = { k: +k, grab: e.target.dataset.grab, box, from: m, base: { ...box }, moved: false };
   $("mkSvg").setPointerCapture(e.pointerId);
@@ -821,7 +855,7 @@ $("mkSvg").addEventListener("pointermove", e => {
   const f = mkF(); if (!f || (!mkHold && !mkStart && !mkDraw)) return;
   const [a, b] = mkAt(e), ray = camRay(f, a, b);
   if (mkHold?.point != null) { mkHold.at = [a, b]; mkRender(); return; }
-  if (mkHold?.corner != null) { mkHold.at = [a, b]; mkSnap = pointNear(f, a, b); mkRender(); return; }
+  if (mkHold?.corner != null || mkHold?.c != null) { mkHold.at = [a, b]; mkSnap = pointNear(f, a, b); mkRender(); return; }
   if (mkDraw && mkDraw !== "point") { mkSnap = pointNear(f, a, b); if (mkStart) mkStart.now = [a, b]; mkRender(); return; }
   if (mkDraw) return;
   const m = onWall(mkHold.box.fr, ray); if (!m) return;
@@ -835,6 +869,14 @@ $("mkSvg").addEventListener("pointermove", e => {
 });
 $("mkSvg").addEventListener("pointerup", async () => {
   if (!mkHold) return;
+  if (mkHold.c != null) {
+    const { k, c, at } = mkHold; mkSnap = null;
+    if (!at) { mkHold = null; return; }
+    const q = await mkCorner(mkF(), at[0], at[1]); mkHold = null;
+    if (!q) { $("mkMsg").textContent = "No point, LiDAR reading or wall there, so the corner stayed where it was."; mkRender(); return; }
+    remember(); const o = L.openings[k], all = cornersOf(o).map(p => [...p]); all[c] = [q.x, q.y, q.z]; fromCorners(o, all);
+    $("mkMsg").textContent = `Corner moved ${q.how}.`; changed(); return;
+  }
   if (mkHold.corner != null) {
     const k = mkHold.corner, at = mkHold.at; mkSnap = null;
     if (!at) { mkHold = null; return; }
@@ -1157,7 +1199,7 @@ function build3d() {
   // doors and windows, in their real size on their walls
   L.openings.forEach((o, k) => {
     const box = openingBox(o), wd = (box.s1 - box.s0) / 2, sill = box.h0, head = box.h1, a = [box.fr.a[0] + box.fr.ux * box.s0, box.fr.a[1] + box.fr.uy * box.s0], b = [box.fr.a[0] + box.fr.ux * box.s1, box.fr.a[1] + box.fr.uy * box.s1];
-    const p = [at(a, y0 + sill), at(b, y0 + sill), at(b, y0 + head), at(a, y0 + head)], colour = sel?.opening === k ? 0xe0226e : o.kind === "door" ? 0xa0522d : 0x7b3fc4;
+    const p = o.corners ? o.corners.map(c => new T.Vector3(c[0], c[1], c[2])) : [at(a, y0 + sill), at(b, y0 + sill), at(b, y0 + head), at(a, y0 + head)], colour = sel?.opening === k ? 0xe0226e : o.kind === "door" ? 0xa0522d : 0x7b3fc4;
     const g = new T.BufferGeometry().setFromPoints(p); g.setIndex([0, 1, 2, 0, 2, 3]);
     const q = new T.Mesh(g, new T.MeshBasicMaterial({ color: colour, transparent: true, opacity: .4, side: T.DoubleSide, depthWrite: false, depthTest: !xray })); q.renderOrder = 12; q.userData.opening = k; ov.add(q); G.hits.push(q);
     p.forEach((c, i) => bar(c, p[(i + 1) % 4], .012, colour));

@@ -114,6 +114,9 @@ def validate(body: dict) -> dict:
         ends = o.get("ends")          # where its two sides really are, world x, z: it need not lie exactly on the plan's wall
         if isinstance(ends, list) and len(ends) == 2:
             keep["ends"] = [[round(float(e[0]), 3), round(float(e[1]), 3)] for e in ends]
+        corners = o.get("corners")     # its 4 corners where they were marked, world x, y, z: bottom, bottom, top, top
+        if isinstance(corners, list) and len(corners) == 4:
+            keep["corners"] = [[round(float(v), 3) for v in c[:3]] for c in corners]
         openings.append({"kind": o["kind"], "at": [round(float(o["at"][0]), 3), round(float(o["at"][1]), 3)], **keep})
     if not all(math.isfinite(v) and abs(v) < 500 for p in clean + [o["at"] for o in openings] for v in p):
         raise ValueError("a point is out of range")

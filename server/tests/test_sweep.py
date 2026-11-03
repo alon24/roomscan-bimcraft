@@ -568,3 +568,11 @@ def test_a_door_stands_at_its_clicks_not_on_the_plan_wall():
     assert got["width"] == pytest.approx(math.hypot(1.0, 0.2), abs=1e-3)
     kept = layout.validate({"vertices": v, "height_m": 2.5, "openings": [got]})["openings"][0]
     assert kept["ends"] == got["ends"]
+
+
+def test_a_door_keeps_its_four_marked_corners():
+    from app import layout
+    corners = [[1, -1.4, 0], [2, -1.3, 0.1], [2, 0.7, 0.1], [1, 0.7, 0]]
+    door = {"kind": "door", "at": [1.5, 0], "width": 1.0, "sill": 0, "head": 2.1, "corners": corners, "ends": [[1, 0], [2, 0.1]], "marked": True}
+    kept = layout.validate({"vertices": [[0, 0], [4, 0], [4, 3]], "height_m": 2.5, "openings": [door]})["openings"][0]
+    assert kept["corners"] == corners and kept["marked"] is True
