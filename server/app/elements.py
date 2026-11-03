@@ -327,6 +327,9 @@ def _problems(m: dict, lay: dict, points: list[dict]) -> list[dict]:
     for i in range(n):
         if math.dist(v[i], v[(i + 1) % n]) < TINY:
             out.append({"level": "warn", "text": f"Wall {i + 1} is very short: it may not be a real wall.", "wall": i})
+    for k, o in enumerate(lay.get("openings", [])):
+        if n >= 3 and min(_on_segment(o["at"], v[i], v[(i + 1) % n])[0] for i in range(n)) > 0.4:
+            out.append({"level": "warn", "text": f"The {o['kind']} {k + 1} isn't on any wall now. Move it onto one or delete it.", "opening": k})
     if m.get("tape_off", 0) > 0.01:
         out.append({"level": "warn", "text": f"Your tape lengths don't all fit together: up to {m['tape_off'] * 100:.0f} cm out. Check them."})
     for i, w in enumerate(walls):

@@ -238,3 +238,8 @@ def test_a_point_is_flagged_off_the_plan_until_a_wall_reaches_it(tmp_path):
     assert flag()
     elements.act(tmp_path, "move_wall", {"wall": elements.view(tmp_path)["walls"][0]["id"], "a": [0, -0.6], "b": [6, -0.6]})
     assert not flag()
+
+
+def test_a_door_left_without_a_wall_is_pointed_out(tmp_path):
+    v = room(tmp_path, [click("a", 1, 0.0)], openings=[door(3.0, 0.0), door(3.0, 2.0)])
+    assert [c["opening"] for c in v["checks"] if "isn't on any wall" in c["text"]] == [1]
