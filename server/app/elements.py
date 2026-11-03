@@ -246,7 +246,18 @@ def _write(d: Path, m: dict, lay: dict) -> dict:
         lay["edited"] = True
     _path(d).write_text(json.dumps(m))
     (d / "layout.json").write_text(json.dumps(lay))
+    _reflag(d, m)
     return lay
+
+
+def _reflag(d: Path, m: dict) -> None:
+    """The notes on points that are off the plan follow the walls as they are now."""
+    f = d / "walk_result.json"
+    if not f.exists() or len(m["walls"]) < 3:
+        return
+    res = json.loads(f.read_text())
+    walk_mod.flag_points(res.get("points", []), [w["a"] for w in m["walls"]], res.get("floor_y"), res.get("ceiling_y"))
+    f.write_text(json.dumps(res))
 
 
 # ---- the log of actions
@@ -353,6 +364,60 @@ def view(d: Path) -> dict:
             "loose": loose, "checks": _problems(m, lay, points), "undo": undo_count(d), "problem": layout_mod.problem(lay)}
 
 
+# ---- doors and windows follow their wall
+
+def _frames(m: dict) -> dict:
+    """Each wall as it is drawn (tape slides included): id -> (start, end), in model coordinates."""
+    walls = m["walls"]
+    if len(walls) < 3:
+        return {}
+    c = _corners(walls, _solve(walls)[0])
+    return {w["id"]: (c[i], c[(i + 1) % len(walls)]) for i, w in enumerate(walls)}
+
+
+def _host(o: dict, turn: float, frames: dict) -> str | None:
+    """The wall an opening stands on: the nearest one running the same way."""
+    at = layout_mod._rotate(o["at"], -turn)
+    ends = o.get("ends")
+    u = _unit([ends[0][0], -ends[0][1]], [ends[1][0], -ends[1][1]]) if ends else None
+    best, cost = None, 0.6
+    for wid, (a, b) in frames.items():
+        if math.dist(a, b) < 1e-6 or (u is not None and abs(float(u @ _unit(a, b))) < math.cos(math.radians(25))):
+            continue
+        d = _on_segment(at, a, b)[0]
+        if d < cost:
+            best, cost = wid, d
+    return best
+
+
+def hosts(lay: dict, m: dict) -> list:
+    """Before a change: which wall each opening stands on."""
+    turn, frames = float(lay.get("turn_deg") or 0), _frames(m)
+    return [(_host(o, turn, frames), o["at"]) for o in lay.get("openings", [])]
+
+
+def carry(lay: dict, m: dict, was: dict, hosted: list) -> None:
+    """After a change: an opening moves with its wall, turning and sliding as the wall did, and stays on its centre line."""
+    turn, now = float(lay.get("turn_deg") or 0), _frames(m)
+    for o, (wid, at0) in zip(lay.get("openings", []), hosted):
+        if wid is None or wid not in now or wid not in was or math.dist(o["at"], at0) > 0.001:
+            continue                      # lost its wall, or moved by the page itself
+        (a0, b0), (a1, b1) = was[wid], now[wid]
+        u0, u1 = _unit(a0, b0), _unit(a1, b1)
+        if math.dist(a0, a1) < 1e-6 and math.dist(b0, b1) < 1e-6:
+            continue
+        c, s = float(u0 @ u1), float(u0[0] * u1[1] - u0[1] * u1[0])
+        def move(q):
+            r = np.asarray(q, float) - np.asarray(a0, float)
+            return (np.asarray(a1, float) + np.array([c * r[0] - s * r[1], s * r[0] + c * r[1]])).tolist()
+        at = move(layout_mod._rotate(o["at"], -turn))
+        o["at"] = layout_mod._rotate(_proj(at, [a1, b1]), turn)
+        if o.get("ends"):
+            o["ends"] = [_world(move([e[0], -e[1]])) for e in o["ends"]]
+        if o.get("corners"):
+            o["corners"] = [[(w := _world(move([q[0], -q[2]])))[0], q[1], w[1]] for q in o["corners"]]
+
+
 # ---- actions
 
 def _wall(m: dict, wid: str) -> dict:
@@ -398,12 +463,10 @@ def act(d: Path, op: str, args: dict) -> dict:
     points = _points(d)
     by = {p["id"]: p for p in points}
     walls = m["walls"]
+    was, hosted = _frames(m), hosts(lay, m)
     if op == "confirm_wall":
         w = _wall(m, args["wall"])
         w["confirmed"] = bool(args.get("on", True))
-    elif op == "confirm_all_walls":
-        for w in walls:
-            w["confirmed"] = True
     elif op == "set_open":
         _wall(m, args["wall"])["open"] = bool(args.get("on", True))
     elif op == "not_a_wall":
@@ -468,6 +531,7 @@ def act(d: Path, op: str, args: dict) -> dict:
         o["marked"] = bool(args.get("on", True))
     else:
         raise ValueError(f"I don't know the action {op}")
+    carry(lay, m, was, hosted)
     _write(d, m, lay)
     record(d, op, args, before)
     return view(d)
@@ -480,7 +544,10 @@ def put_plan(d: Path, lay: dict) -> dict:
     if m is None:
         old = layout_mod.load(d)
         m = from_layout(old, _points(d)) if old["vertices"] else {"version": 1, "walls": []}
+    stored = before.get("layout") or {"openings": []}
+    was, hosted = _frames(m), hosts({**lay, "openings": stored.get("openings", []), "turn_deg": stored.get("turn_deg", lay.get("turn_deg"))}, m)
     _take_plan(m, lay, _points(d))
+    carry(lay, m, was, hosted)
     _write(d, m, lay)
     if before.get("layout") != lay:
         record(d, "plan", {}, before)

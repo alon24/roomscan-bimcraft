@@ -175,3 +175,66 @@ def test_every_button_on_the_layout_page_does_something():
     ids = re.findall(r'<button\b[^>]*\bid="(\w+)"', html) + ["height"]
     dead = [i for i in ids if not re.search(r'\$\("%s"\)\.(onclick|onchange|oninput)\b|\["%s",' % (i, i), script)]
     assert not dead, dead
+
+
+def door(x, y, **more):
+    return {"kind": "door", "at": [x, y], "width": 0.9, "marked": True, **more}
+
+
+def test_a_door_set_by_hand_moves_with_its_wall(tmp_path):
+    d = door(3.0, 0.0, ends=[[2.55, 0.0], [3.45, 0.0]], corners=[[2.55, 0.0, 0.0], [3.45, 0.0, 0.0], [2.55, 2.0, 0.0], [3.45, 2.0, 0.0]])
+    v = room(tmp_path, [click("a", 1, 0.0), click("b", 5, 0.0)], openings=[d])
+    elements.act(tmp_path, "move_wall", {"wall": v["walls"][0]["id"], "a": [0, -0.3], "b": [6, -0.3]})
+    o = elements.view(tmp_path)["openings"][0]
+    assert o["at"] == pytest.approx([3.0, 0.3], abs=0.01)
+    assert o["ends"][0][1] == pytest.approx(-0.3, abs=0.01) and o["corners"][2][1] == 2.0 and o["corners"][2][2] == pytest.approx(-0.3, abs=0.01)
+    elements.undo(tmp_path)
+    assert elements.view(tmp_path)["openings"][0]["at"] == pytest.approx([3.0, 0.0], abs=0.001)
+
+
+def test_splitting_a_wall_leaves_its_door_where_it_is_and_a_slid_wall_carries_it(tmp_path):
+    v = room(tmp_path, [click("a", 1, 0.0), click("b", 5, 0.0)], openings=[door(4.5, 0.0)])
+    elements.act(tmp_path, "split_wall", {"wall": v["walls"][0]["id"], "at": [2.0, 0.0]})
+    assert elements.view(tmp_path)["openings"][0]["at"] == pytest.approx([4.5, 0.0], abs=0.001)
+    v = elements.view(tmp_path)
+    elements.act(tmp_path, "set_length", {"wall": v["walls"][2]["id"], "m": 3.5})    # the east wall slides, the door sits on the south wall
+    got = elements.view(tmp_path)
+    assert elements._off(got["openings"][0]["at"], [got["vertices"][1], got["vertices"][2]]) < 0.005
+
+
+def test_dragging_a_corner_carries_the_door_but_dragging_the_door_does_not(tmp_path):
+    room(tmp_path, [click("a", 1, 0.0)], openings=[door(3.0, 0.0)])
+    lay = json.loads((tmp_path / "layout.json").read_text())
+    lay["vertices"][0][1] += 0.4
+    lay["vertices"][1][1] += 0.4
+    elements.put_plan(tmp_path, lay)
+    assert elements.view(tmp_path)["openings"][0]["at"] == pytest.approx([3.0, 0.4], abs=0.02)
+    lay = json.loads((tmp_path / "layout.json").read_text())
+    lay["openings"][0]["at"] = [2.0, 0.4]
+    elements.put_plan(tmp_path, lay)
+    assert elements.view(tmp_path)["openings"][0]["at"] == pytest.approx([2.0, 0.4], abs=0.02)
+
+
+def test_a_turned_plan_carries_its_door(tmp_path):
+    turn = 36.937
+    d = door(*layout._rotate([3.0, 0.0], turn))
+    v = room(tmp_path, [click("a", 1, 0.0)], turn=turn, openings=[d])
+    elements.act(tmp_path, "move_wall", {"wall": v["walls"][0]["id"], "a": [0, -0.3], "b": [6, -0.3]})
+    o = elements.view(tmp_path)["openings"][0]
+    assert o["at"] == pytest.approx(layout._rotate([3.0, 0.3], turn), abs=0.02)
+
+
+def test_an_opening_can_be_confirmed_and_unconfirmed(tmp_path):
+    room(tmp_path, [click("a", 1, 0.0)], openings=[{"kind": "window", "at": [3.0, 0.0], "width": 1.0}])
+    assert not elements.view(tmp_path)["openings"][0].get("marked")
+    assert elements.act(tmp_path, "confirm_opening", {"index": 0, "on": True})["openings"][0]["marked"]
+    assert not elements.act(tmp_path, "confirm_opening", {"index": 0, "on": False})["openings"][0]["marked"]
+
+
+def test_a_point_is_flagged_off_the_plan_until_a_wall_reaches_it(tmp_path):
+    room(tmp_path, [click("a", 1, 0.0), click("far", 3.0, 0.6)])
+    flag = lambda: next(p for p in json.loads((tmp_path / "walk_result.json").read_text())["points"] if p["id"] == "far").get("flag")
+    elements.act(tmp_path, "confirm_wall", {"wall": elements.view(tmp_path)["walls"][0]["id"]})
+    assert flag()
+    elements.act(tmp_path, "move_wall", {"wall": elements.view(tmp_path)["walls"][0]["id"], "a": [0, -0.6], "b": [6, -0.6]})
+    assert not flag()

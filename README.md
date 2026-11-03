@@ -465,6 +465,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.66.0 | Doors and windows now move with their wall: move, split or turn a wall, or set a tape length, and its doors go with it, keeping their angle. The ⚑ notes on points are checked again after every change. |
 | 0.65.0 | Walls, doors and windows are now things you can confirm, and a fix can't be undone by a rebuild. **Check the room** goes through walls, doors and windows, tape lengths and the build. Walls can be moved, split, marked open or removed, and you can say which points belong to which. **Undo** now works across sessions and includes points. Fixed: **Undo**, **Height**, **Back to the scan's walls** and **Build BIMCraft and Blender files** had stopped working in 0.60. |
 | 0.64.1 | Main page on a phone: the scan list and a scan are separate screens, with a back arrow and the phone's back gesture. The main action stays out and the rest are under **More**, the 3D model comes up sooner, and the photos are collapsed until you ask for them. |
 | 0.64.0 | Layout page rebuilt for phones first: full-screen view, tools along the bottom, details in a sheet, pinch to zoom, select before moving, and photos you can zoom with a magnifier for aiming. **Back to the scan's walls** asks with a second press, and a walk uses **Make the walls again** instead. |

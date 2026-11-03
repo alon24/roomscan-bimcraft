@@ -19,6 +19,8 @@
 ## Doors and windows
 Live in `layout.json` under `openings`. `marked` means set or confirmed by hand. Others come from door and window clicks and follow them, and a marked one wins over what clicks make in the same place. Door and window clicks never shape walls.
 
+An opening stands on the nearest wall running the same way (found each time, not stored). When that wall moves, turns, is split or slides for a tape length, the opening goes with it: position, `ends` and `corners` move as the wall did and it stays on the wall's centre line. If the page moves the door itself, that wins. Delete a wall and its doors stay where they were.
+
 ## Actions
 `POST /api/scans/{id}/layout/action` with `{"op": ...}`. Every one answers with the whole room, and can be undone.
 
