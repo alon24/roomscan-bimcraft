@@ -467,6 +467,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.67.1 | Layout page: pressing **Add point** no longer brings back every old point, only the one you add or select. |
 | 0.67.0 | Layout page opens on a simple plan with layers: **Photos**, **3D**, **Sizes** and **Points** (off by default). **Tidy** now makes every wall straight, joins walls in the same direction and drops steps under 40 cm, so a walk's 11 corners become 8. |
 | 0.66.0 | A door or window left with no wall near it is pointed out. Doors and windows now move with their wall: move, split or turn a wall, or set a tape length, and its doors go with it, keeping their angle. The ⚑ notes on points are checked again after every change. |
 | 0.65.0 | Walls, doors and windows are now things you can confirm, and a fix can't be undone by a rebuild. **Check the room** goes through walls, doors and windows, tape lengths and the build. Walls can be moved, split, marked open or removed, and you can say which points belong to which. **Undo** now works across sessions and includes points. Fixed: **Undo**, **Height**, **Back to the scan's walls** and **Build BIMCraft and Blender files** had stopped working in 0.60. |

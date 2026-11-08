@@ -300,7 +300,7 @@ let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = [], scanSeen
 const WALK = { corner: "#15191c", "floor edge": "#2478c8", "ceiling edge": "#d9761e", wall: "#0f9d8f", floor: "#6aa9e0", ceiling: "#efb27a", door: "#a0522d", window: "#7b3fc4", ignore: "#b9c0c6", unknown: "#e0226e" };
 const WALK_NAME = { corner: "Corner", "floor edge": "Wall and floor meet", "ceiling edge": "Wall and ceiling meet", wall: "On a wall", floor: "On the floor", ceiling: "On the ceiling", door: "Door", window: "Window", ignore: "Ignore it", unknown: "Not sure" };
 
-const pointShown = i => $("showPoints").checked || sel?.point === i || tool === "point";   // points are a layer, off until asked for
+const pointShown = i => $("showPoints").checked || sel?.point === i;   // points are a layer, off until asked for
 const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
 const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
 const wallsOf = () => L.vertices.map((a, i) => ({ i, a, b: L.vertices[(i + 1) % L.vertices.length] }));
