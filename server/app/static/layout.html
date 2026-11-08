@@ -28,6 +28,7 @@
   input[type=number] { font:inherit; font-size:16px; width:96px; min-height:44px; padding:5px 9px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); font-variant-numeric:tabular-nums; }
   input[type=checkbox] { width:20px; height:20px; flex:none; }
   label:has(input[type=checkbox]) { display:flex; align-items:center; gap:10px; min-height:36px; }
+  .layers label { margin-right:10px; }
   .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0; }
   .v3 { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
   .mute { color:var(--mute); }
@@ -227,13 +228,16 @@
       <canvas id="photo"></canvas>
       <div class="mute" id="photoNote"></div>
     </div>
+    <section id="layers">
+    <h2>Layers</h2>
+    <div class="row layers"><label><input type="checkbox" id="showScan" checked> Photos</label><label><input type="checkbox" id="layer3d"> 3D</label><label><input type="checkbox" id="showSizes" checked> Sizes</label><label><input type="checkbox" id="showPoints"> Points</label></div>
+    </section>
     <section>
     <h2>Room</h2>
     <div class="row"><label for="height">Height</label> <input id="height" type="number" step="0.01" min="1" max="10"> m</div>
-    <div class="row"><button id="tidy" title="Takes out very short walls and corners that are nearly straight, then straightens walls that are nearly along the axes">Tidy</button><button id="reset">Back to the scan's walls</button></div>
+    <div class="row"><button id="tidy" title="Makes every wall straight along an axis, joins walls that follow each other and takes out steps shorter than 40 cm">Tidy</button><button id="reset">Back to the scan's walls</button></div>
     </section>
-    <details class="sec"><summary><h2>What you see</h2></summary>
-    <div class="row"><label><input type="checkbox" id="showScan" checked> The scan from above</label></div>
+    <details class="sec"><summary><h2>More display options</h2></summary>
     <div class="row"><label for="scanCut">Take off above</label> <select id="scanCut"><option value="off">Nothing</option><option value="" selected>Ceiling only</option><option value="2">2 m</option><option value="1.5">1.5 m</option><option value="1">1 m</option></select></div>
     <div class="row"><label for="scanFade">Strength</label> <input id="scanFade" type="range" min="0.15" max="1" step="0.05" value="0.85"></div>
     <div class="row"><label><input type="checkbox" id="showTop"> Readings at the walls</label></div>
@@ -241,7 +245,6 @@
     <div id="colourMsg" class="mute"></div>
     <div id="only3d" hidden>
       <div class="row"><label><input type="checkbox" id="xray" checked> See the plan through the scan</label></div>
-      <div class="row"><label><input type="checkbox" id="labels3d" checked> Lengths and names</label></div>
       <div class="row"><label><input type="checkbox" id="panels3d" checked> Wall panels</label></div>
       <div class="v3"><button id="vAbove">From above</button><button id="vPhone">From the phone's spot</button></div>
     </div>
@@ -297,6 +300,7 @@ let view = { x: 0, y: 0, s: 80 }, drag = null, saveT = null, scan = [], scanSeen
 const WALK = { corner: "#15191c", "floor edge": "#2478c8", "ceiling edge": "#d9761e", wall: "#0f9d8f", floor: "#6aa9e0", ceiling: "#efb27a", door: "#a0522d", window: "#7b3fc4", ignore: "#b9c0c6", unknown: "#e0226e" };
 const WALK_NAME = { corner: "Corner", "floor edge": "Wall and floor meet", "ceiling edge": "Wall and ceiling meet", wall: "On a wall", floor: "On the floor", ceiling: "On the ceiling", door: "Door", window: "Window", ignore: "Ignore it", unknown: "Not sure" };
 
+const pointShown = i => $("showPoints").checked || sel?.point === i || tool === "point";   // points are a layer, off until asked for
 const toScreen = p => [p[0] * view.s + view.x, -p[1] * view.s + view.y];
 const toPlan = (x, y) => [(x - view.x) / view.s, -(y - view.y) / view.s];
 const wallsOf = () => L.vertices.map((a, i) => ({ i, a, b: L.vertices[(i + 1) % L.vertices.length] }));
@@ -384,7 +388,7 @@ function draw() {
     el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: on ? c("--sel") : gap ? c("--door") : c("--ink"), "stroke-width": on ? 5 : gap ? 2.5 : 3.5, "stroke-linecap": "round", ...(gap ? { "stroke-dasharray": "3 8" } : {}) });
     el("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: "transparent", "stroke-width": 18, "data-wall": w.i, style: "cursor:pointer" });
     const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2, l = Math.hypot(q[0] - p[0], q[1] - p[1]);
-    if (l > 42) {
+    if (l > 42 && $("showSizes").checked) {
       const t = (gap ? "open " : "") + fmt(len(w)), bw = t.length * 7.6 + 10;
       const g = el("g", { "data-wall": w.i, style: "cursor:pointer" });
       el("rect", { x: mx - bw / 2, y: my - 10, width: bw, height: 20, rx: 5, fill: c("--card"), stroke: on ? c("--sel") : c("--line"), "data-wall": w.i }, g);
@@ -404,6 +408,7 @@ function draw() {
   });
   // the points clicked on the walk
   walk.forEach((w, i) => {
+    if (!pointShown(i)) return;
     const s = toScreen(walkPlan(w)), on = sel?.point === i;
     el("circle", { cx: s[0], cy: s[1], r: on || (sel?.wall != null && W[sel.wall]?.points.includes(w.id)) ? 8 : 5, fill: WALK[w.kind] || WALK.unknown, stroke: on ? c("--sel") : sel?.wall != null && W[sel.wall]?.points.includes(w.id) ? "#20c060" : "#fff", "stroke-width": on || (sel?.wall != null && W[sel.wall]?.points.includes(w.id)) ? 3 : 1.5, "data-point": i, style: "cursor:pointer" });
   });
@@ -711,32 +716,42 @@ function fit() {
   view.x = W / 2 - (x0 + x1) / 2 * view.s; view.y = H / 2 + (y0 + y1) / 2 * view.s + 16;
   draw();
 }
-// Tidy: drop the corners that make very short walls or hardly turn, then lay walls near an axis exactly along it.
+// Tidy: every wall is made horizontal or vertical (the plan is already turned to the axes), walls that follow each other
+// in the same direction become one, walls shorter than 40 cm are absorbed, and each corner is where two such lines meet.
 function tidy() {
   remember();
-  let v = L.vertices.map((p, i) => { const q = [...p]; q.gap = L.open[i]; return q; });
-  const prune = () => {
-    let again = true;
-    while (again && v.length > 3) {
+  const gapOf = L.vertices.map((p, i) => !!L.open[i]);
+  let runs = [];
+  L.vertices.forEach((a, i) => {
+    const b = L.vertices[(i + 1) % L.vertices.length], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+    if (len < 1e-6) return;
+    const h = Math.abs(dx) >= Math.abs(dy);
+    runs.push({ h, sum: (h ? (a[1] + b[1]) / 2 : (a[0] + b[0]) / 2) * len, len, gap: gapOf[i] });
+  });
+  const merge = () => {
+    for (let again = true; again && runs.length > 1;) {
       again = false;
-      for (let i = 0; i < v.length; i++) {
-        const p = v[(i + v.length - 1) % v.length], q = v[i], r = v[(i + 1) % v.length];
-        const a = Math.hypot(q[0] - p[0], q[1] - p[1]), b = Math.hypot(r[0] - q[0], r[1] - q[1]);
-        const cos = ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (a * b || 1);
-        if (Math.min(a, b) < .25 || cos > Math.cos(8 * Math.PI / 180)) { v.splice(i, 1); again = true; break; }
+      for (let i = 0; i < runs.length; i++) {
+        const j = (i + 1) % runs.length;
+        if (i !== j && runs[i].h === runs[j].h) { runs[i].sum += runs[j].sum; runs[i].len += runs[j].len; runs[i].gap = runs[i].gap && runs[j].gap; runs.splice(j, 1); again = true; break; }
       }
     }
   };
-  prune();
-  const n = v.length, tol = Math.tan(10 * Math.PI / 180);
-  for (let i = 0; i < n; i++) {
-    const a = v[i], b = v[(i + 1) % n], dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]);
-    if (dy < dx * tol) a[1] = b[1] = (a[1] + b[1]) / 2;
-    else if (dx < dy * tol) a[0] = b[0] = (a[0] + b[0]) / 2;
+  merge();
+  while (runs.length > 4) {
+    let k = 0; runs.forEach((r, i) => { if (r.len < runs[k].len) k = i; });
+    if (runs[k].len >= .4) break;
+    runs.splice(k, 1); merge();
   }
-  prune();      // straightening can leave corners in a line
-  L.open = v.map(p => !!p.gap);
-  L.vertices = v.map(p => [+p[0].toFixed(3), +p[1].toFixed(3)]); sel = null; changed();
+  if (runs.length < 4) return;
+  const lines = runs.map(r => ({ h: r.h, at: r.sum / r.len, gap: r.gap }));
+  const v = [], open = [];
+  lines.forEach((b, i) => {
+    const a = lines[(i + lines.length - 1) % lines.length];
+    v.push(b.h ? [a.at, b.at] : [b.at, a.at]);      // the corner where the previous line meets this one
+    open.push(b.gap);                               // the wall that starts at this corner is this line
+  });
+  L.vertices = v.map(p => [+p[0].toFixed(3), +p[1].toFixed(3)]); L.open = open; sel = null; changed();
 }
 
 svg.addEventListener("mousedown", e => e.preventDefault());   // a click on the plan must not take the focus off the length box it just opened
@@ -879,7 +894,7 @@ $("reset").onclick = () => {        // starting again throws away hand correctio
   fetch(`/api/scans/${id}/layout`, { method: "DELETE" }).then(() => reload());
 };
 $("fit").onclick = () => is3d ? view3d("start") : fit(); $("tidy").onclick = tidy;
-$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw; $("labels3d").onchange = draw; $("panels3d").onchange = draw;
+$("showTop").onchange = draw; $("showAll").onchange = draw; $("showScan").onchange = draw; $("scanFade").oninput = draw; $("xray").onchange = draw; $("showSizes").onchange = draw; $("showPoints").onchange = draw; $("layer3d").onchange = () => set3d($("layer3d").checked); $("panels3d").onchange = draw;
 $("vAbove").onclick = () => view3d("above"); $("vPhone").onclick = () => view3d("phone");
 $("v3d").onclick = () => set3d(!is3d);
 $("scanCut").onchange = loadScan;
@@ -1424,7 +1439,7 @@ async function reload() {
 let T = null, G = null;      // three.js and everything of the view
 async function set3d(on) {
   if (on && !T) { $("tipText").textContent = "Loading 3D…"; T = await import("./three.module.min.js"); init3d(); }
-  is3d = on;
+  is3d = on; $("layer3d").checked = on;
   $("v3d").classList.toggle("on", on); $("v3d").textContent = on ? "Plan" : "3D";
   $("gl").hidden = !on; svg.style.display = on ? "none" : ""; $("only3d").hidden = !on;
   photo3d();
@@ -1658,11 +1673,12 @@ function build3d() {
   });
   showPhone();
   walk.forEach((w, i) => {
+    if (!pointShown(i)) return;
     const mine = sel?.wall != null && W[sel.wall]?.points.includes(w.id);
     const on = sel?.point === i, b = new T.Mesh(new T.SphereGeometry(on || mine ? .08 : .055, 14, 10), mat(on ? 0xe0226e : mine ? 0x20c060 : (WALK[w.kind] || WALK.unknown)));
     b.position.set(w.x, w.y, w.z); b.renderOrder = 26; b.userData.point = i; ov.add(b); G.hits.push(b);
   });
-  const showLabels = $("labels3d").checked, showPanels = $("panels3d").checked;
+  const showLabels = $("showSizes").checked, showPanels = $("panels3d").checked;
   ov.children.forEach(o => { if (o.isSprite) o.visible = showLabels; else if (o.userData.wall != null) o.visible = showPanels; });
   // the readings the walls came from, in the band they were read
   if ($("showTop").checked && pts.top.length) {
@@ -1684,7 +1700,6 @@ function build3d() {
   $("name").textContent = j.name || "Layout"; document.title = (j.name || "Room") + " layout"; $("height").value = L.height_m;
   joined = j.joins || []; walk = j.walk || []; meta(j); renderWalk(); renderJoins(); fillJoinPick();
   fit(); tip(); loadScan();
-  if (walk.length) set3d(true);      // a walk has real heights: it opens in 3D
 })();
 </script>
 </body>
