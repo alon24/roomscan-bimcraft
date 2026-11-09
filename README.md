@@ -472,6 +472,7 @@ been compiled by CI until it is tried on a phone. Tell me what looks wrong and I
 
 | Version | What was added |
 |---|---|
+| 0.69.1 | A scan that is still being made now says **working…** (in the list and on top) with a spinner, and the 3D view is emptied, so you never see the previous scan's model under the new scan's name. It opens by itself when ready. |
 | 0.69.0 | Layout page: tap a reference point you added and press **Make a door here** or **Make a window here**. New points are "Not sure" by default, so they can't move the walls, and show as an orange ring on the plan. |
 | 0.68.0 | Layout page: tap the empty plan to see photos of that spot, tap the photo to add a reference point, and the points you add stay on the clean plan. **Add door** and **Add window** snap to those points. |
 | 0.67.1 | Layout page: pressing **Add point** no longer brings back every old point, only the one you add or select. |

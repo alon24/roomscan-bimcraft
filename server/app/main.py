@@ -326,7 +326,7 @@ async def upload(json_file: UploadFile | None = File(None, alias="json"),
                        **({"real_height_mm": real_height_mm} if real_height_mm > 0 else {}),
                        **({"turntable": True} if turntable_scan else {}),
                        **({"ring": True} if ring_scan else {}),
-                       **({"phone": _json_or_empty(info)} if info else {})})
+                       **({"phone": _json_or_empty(info)} if info else {}), "status": "converting"})   # shown as "working" until the conversion ends
         return _convert(d)
 
     meta = await anyio.to_thread.run_sync(store)

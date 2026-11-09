@@ -609,7 +609,7 @@ async function loadList() {
       };
       b.append(icon(s.kind === "object" ? "object" : s.kind === "mesh" ? "mesh" : "room"), Object.assign(document.createElement("span"), { textContent: s.name }));
       const small = document.createElement("small");
-      small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (s.status || "?") + (s.tags?.length ? " · #" + s.tags.join(" #") : "");
+      small.textContent = new Date(s.created_at * 1000).toLocaleString() + " · " + (WORKING.includes(s.status || "") ? "working…" : s.status) + (s.tags?.length ? " · #" + s.tags.join(" #") : "");
       b.append(small);
       b.onclick = () => { if (SEL.ids.size) cb.click(); else openScan(s.id); };   // while anything is ticked a tap ticks; otherwise it opens
       li.append(cb, b); ul.append(li);
@@ -668,7 +668,7 @@ function clearDetail() { showGen++; current = null; pinned = false; $("detail").
 
 // A scan the user opened on purpose (a click in the list, a ?scan= link) stays on screen: a live capture that starts meanwhile
 // only shows the "Live capture running" button instead of taking the page over.
-let pinned = false, liveRoom = null, offer = null;
+let pinned = false, liveRoom = null, offer = null, workTimer = 0;
 function openScan(id) { pinned = true; offerLive(null); return show(id); }
 function offerLive(o) { offer = o; $("liveOffer").hidden = !o; }
 
@@ -681,8 +681,11 @@ function setBusy(text) {
 }
 function clearBusy() { $("viewBusy")?.remove(); }
 
+const WORKING = ["converting", "pending", "processing", ""];
 async function show(id) {
   clearBusy();
+  clearTimeout(workTimer);
+  cancelAnimationFrame(raf); $("view").replaceChildren(); $("modes").hidden = true;   // never leave the previous scan's model on screen
   current = id; live = false;   // a later live frame must take the page over again, not be drawn into this scan's view
   const gen = ++showGen, stale = () => gen !== showGen;
   const res = await fetch(`/api/scans/${id}`);
@@ -693,7 +696,9 @@ async function show(id) {
   $("hint").hidden = true; $("detail").hidden = false;
   $("modes").hidden = true; ctx = null; $("framesBox").hidden = true; $("measureBar").hidden = true; MEAS.on = false;
   $("title").textContent = meta.name;
-  $("status").textContent = meta.status; $("status").className = meta.status;
+  const working = WORKING.includes(meta.status || "");
+  $("status").textContent = working ? "working…" : meta.status; $("status").className = working ? "converting" : meta.status;
+  if (working) { setBusy("The server is working on this scan. It opens by itself when it's ready."); workTimer = setTimeout(() => { if (current === id) { show(id); loadList(); } }, 3000); }
   $("appInfo").textContent = meta.phone?.app ? `  ·  phone app ${meta.phone.app}${meta.phone["scan type"] ? "  ·  " + meta.phone["scan type"] : ""}` : "  ·  phone app: not reported (older app)";
   $("log").textContent = meta.log || "";
   liveShow(meta);
