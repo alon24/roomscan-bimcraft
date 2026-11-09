@@ -542,7 +542,7 @@ def walk_edit(scan_id: str, body: dict):
             y = float(new["y"]) if new.get("y") is not None else ((fl + ce) / 2 if fl is not None and ce is not None else 0.0)
             kind = new.get("kind") if new.get("kind") in walk_mod.KINDS else "unknown"
             pid = uuid.uuid4().hex[:12]
-            raw = {"id": pid, "x": float(new["x"]), "y": y, "z": float(new["z"]), "t": time.time(), "fixed": True, **({"tag": kind} if kind != "unknown" else {})}
+            raw = {"id": pid, "x": float(new["x"]), "y": y, "z": float(new["z"]), "t": time.time(), "fixed": True, "ref": True, **({"tag": kind} if kind != "unknown" else {})}
             points.append(raw)
             res = {**raw, "tag": raw.get("tag"), "kind": kind, "guess": "unknown", "walls": 0, "lines": [], "snapped_cm": 0.0, "added": True, "flag": None}
             result["points"].append(res)

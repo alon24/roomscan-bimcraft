@@ -140,7 +140,7 @@ def classify(click: dict, tree: cKDTree | None, P: np.ndarray, floor_y: float | 
         q = p.copy()
     # a wall as a level line: nx * x + nz * z = d, with the tilt left out
     lines = [[float(n[0] / math.hypot(n[0], n[2])), float(n[2] / math.hypot(n[0], n[2])), float(d / math.hypot(n[0], n[2]))] for n, d in walls if abs(float(n @ p - d)) < SNAP]
-    out.update(kind=tag or guess, guess=guess, x=float(q[0]), y=float(q[1]), z=float(q[2]), snapped_cm=round(float(np.linalg.norm(q - p)) * 100, 1), walls=len(walls), lines=lines, fixed=bool(click.get("fixed")))
+    out.update(kind=tag or guess, guess=guess, x=float(q[0]), y=float(q[1]), z=float(q[2]), snapped_cm=round(float(np.linalg.norm(q - p)) * 100, 1), walls=len(walls), lines=lines, fixed=bool(click.get("fixed")), ref=bool(click.get("ref")))
     return out
 
 
