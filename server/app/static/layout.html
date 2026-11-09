@@ -406,6 +406,7 @@ function draw() {
     const s = toScreen(v), on = sel?.corner === i;
     el("circle", { cx: s[0], cy: s[1], r: on ? 8 : 6, fill: on ? c("--sel") : c("--card"), stroke: on ? c("--sel") : c("--ink"), "stroke-width": 2, "data-corner": i, style: "cursor:move" });
   });
+  walk.forEach(w => { if (w.ref) { const s = toScreen(walkPlan(w)); el("circle", { cx: s[0], cy: s[1], r: 10, fill: "none", stroke: c("--door"), "stroke-width": 2.5 }); } });     // your reference points
   if (sel?.at) { const s = toScreen(worldToPlan(sel.at[0], sel.at[2])); el("circle", { cx: s[0], cy: s[1], r: 9, fill: "none", stroke: c("--sel"), "stroke-width": 3 }); el("circle", { cx: s[0], cy: s[1], r: 2.5, fill: c("--sel") }); }
   // the points clicked on the walk
   walk.forEach((w, i) => {
@@ -526,6 +527,15 @@ function panel() {
   } else if (sel?.point != null && walk[sel.point]) {
     const w = walk[sel.point], k = w.kind;
     head(`Point ${sel.point + 1}: ${WALK_NAME[k] || k}`);
+    if (w.ref) {        // a reference point you added: one tap makes the door or window on the wall beside it
+      const r0 = document.createElement("div"); r0.className = "row";
+      for (const kind of ["door", "window"]) {
+        const b = document.createElement("button"); b.className = "main"; b.textContent = `Make a ${kind} here`;
+        b.onclick = () => { const q = nearestOnWall(walkPlan(w)); if (!q) return; remember(); L.openings.push({ kind, at: q.q }); sel = null; changed(); };
+        r0.append(b);
+      }
+      P.append(r0);
+    }
     const row = document.createElement("div"); row.className = "row";
     const pick = document.createElement("select");
     pick.append(...Object.keys(WALK_NAME).map(n => Object.assign(document.createElement("option"), { value: n, textContent: WALK_NAME[n], selected: n === k })));
@@ -969,7 +979,7 @@ function pointNear(f, a, b) {
   return best;
 }
 $("mkKind").append(...Object.keys(WALK_NAME).filter(k => k !== "ignore").map(k => Object.assign(document.createElement("option"), { value: k, textContent: WALK_NAME[k] })));
-$("mkKind").value = "corner";
+$("mkKind").value = "unknown";      // a new point is a reference: it must not move the walls
 // a spot in the photo as a place in the room: the LiDAR reading there, or else the wall the photo looks at
 async function mkPlace(f, a, b) {
   const r = await fetch(`/api/scans/${id}/walk/from_photo?file=${encodeURIComponent(f.file)}&u=${a}&v=${b}`).catch(() => null), j = r?.ok ? await r.json() : {};
